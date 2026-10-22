@@ -17,7 +17,7 @@
 # GPU work): checked before every run, exit status 4 if it is. Prints one
 # summary line per run, then the tests that need a look.
 app_running() {
-  pidof com.rfandango.haku_x.debug:xemu >/dev/null || pidof com.rfandango.haku_x >/dev/null ||
+  pidof com.rfandango.haku_x.debug:native >/dev/null || pidof com.rfandango.haku_x >/dev/null ||
     dumpsys window | grep -m1 mCurrentFocus | grep -q haku_x
 }
 cd /data/local/tmp/fexrun || exit 1

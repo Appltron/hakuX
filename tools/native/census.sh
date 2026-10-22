@@ -8,7 +8,7 @@
 # Never runs while the hakuX app is up (it shares the phone with the HLE GPU
 # work); checked before every title, exit status 4 if it is.
 app_running() {
-  pidof com.rfandango.haku_x.debug:xemu >/dev/null || pidof com.rfandango.haku_x >/dev/null ||
+  pidof com.rfandango.haku_x.debug:native >/dev/null || pidof com.rfandango.haku_x >/dev/null ||
     dumpsys window | grep -m1 mCurrentFocus | grep -q haku_x
 }
 cd /data/local/tmp/native || exit 1

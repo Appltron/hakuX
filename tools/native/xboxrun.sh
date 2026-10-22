@@ -5,7 +5,7 @@
 # background doesn't count. Pushed with xboxrun to /data/local/tmp/native.
 #
 #   sh xboxrun.sh <disc image>
-if pidof com.rfandango.haku_x.debug:xemu >/dev/null || pidof com.rfandango.haku_x >/dev/null ||
+if pidof com.rfandango.haku_x.debug:native >/dev/null || pidof com.rfandango.haku_x >/dev/null ||
    dumpsys window | grep -m1 mCurrentFocus | grep -q haku_x; then
   echo "hakuX app is running: not starting (device runs must not overlap it)"
   exit 4
