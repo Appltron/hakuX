@@ -5,6 +5,7 @@
 #include "native/core/vm.h"
 #include "native/kernel/kernel.h"
 
+#include <pthread.h>
 #include <stdlib.h>
 #include <zlib.h>
 
@@ -45,38 +46,86 @@ static bool all_zero(const uint8_t *p, size_t n)
     return true;
 }
 
+/* A run of RAM's blocks, encoded into its own buffer as the section holds
+ * them: the runs one after another are the section. */
+typedef struct RamPart {
+    const uint8_t *ram;
+    uint32_t from, to;                  /* byte offsets */
+    NcBuf out;
+    uint32_t zero, deflated;
+    uint64_t bytes;
+    pthread_t th;
+    bool started;
+} RamPart;
+
+static void *ram_part(void *arg)
+{
+    RamPart *rp = arg;
+    uint8_t *z = malloc(compressBound(RAM_BLOCK));
+    if (!z) {
+        rp->out.fail = true;
+        return NULL;
+    }
+    for (uint32_t off = rp->from; off < rp->to; off += RAM_BLOCK) {
+        const uint8_t *p = rp->ram + off;
+        if (all_zero(p, RAM_BLOCK)) {
+            nc_buf_u8(&rp->out, BLK_ZERO);
+            rp->zero++;
+            continue;
+        }
+        uLongf zl = compressBound(RAM_BLOCK);
+        if (compress2(z, &zl, p, RAM_BLOCK, 1) == Z_OK && zl < RAM_BLOCK) {
+            nc_buf_u8(&rp->out, BLK_DEFLATE);
+            nc_buf_u32(&rp->out, (uint32_t)zl);
+            nc_buf_put(&rp->out, z, zl);
+            rp->bytes += zl;
+            rp->deflated++;
+        } else {
+            nc_buf_u8(&rp->out, BLK_STORED);
+            nc_buf_put(&rp->out, p, RAM_BLOCK);
+            rp->bytes += RAM_BLOCK;
+        }
+    }
+    free(z);
+    return NULL;
+}
+
+/* The blocks are deflated a quarter on each of 4 threads while the guest
+ * waits: on one, they were ~1.05 s of Halo 2's 1.2 s save (the Odin). */
+#define RAM_PARTS 4
+
 bool nc_ram_state_save(NcBuf *b)
 {
     const NcVm *vm = nc_state_kernel()->vm;
     const NcRamState st = {vm->ram_size, RAM_BLOCK};
     nc_rec_put(b, &nc_rec_NcRamState, &st);
-    uint8_t *z = malloc(compressBound(RAM_BLOCK));
-    if (!z) {
-        return false;
+    const uint32_t nblk = vm->ram_size / RAM_BLOCK;
+    RamPart parts[RAM_PARTS];
+    memset(parts, 0, sizeof(parts));
+    for (unsigned i = 0; i < RAM_PARTS; i++) {
+        parts[i].ram = vm->phys;
+        parts[i].from = nblk * i / RAM_PARTS * RAM_BLOCK;
+        parts[i].to = nblk * (i + 1) / RAM_PARTS * RAM_BLOCK;
+        if (i) {
+            parts[i].started = pthread_create(&parts[i].th, NULL, ram_part, &parts[i]) == 0;
+        }
     }
+    ram_part(&parts[0]);
     uint32_t zero = 0, deflated = 0;
     uint64_t bytes = 0;
-    for (uint32_t off = 0; off < vm->ram_size; off += RAM_BLOCK) {
-        const uint8_t *p = vm->phys + off;
-        if (all_zero(p, RAM_BLOCK)) {
-            nc_buf_u8(b, BLK_ZERO);
-            zero++;
-            continue;
+    for (unsigned i = 0; i < RAM_PARTS; i++) {
+        if (i && parts[i].started) {
+            pthread_join(parts[i].th, NULL);
+        } else if (i) {
+            ram_part(&parts[i]);                /* no thread: here */
         }
-        uLongf zl = compressBound(RAM_BLOCK);
-        if (compress2(z, &zl, p, RAM_BLOCK, 1) == Z_OK && zl < RAM_BLOCK) {
-            nc_buf_u8(b, BLK_DEFLATE);
-            nc_buf_u32(b, (uint32_t)zl);
-            nc_buf_put(b, z, zl);
-            bytes += zl;
-            deflated++;
-        } else {
-            nc_buf_u8(b, BLK_STORED);
-            nc_buf_put(b, p, RAM_BLOCK);
-            bytes += RAM_BLOCK;
-        }
+        nc_buf_put(b, parts[i].out.p, parts[i].out.len);
+        b->fail |= parts[i].out.fail;
+        nc_buf_free(&parts[i].out);
+        zero += parts[i].zero;
+        deflated += parts[i].deflated;
+        bytes += parts[i].bytes;
     }
-    free(z);
     nc_log("hakuX-native-state", "RAM: %u MiB, %u blocks zero, %u deflated, %.1f MiB stored", vm->ram_size >> 20, zero,
            deflated, bytes / 1048576.0);
     return !b->fail;
