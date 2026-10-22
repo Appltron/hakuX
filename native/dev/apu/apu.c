@@ -433,8 +433,11 @@ static int getenv_int_clamped(const char *name, int min_value, int max_value,
 }
 
 /* The output: a ring of NC_APU_FIFO_FRAMES EP frames (48), drained in
- * callbacks of NC_APU_SAMPLES frames (2048). The frame thread fills it to
- * three callbacks and paces itself in real time above one. */
+ * callbacks of NC_APU_SAMPLES frames (512, 10.7 ms). The frame thread fills
+ * it to three callbacks and paces itself in real time above one: ~32 ms
+ * queued. Callbacks of 2048 queued ~128 ms (~130 ms from the guest to the
+ * speaker); with the callback non-blocking (fill), 512 and 256 ran a minute
+ * of Halo 2 on the Odin 3 without a short callback. */
 static void monitor_init(MCPXAPUState *d)
 {
     const char *st = getenv("HAKUX_APU_STATS");
@@ -443,7 +446,7 @@ static void monitor_init(MCPXAPUState *d)
     d->monitor.queued_bytes_high = 0;
 
     int fifo_frames = getenv_int_clamped("NC_APU_FIFO_FRAMES", 3, 128, 48);
-    int audio_samples = getenv_int_clamped("NC_APU_SAMPLES", 256, 4096, 2048);
+    int audio_samples = getenv_int_clamped("NC_APU_SAMPLES", 256, 4096, 512);
     int fifo_frame_bytes = sizeof(d->monitor.frame_buf);
     int fifo_capacity_bytes = fifo_frames * fifo_frame_bytes;
 
