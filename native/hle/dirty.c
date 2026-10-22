@@ -336,6 +336,14 @@ bool nc_hle_dirty_fault(const siginfo_t *info)
         return true;
     }
     dirty_sample(pa);
+    static int all_views = -1;          /* NC_WP_ALL_VIEWS: every view opened, as before (A/B) */
+    if (all_views < 0) {
+        all_views = getenv("NC_WP_ALL_VIEWS") != NULL;
+    }
+    if (all_views) {
+        first_write(pa, 4);
+        return true;
+    }
     hle_mem_first_write(pa, 4);
     open_view(pa, info->si_addr);
     return true;
