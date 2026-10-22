@@ -586,7 +586,8 @@ static void complete(NcKernel *k, const uint32_t *a)
  * place. Overlapped reads of hard disk files go the same way (a duplicate
  * of the descriptor, closed when done): Forza streams its track from the Z:
  * cache during a race, 8-28 ms a read in place, a frame a vblank late now
- * and then.
+ * and then. Long synchronous reads go there too, only their thread waiting
+ * (NtReadFile, SYNC_LATER_MIN).
  *
  * The reader writes the buffer's physical pages through the RAM view, as a
  * device does: a page the GPU may still read (the HLE GPU's first-write
@@ -610,6 +611,7 @@ typedef struct DiscJob {
     uint32_t iosb, event, apc, apc_ctx;
     NcThread *thread;
     uint32_t thread_id;      /* its id then: the slot may hold another thread by the end */
+    bool sync;               /* a synchronous handle's: the thread waits for it (nc_ke_block) */
     bool ok;
     int err;
     char path[64]; /* for the log */
@@ -674,8 +676,9 @@ static void pin_buffer(NcKernel *k, uint32_t va, uint32_t n, int lock)
 }
 
 /* Queues a read of n bytes at off into the buffer a[5] (resident and
- * writable); false when it must happen in place. */
-static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, uint64_t off, uint32_t n)
+ * writable); false when it must happen in place. sync: the calling thread
+ * waits for it, every other one runs on. */
+static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, uint64_t off, uint32_t n, bool sync)
 {
     static int in_place = -1; /* NC_DISC_SYNC: every disc read in place, as before */
     if (in_place < 0) {
@@ -699,7 +702,7 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, ui
     }
     DiscJob j = {.disc = k->disc, .file = nf->disc, .fd = -1, .off = off, .va = a[5], .n = n, .iosb = a[4],
                  .event = event, .apc = a[2], .apc_ctx = a[3], .thread = k->current,
-                 .thread_id = k->current ? k->current->id : 0};
+                 .thread_id = k->current ? k->current->id : 0, .sync = sync};
     snprintf(j.path, sizeof(j.path), "%s", nf->path);
     j.seg = malloc(sizeof(*j.seg) * ((n + NC_PAGE - 1) / NC_PAGE + 1));
     if (!j.seg) {
@@ -781,6 +784,9 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
     io_status(k, j->iosb, st, n);
     if (j->event) {
         nc_ke_set_event(k, j->event);
+    }
+    if (j->sync && j->thread && j->thread->id == j->thread_id && j->thread->state == NC_T_WAITING) {
+        nc_ke_wake(k, j->thread, st);   /* its NtReadFile returns now */
     }
     if (j->apc && j->thread && j->thread->id == j->thread_id && j->thread->state != NC_T_FREE &&
         j->thread->state != NC_T_TERMINATED) {
@@ -1153,6 +1159,26 @@ static uint32_t io_finish(NcKernel *k, const NcFile *nf, const uint32_t *a, uint
     return nf->async && (a[1] || a[2] || nf->kind == F_DISC) ? STATUS_PENDING : st;
 }
 
+/* A synchronous read this long goes to the reader thread too, the calling
+ * thread waiting for it (XAPI's ReadFile on an ordinary handle): in place,
+ * every guest thread, the vblank DPC and the interrupts stopped for the
+ * whole read (8-70 ms from the SD card, as the overlapped ones were).
+ * Shorter ones cost less than the trip to the reader. */
+#define SYNC_LATER_MIN 0x8000u
+
+/* The running thread may wait in its call: an ordinary thread at
+ * PASSIVE_LEVEL, not a DPC or an ISR. */
+static bool can_block(const NcKernel *k)
+{
+    static int in_place = -1; /* NC_SYNC_IN_PLACE: synchronous reads in place, as before (A/B) */
+    if (in_place < 0) {
+        in_place = getenv("NC_SYNC_IN_PLACE") != NULL;
+    }
+    const NcThread *t = k->current;
+    return !in_place && t && t->state == NC_T_RUNNING && t != k->dpc_thread && t != k->isr_thread && !k->in_isr &&
+           !k->redirected && *(const uint8_t *)nc_vm_host(k->vm, k->kpcr_va + 0x24) == 0;
+}
+
 static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     NcFile *nf = file_of(k, a[0]);
@@ -1199,12 +1225,16 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         if (!nc_kernel_resident(k, a[5], n, true)) {
             return 0;
         }
-        if ((nf->kind == F_DISC || (nf->kind == F_HOST && nf->fd >= 0)) && nf->async &&
-            disc_read_later(k, nf, a, off, n)) {
+        const bool later = nf->async || (n >= SYNC_LATER_MIN && can_block(k));
+        if ((nf->kind == F_DISC || (nf->kind == F_HOST && nf->fd >= 0)) && later &&
+            disc_read_later(k, nf, a, off, n, !nf->async)) {
             nf->pos = off + n;
             if (g_trace_io) {
-                nc_log("hakuX-native-io", "read %s +%llx %u into %08x pending%s%s", nf->path, (unsigned long long)off,
-                       n, a[5], a[1] ? " event" : "", a[2] ? " apc" : "");
+                nc_log("hakuX-native-io", "read %s +%llx %u into %08x %s%s%s", nf->path, (unsigned long long)off,
+                       n, a[5], nf->async ? "pending" : "waited for", a[1] ? " event" : "", a[2] ? " apc" : "");
+            }
+            if (!nf->async) {
+                nc_ke_block(k);         /* the read's status replaces this when it completes */
             }
             return STATUS_PENDING;
         }

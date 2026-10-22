@@ -391,6 +391,10 @@ uint32_t nc_ke_set_event(NcKernel *k, uint32_t event);
 void nc_ke_clear_event(NcKernel *k, uint32_t event);
 /* KeInitializeEvent: type 0 notification, 1 synchronization. */
 void nc_ke_init_event(NcKernel *k, uint32_t event, unsigned type, bool signaled);
+/* The running thread waits for the host's work for its call (no object, no
+ * timeout); nc_ke_wake ends it with the call's status. */
+void nc_ke_block(NcKernel *k);
+void nc_ke_wake(NcKernel *k, NcThread *t, uint32_t status);
 
 /* FILE_OBJECT.Event (a KEVENT): what a wait on a file handle waits for, set
  * when an I/O on the file issued without an event of its own completes. */

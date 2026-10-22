@@ -502,6 +502,28 @@ static uint32_t wait(NcKernel *k, const uint32_t *objs, unsigned count, bool wai
     return NC_STATUS_TIMEOUT; /* replaced when the wait ends */
 }
 
+/* The running thread waits for work the host does for its kernel call (a
+ * synchronous read on the reader thread, io.c): no object, no timeout, not
+ * alertable. The call's status comes with nc_ke_wake. */
+void nc_ke_block(NcKernel *k)
+{
+    NcThread *t = k->current;
+    memset(&t->wait, 0, sizeof(t->wait));
+    t->state = NC_T_WAITING;
+    k->resched = true;
+}
+
+/* Ends t's nc_ke_block: status in its EAX, ready, ahead of the running
+ * thread if its priority is higher. */
+void nc_ke_wake(NcKernel *k, NcThread *t, uint32_t status)
+{
+    nc_context_set_gpr(&t->ctx, NC_EAX, status);
+    t->state = NC_T_READY;
+    if (k->current && t->priority > k->current->priority) {
+        k->resched = true;
+    }
+}
+
 static uint32_t handle_object(NcKernel *k, uint32_t handle)
 {
     enum NcObType type;
