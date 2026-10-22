@@ -31,9 +31,15 @@ typedef struct NcVm {
     uint32_t *pte;         /* per guest page: physical address | NC_PTE_VALID, or 0 */
     uint8_t *phys;         /* host view of physical RAM outside the guest space (never protected) */
     uint32_t *rmap;        /* per physical page: the user VA mapping it (besides the window), or 0 */
-    uint8_t *wp;           /* per physical page: write-protected for dirty tracking */
+    uint8_t *wp;           /* per physical page: dirty tracking's (NC_WP_*); 0 not tracked */
     uint8_t *pin;          /* per physical page: NC_PIN_KNOWN | lock count (nc_vm_pin) */
 } NcVm;
+
+/* NcVm.wp: protected in every view, unwritten since; written since (a guest
+ * store's fault opened only the view it came through: the others may still
+ * be read-only, and a store through one opens that too, hle/dirty.c). */
+#define NC_WP_CLEAN   1u
+#define NC_WP_WRITTEN 2u
 
 /* A page whose physical address went out (MmGetPhysicalAddress, a title's
  * own page tables) stays where it is until freed; locks count below it. */

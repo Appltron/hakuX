@@ -120,7 +120,7 @@ bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
         }
         if (g_na && g_na[page]) {
             mprotect(vm->base + va + off, NC_PAGE, PROT_NONE); /* still no access (nc_vm_noaccess) */
-        } else if (vm->wp[page]) {
+        } else if (vm->wp[page] == NC_WP_CLEAN) {
             mprotect(vm->base + va + off, NC_PAGE, PROT_READ); /* still tracked */
         }
     }
@@ -171,7 +171,7 @@ void nc_vm_protect_pages(NcVm *vm, uint32_t pa, uint32_t n, bool ro)
      * tracking one), never protected and unmarked. */
     if (ro) {
         for (uint32_t i = 0; i < n; i++) {
-            __atomic_store_n(&vm->wp[page + i], 1, __ATOMIC_RELEASE);
+            __atomic_store_n(&vm->wp[page + i], NC_WP_CLEAN, __ATOMIC_RELEASE);
         }
     }
     prot_views(vm, page, n, prot);
@@ -219,7 +219,7 @@ void nc_vm_noaccess(NcVm *vm, uint32_t pa, uint32_t n, bool on)
         while (i + k < n && __atomic_load_n(&vm->wp[page + i + k], __ATOMIC_ACQUIRE) == wp) {
             k++;
         }
-        prot_views(vm, page + i, k, wp ? PROT_READ : PROT_READ | PROT_WRITE);
+        prot_views(vm, page + i, k, wp == NC_WP_CLEAN ? PROT_READ : PROT_READ | PROT_WRITE);
         i += k;
     }
     for (uint32_t i = 0; i < n; i++) {

@@ -18,6 +18,7 @@
 #include "hw/xbox/hle/mem/barrier.h"
 
 #include <dlfcn.h>
+#include <sys/mman.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,7 +39,7 @@ bool hle_host_mem_dirty(uint32_t pa)
     if (!g_vm || pa >= g_vm->ram_size) {
         return true;
     }
-    return !__atomic_load_n(&g_vm->wp[pa / NC_PAGE], __ATOMIC_ACQUIRE);
+    return __atomic_load_n(&g_vm->wp[pa / NC_PAGE], __ATOMIC_ACQUIRE) != NC_WP_CLEAN;
 }
 
 static uint64_t ram_end(uint32_t pa, uint32_t len)
@@ -75,11 +76,29 @@ bool hle_host_mem_test_and_clear(uint32_t pa, uint32_t len)
     return g_vm && protect_runs(pa, len, true);
 }
 
+/* A host write: every view of the page writable (the host writes through
+ * the guest's), untracked until protected again. */
 static void make_dirty(uint32_t pa)
 {
     if (g_vm->wp[pa / NC_PAGE]) {
         nc_vm_protect_page(g_vm, pa & ~(NC_PAGE - 1), false);
     }
+}
+
+/* A guest store's fault: only the view it came through (at) made writable,
+ * then the page marked written (NC_WP_WRITTEN; writable first, as
+ * nc_vm_protect_pages clears its flag after). Making a view of the shared
+ * RAM writable is the dear part of a fault: all three views 13.5 us a fault
+ * on the Odin 3, this one 6.5 (DOA2 takes ~10k a second). A store through
+ * another view faults once more and opens that one. */
+static void open_view(uint32_t pa, void *at)
+{
+    void *page = (void *)((uintptr_t)at & ~(uintptr_t)(NC_PAGE - 1));
+    if (mprotect(page, NC_PAGE, PROT_READ | PROT_WRITE)) {
+        nc_vm_protect_page(g_vm, pa & ~(NC_PAGE - 1), false);   /* every view, as before */
+        return;
+    }
+    __atomic_store_n(&g_vm->wp[pa / NC_PAGE], NC_WP_WRITTEN, __ATOMIC_RELEASE);
 }
 
 /* debug: NC_DEVWATCH="pa:len" (hex) logs each device write into that guest
@@ -201,7 +220,7 @@ void nc_hle_watch_rearm(void)
     unsigned i = 0;
     for (uint32_t a = g_wlo & ~(NC_PAGE - 1); a < g_whi && a < g_vm->ram_size && i < 16; a += NC_PAGE, i++) {
         const uint32_t va = g_vm->rmap[a / NC_PAGE];
-        if (!g_vm->wp[a / NC_PAGE] || armed[i] != va) {
+        if (g_vm->wp[a / NC_PAGE] != NC_WP_CLEAN || armed[i] != va) {
             nc_vm_protect_page(g_vm, a, true);
             armed[i] = va;
         }
@@ -233,8 +252,10 @@ void hle_va_store(uint32_t va, uint32_t len)
              * buffer's leftover bytes. */
             hle_mem_stale_access(pa);
         }
-        if (g_vm->wp[pa / NC_PAGE]) {
+        if (g_vm->wp[pa / NC_PAGE] == NC_WP_CLEAN) {
             first_write(pa, len);
+        } else if (g_vm->wp[pa / NC_PAGE] == NC_WP_WRITTEN) {
+            make_dirty(pa);             /* written already: its other views opened for the host */
         }
     }
 }
@@ -299,7 +320,8 @@ bool nc_hle_dirty_fault(const siginfo_t *info)
         hle_mem_stale_access(pa);
         return true;
     }
-    if (!__atomic_load_n(&g_vm->wp[pa / NC_PAGE], __ATOMIC_ACQUIRE)) {
+    const uint8_t wp = __atomic_load_n(&g_vm->wp[pa / NC_PAGE], __ATOMIC_ACQUIRE);
+    if (!wp) {
         /* protected, but not by write tracking: someone else's (the JIT's
          * code pages), or tracking lost the page (a crash follows) */
         static unsigned s_logged;
@@ -309,7 +331,12 @@ bool nc_hle_dirty_fault(const siginfo_t *info)
         }
         return false;
     }
+    if (wp == NC_WP_WRITTEN) {
+        open_view(pa, info->si_addr);   /* written through another view already */
+        return true;
+    }
     dirty_sample(pa);
-    first_write(pa, 4);
+    hle_mem_first_write(pa, 4);
+    open_view(pa, info->si_addr);
     return true;
 }
