@@ -252,12 +252,15 @@ static uint64_t RtlNtStatusToDosError(NcKernel *k, NcFrame *f, const uint32_t *a
 
 uint32_t nc_rtl_status_to_dos(uint32_t status)
 {
+    /* every status the kernel returns (Windows' mapping) */
     static const uint32_t map[][2] = {
         {0x00000000u, 0},   {0x00000102u, 258}, {0x00000103u, 997}, {0x80000005u, 234}, {0x80000006u, 18},
-        {0xC0000002u, 1},   {0xC0000008u, 6},   {0xC000000Du, 87},  {0xC000000Fu, 2},   {0xC0000011u, 38},
-        {0xC0000017u, 8},   {0xC0000022u, 5},   {0xC0000023u, 122}, {0xC0000033u, 123}, {0xC0000034u, 2},
-        {0xC0000035u, 183}, {0xC000003Au, 3},   {0xC0000043u, 32},  {0xC000007Fu, 112}, {0xC000009Au, 1450},
-        {0xC00000BAu, 5},   {0xC0000101u, 145}, {0xC0000103u, 267},
+        {0xC0000001u, 31},  {0xC0000002u, 1},   {0xC0000003u, 87},  {0xC0000008u, 6},   {0xC000000Du, 87},
+        {0xC000000Fu, 2},   {0xC0000010u, 1},   {0xC0000011u, 38},  {0xC0000017u, 8},   {0xC0000018u, 487},
+        {0xC0000022u, 5},   {0xC0000023u, 122}, {0xC0000024u, 6},   {0xC000002Du, 487}, {0xC0000033u, 123},
+        {0xC0000034u, 2},   {0xC0000035u, 183}, {0xC000003Au, 3},   {0xC0000043u, 32},  {0xC0000047u, 298},
+        {0xC0000056u, 5},   {0xC000007Fu, 112}, {0xC000009Au, 1450}, {0xC000009Cu, 23}, {0xC000009Fu, 487},
+        {0xC00000A0u, 487}, {0xC00000A2u, 19},  {0xC00000BAu, 5},   {0xC0000101u, 145}, {0xC0000103u, 267},
     };
     for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
         if (map[i][0] == status) {
