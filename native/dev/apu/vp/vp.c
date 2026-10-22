@@ -153,25 +153,6 @@ static void voice_reset_filters(MCPXAPUState *d, uint16_t v)
     }
 }
 
-static bool voice_should_mute(uint16_t v)
-{
-    bool m = (g_dbg_voice_monitor >= 0) && (v != g_dbg_voice_monitor);
-
-    if (m && g_dbg_cache.vp.v[g_dbg_voice_monitor].multipass) {
-        uint8_t mp_bin = g_dbg_cache.vp.v[g_dbg_voice_monitor].multipass_bin;
-        struct McpxApuDebugVoice *d = &g_dbg_cache.vp.v[v];
-
-        for (int i = 0; i < sizeof(d->bin) / sizeof(d->bin[0]); i++) {
-            if (d->bin[i] == mp_bin) {
-                m = false;
-                break;
-            }
-        }
-    }
-
-    return m || mcpx_apu_debug_is_muted(v);
-}
-
 static float clampf(float v, float min, float max)
 {
     if (v < min) {
@@ -1257,21 +1238,6 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
     uint32_t pcm_page = UINT32_MAX;     /* a buffer's page last looked up, its address */
     uint64_t pcm_page_base = 0;
 
-    // FIXME: Only update if necessary
-    struct McpxApuDebugVoice *dbg = &g_dbg.vp.v[v];
-    dbg->container_size = container_size_index;
-    dbg->sample_size = sample_size;
-    dbg->stream = stream;
-    dbg->loop = loop;
-    dbg->ebo = ebo;
-    dbg->cbo = cbo;
-    dbg->lbo = lbo;
-    dbg->ba = ba;
-    dbg->samples_per_block = samples_per_block;
-    dbg->persist = persist;
-    dbg->multipass = multipass;
-    dbg->linked = linked;
-
     // This is probably cleared when the first sample is played
     // FIXME: How will this behave if CBO > EBO on first play?
     // FIXME: How will this behave if paused?
@@ -1648,54 +1614,13 @@ static int peek_ahead_multipass_bin(MCPXAPUState *d, uint8_t *c,
     return -1;
 }
 
-static void dump_multipass_unused_debug_info(MCPXAPUState *d, uint8_t *c,
-                                             uint16_t v)
-{
-    unsigned int sample_size = voice_get_mask_nolock(
-        d, c, v, NV_PAVS_VOICE_CFG_FMT, NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE);
-    unsigned int container_size_index = voice_get_mask_nolock(
-        d, c, v, NV_PAVS_VOICE_CFG_FMT, NV_PAVS_VOICE_CFG_FMT_CONTAINER_SIZE);
-    bool stream = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
-                                 NV_PAVS_VOICE_CFG_FMT_DATA_TYPE);
-    bool loop =
-        voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT, NV_PAVS_VOICE_CFG_FMT_LOOP);
-    uint32_t ebo = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_NEXT,
-                                  NV_PAVS_VOICE_PAR_NEXT_EBO);
-    uint32_t cbo = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_OFFSET,
-                                  NV_PAVS_VOICE_PAR_OFFSET_CBO);
-    uint32_t lbo = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_PSH_SAMPLE,
-                                  NV_PAVS_VOICE_CUR_PSH_SAMPLE_LBO);
-    uint32_t ba = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CUR_PSL_START,
-                                 NV_PAVS_VOICE_CUR_PSL_START_BA);
-    bool persist = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
-                                  NV_PAVS_VOICE_CFG_FMT_PERSIST);
-    bool linked = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
-                                 NV_PAVS_VOICE_CFG_FMT_LINKED);
-
-    struct McpxApuDebugVoice *dbg = &g_dbg.vp.v[v];
-    dbg->container_size = container_size_index;
-    dbg->sample_size = sample_size;
-    dbg->stream = stream;
-    dbg->loop = loop;
-    dbg->ebo = ebo;
-    dbg->cbo = cbo;
-    dbg->lbo = lbo;
-    dbg->ba = ba;
-    dbg->samples_per_block = 0; // Value overloaded with multipass bin
-    dbg->persist = persist;
-    dbg->linked = linked;
-}
-
 static void get_multipass_samples(MCPXAPUState *d, uint8_t *c,
                                   float mixbins[][NUM_SAMPLES_PER_FRAME],
                                   uint16_t v, float samples[][2])
 {
-    struct McpxApuDebugVoice *dbg = &g_dbg.vp.v[v];
-
     // DirectSound sets bin to 31, but hardware would allow other bins
     int mp_bin = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
                                 NV_PAVS_VOICE_CFG_FMT_MULTIPASS_BIN);
-    dbg->multipass_bin = mp_bin;
 
     for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
         samples[i][0] = mixbins[mp_bin][i];
@@ -1708,9 +1633,6 @@ static void get_multipass_samples(MCPXAPUState *d, uint8_t *c,
     if (clear_mix) {
         memset(&mixbins[mp_bin][0], 0, sizeof(mixbins[0]));
     }
-
-    // Dump irrelevant data for audio debug UI to avoid showing stale info
-    dump_multipass_unused_debug_info(d, c, v);
 }
 
 static void voice_process(MCPXAPUState *d, uint8_t *c,
@@ -1724,11 +1646,6 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
     unsigned int channels = stereo ? 2 : 1;
     bool paused = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE,
                                  NV_PAVS_VOICE_PAR_STATE_PAUSED);
-
-    struct McpxApuDebugVoice *dbg = &g_dbg.vp.v[v];
-    dbg->active = true;
-    dbg->stereo = stereo;
-    dbg->paused = paused;
 
     if (paused) {
         return;
@@ -1746,7 +1663,6 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
     int8_t ps = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_ENV0,
                                NV_PAVS_VOICE_CFG_ENV0_EF_PITCHSCALE);
     float rate = 1.0 / powf(2.0f, (p + ps * 32 * ef_value) / 4096.0f);
-    dbg->rate = rate;
 
     float ea_value = voice_step_envelope(
         d, c, v, NV_PAVS_VOICE_CFG_ENV0, NV_PAVS_VOICE_CFG_ENVA,
@@ -1770,7 +1686,6 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
 
     bool multipass = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
                                     NV_PAVS_VOICE_CFG_FMT_MULTIPASS);
-    dbg->multipass = multipass;
 
 #if !defined(HAKUX_AUDIO_NO_PROCESS) || !HAKUX_AUDIO_NO_PROCESS
 #if HAKUX_AUDIO_SKIP_MUTED
@@ -1909,11 +1824,6 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
     // FIXME: If phase negations means to flip the signal upside down
     //        we should modify volume of bin6 and bin7 here.
 
-    for (int i = 0; i < 8; i++) {
-        dbg->bin[i] = bin[i];
-        dbg->vol[i] = vol[i];
-    }
-
 #if HAKUX_AUDIO_SKIP_MUTED
     /* Muted voice: the resample loop above already advanced CBO/SSL/SSLA_DONE/
      * loop/voice_off bit-exactly. The remaining SVF / HRTF / 8x mix all
@@ -1930,10 +1840,6 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
         return;
     }
 #endif
-
-    if (voice_should_mute(v)) {
-        return;
-    }
 
 #if HAKUX_AUDIO_SKIP_MUTED
     /* Audible this frame (skip_muted was false -> we did not early-return). If
@@ -2051,13 +1957,10 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
         if (voice_list == NV1BA0_PIO_SET_ANTECEDENT_VOICE_LIST_MP_TOP - 1) {
             mp_bin = peek_ahead_multipass_bin(d, c, v, &mp_dst_voice);
         }
-        dbg->multipass_dst_voice = mp_dst_voice;
 
-        bool debug_isolation =
-            g_dbg_voice_monitor >= 0 && g_dbg_voice_monitor == v;
         float g = 0.0f;
         for (int b = 0; b < 8; b++) {
-            if (bin[b] == mp_bin && !debug_isolation) {
+            if (bin[b] == mp_bin) {
                 continue;
             }
             float hr = 1 << d->vp.submix_headroom[bin[b]];
@@ -2191,9 +2094,6 @@ static void *voice_worker_thread(void *arg)
     self->queue_len = 0;
 
     do {
-        int64_t start_time = apu_host_us();
-        g_dbg.vp.workers[worker_id].num_voices = self->queue_len;
-
         if (self->queue_len) {
             voice_work_share(d, self);
         }
@@ -2202,9 +2102,6 @@ static void *voice_worker_thread(void *arg)
         if (!vwd->workers_pending) {
             pthread_cond_signal(&vwd->work_finished);
         }
-
-        int64_t end_time = apu_host_us();
-        g_dbg.vp.workers[worker_id].time_us = end_time - start_time;
 
         pthread_cond_wait(&self->cond, &vwd->lock);
     } while (!vwd->workers_should_exit);
@@ -2308,8 +2205,6 @@ voice_work_dispatch(MCPXAPUState *d, uint8_t *c,
 {
     VoiceWorkDispatch *vwd = &d->vp.voice_work_dispatch;
 
-    int64_t start_time = apu_host_us();
-
     pthread_mutex_lock(&vwd->lock);
 
     if (vwd->queue_len) {
@@ -2348,9 +2243,6 @@ voice_work_dispatch(MCPXAPUState *d, uint8_t *c,
         }
     }
 
-    int64_t end_time = apu_host_us();
-    g_dbg.vp.total_worker_time_us = end_time - start_time;
-
     pthread_mutex_unlock(&vwd->lock);
 }
 
@@ -2384,7 +2276,6 @@ static void voice_work_init(MCPXAPUState *d)
     vwd->workers_pending = 0;
     vwd->queue_len = 0;
 
-    g_dbg.vp.num_workers = vwd->num_workers;
 
     pthread_mutex_init(&vwd->lock, NULL);
     pthread_mutex_lock(&vwd->lock);

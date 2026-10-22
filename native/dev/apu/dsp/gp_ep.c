@@ -504,7 +504,6 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
         } while (!d->gp.dsp->core.is_idle &&
                  (d->gp.realtime ||
                   (boost && d->gp.dsp->core.cycle_count < GP_FRAME_CYCLES)));
-        g_dbg.gp.cycles = d->gp.dsp->core.cycle_count;
 
         if ((d->monitor.point == MCPX_APU_DEBUG_MON_GP) ||
             (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP && !ep_enabled)) {
@@ -529,7 +528,6 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
             do {
                 dsp_run(d->ep.dsp, 1000);
             } while (!d->ep.dsp->core.is_idle && d->ep.realtime);
-            g_dbg.ep.cycles = d->ep.dsp->core.cycle_count;
         }
     }
 }

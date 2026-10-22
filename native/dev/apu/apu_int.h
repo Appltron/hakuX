@@ -103,13 +103,7 @@ typedef struct MCPXAPUState {
     } monitor;
 } MCPXAPUState;
 
-extern MCPXAPUState *g_state; // Used via debug handlers
-extern struct McpxApuDebug g_dbg, g_dbg_cache;
-extern int g_dbg_voice_monitor;
-extern uint64_t g_dbg_muted_voices[4];
-
-void mcpx_debug_begin_frame(void);
-void mcpx_debug_end_frame(void);
+extern MCPXAPUState *g_state; /* the one APU: the savestate section's */
 
 /* ---- the output device (out.c): 48 kHz 16-bit stereo, a ring of EP frames
  * (1024 bytes each) the frame thread fills and the device's callback drains */

@@ -31,7 +31,7 @@ static bool g_apu_stats;
 static int g_apu_fifo_min = INT_MAX, g_apu_fifo_max;
 extern uint32_t g_vp_oob_clamps;
 
-MCPXAPUState *g_state; // Used via debug handlers
+MCPXAPUState *g_state; /* the one APU: the savestate section's */
 uint8_t *g_apu_ram;
 uint32_t g_apu_ram_size;
 ApuConfig g_apu_config = {
@@ -341,9 +341,6 @@ static void throttle(MCPXAPUState *d)
 static void se_frame(MCPXAPUState *d)
 {
     mcpx_apu_update_dsp_preference(d);
-    mcpx_debug_begin_frame();
-    g_dbg.gp_realtime = d->gp.realtime;
-    g_dbg.ep_realtime = d->ep.realtime;
 
     /* A rudimentary calculation to determine approximately how taxed the APU
      * thread is, by measuring how much time we spend waiting for FIFO to drain
@@ -353,10 +350,8 @@ static void se_frame(MCPXAPUState *d)
      */
     int64_t now = apu_host_ms();
     if (now - d->frame_count_time_ms >= 1000) {
-        g_dbg.frames_processed = d->frame_count;
         float t = 1.0f - ((double)d->sleep_acc_us /
                           (double)((now - d->frame_count_time_ms) * 1000));
-        g_dbg.utilization = t;
 
         if (g_apu_stats) {
             uint32_t cb, short_cb;
@@ -405,8 +400,6 @@ static void se_frame(MCPXAPUState *d)
      * Deliberately NOT inside the `% 8` FIFO block above (that is gated on
      * frame phase); the probe self-throttles its own log cadence. */
     vp_silent_stats_log_and_reset();
-
-    mcpx_debug_end_frame();
 }
 
 static int getenv_int_clamped(const char *name, int min_value, int max_value,

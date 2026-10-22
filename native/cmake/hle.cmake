@@ -90,7 +90,6 @@ target_link_libraries(hakux_hle PUBLIC nc_glib nc_volk nc_spirv_reflect glslang 
 set(NC_APU "${CMAKE_CURRENT_SOURCE_DIR}/dev/apu")
 add_library(hakux_apu STATIC
   ${NC_APU}/apu.c
-  ${NC_APU}/debug.c
   ${NC_APU}/out.c
   ${NC_APU}/state.c
   ${NC_APU}/dsp/debug.c
