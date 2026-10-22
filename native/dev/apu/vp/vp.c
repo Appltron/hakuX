@@ -2176,9 +2176,13 @@ static void voice_work_acquire_voice_lock_for_processing(MCPXAPUState *d, int v)
 {
     apu_spin_lock(&d->vp.voice_spinlocks[v]);
     while (is_voice_locked(d, v)) {
-        /* Stall until voice is available */
+        /* Stall until the guest unlocks the voice. Its unlock signals
+         * without d->lock (the guest thread never takes it), so the signal
+         * can come between this check and the wait: a wait is 200 us at
+         * most, then the lock is looked at again (a lost signal stalled the
+         * APU until some other broadcast, tens of ms). */
         apu_spin_unlock(&d->vp.voice_spinlocks[v]);
-        pthread_cond_wait(&d->cond, &d->lock);
+        apu_cond_timedwait_us(&d->cond, &d->lock, 200);
         apu_spin_lock(&d->vp.voice_spinlocks[v]);
     }
 }
@@ -2276,8 +2280,9 @@ voice_work_dispatch(MCPXAPUState *d, uint8_t *c,
             pthread_cond_signal(&vwd->workers[id].cond);
             pending &= pending - 1;
         }
-        pthread_cond_wait(&vwd->work_finished, &vwd->lock);
-        assert(!vwd->workers_pending);
+        while (vwd->workers_pending) {  /* a spurious wake-up: workers still running */
+            pthread_cond_wait(&vwd->work_finished, &vwd->lock);
+        }
         voice_work_release_voice_locks(d);
         vwd->queue_len = 0;
 
@@ -2335,8 +2340,9 @@ static void voice_work_init(MCPXAPUState *d)
         apu_thread_start(&vwd->workers[i].thread, "apu.voice",
                            voice_worker_thread, d, true);
     }
-    pthread_cond_wait(&vwd->work_finished, &vwd->lock);
-    assert(!vwd->workers_pending);
+    while (vwd->workers_pending) {
+        pthread_cond_wait(&vwd->work_finished, &vwd->lock);
+    }
     pthread_mutex_unlock(&vwd->lock);
 }
 

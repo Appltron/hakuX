@@ -109,6 +109,7 @@ static inline void apu_spin_unlock(ApuSpin *s)
 void apu_cond_init(pthread_cond_t *c);
 /* false on timeout */
 bool apu_cond_timedwait_ms(pthread_cond_t *c, pthread_mutex_t *m, int ms);
+bool apu_cond_timedwait_us(pthread_cond_t *c, pthread_mutex_t *m, int64_t us);
 /* name: at most 15 characters; joinable or detached */
 void apu_thread_start(pthread_t *t, const char *name, void *(*fn)(void *), void *arg, bool joinable);
 

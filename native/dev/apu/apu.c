@@ -52,17 +52,22 @@ void apu_cond_init(pthread_cond_t *c)
     pthread_condattr_destroy(&a);
 }
 
-bool apu_cond_timedwait_ms(pthread_cond_t *c, pthread_mutex_t *m, int ms)
+bool apu_cond_timedwait_us(pthread_cond_t *c, pthread_mutex_t *m, int64_t us)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    ts.tv_sec += ms / 1000;
-    ts.tv_nsec += (long)(ms % 1000) * 1000000L;
+    ts.tv_sec += us / 1000000;
+    ts.tv_nsec += (long)(us % 1000000) * 1000L;
     if (ts.tv_nsec >= 1000000000L) {
         ts.tv_nsec -= 1000000000L;
         ts.tv_sec++;
     }
     return pthread_cond_timedwait(c, m, &ts) == 0;
+}
+
+bool apu_cond_timedwait_ms(pthread_cond_t *c, pthread_mutex_t *m, int ms)
+{
+    return apu_cond_timedwait_us(c, m, (int64_t)ms * 1000);
 }
 
 /* The device code was written for desktop stacks (8 MiB); bionic's default
