@@ -361,12 +361,16 @@ int hle_vk_init(void)
     VkPhysicalDeviceVulkan13Features f13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
         .synchronization2 = VK_TRUE, .dynamicRendering = VK_TRUE,
-        .pipelineCreationCacheControl = c->cache_control };
+        .pipelineCreationCacheControl = c->cache_control,
+        /* SPIR-V 1.6: glslang makes a discard a demote */
+        .shaderDemoteToHelperInvocation = q13.shaderDemoteToHelperInvocation };
     VkPhysicalDeviceVulkan12Features f12 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13,
         .timelineSemaphore = VK_TRUE, .bufferDeviceAddress = VK_TRUE,
         .runtimeDescriptorArray = VK_TRUE, .descriptorBindingPartiallyBound = VK_TRUE,
         .descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,
+        /* the shaders index the texture and sampler arrays nonuniformEXT */
+        .shaderSampledImageArrayNonUniformIndexing = q12.shaderSampledImageArrayNonUniformIndexing,
         .hostQueryReset = c->host_query_reset };
     VkPhysicalDeviceFeatures2 f = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12 };
