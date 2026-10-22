@@ -10,6 +10,19 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ThinLTO for Release builds of everything but FEX (its own ENABLE_LTO stays
+# off, fex.cmake): the decoder and the renderer ~2% lighter (the RP5, DOA2).
+# The cache keeps relinking after a change to the files changed.
+option(HAKUX_LTO "ThinLTO in Release builds (FEX excepted)" ON)
+if(HAKUX_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT nc_ipo LANGUAGES C CXX)
+  if(nc_ipo)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    add_link_options("-Wl,--thinlto-cache-dir=${CMAKE_BINARY_DIR}/lto-cache")
+  endif()
+endif()
+
 get_filename_component(NC_REPO "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/fex.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/hle.cmake")
