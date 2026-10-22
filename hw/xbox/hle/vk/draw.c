@@ -1986,8 +1986,18 @@ static VkFormat vat_format(uint8_t fmt, bool prog, unsigned *kind)
 
 /* Declaration layout of a draw (HleCmdDraw.nbind > 0): attributes by
  * location; in, ints, cmps = the program key masks. False when an
- * attribute the FF shader reads has no usable format. */
-static bool decl_attrs(const HleCmdDraw *c, bool prog, VkVertexInputAttributeDescription2EXT *a,
+ * attribute the FF shader reads has no usable format. The last one is
+ * kept: draws mostly declare what the one before did (Blinx changes its
+ * vertex input about once in 850), and building it for each was a tenth
+ * of the render thread's instructions. */
+static struct {
+    bool valid, prog, ok;
+    uint32_t nbind, attr[HLE_DRAW_ATTRS];
+    VkVertexInputAttributeDescription2EXT a[HLE_DRAW_ATTRS];
+    uint32_t na, in, ints, cmps;
+} g_decl;
+
+static bool decl_build(const HleCmdDraw *c, bool prog, VkVertexInputAttributeDescription2EXT *a,
                        uint32_t *na, uint32_t *in, uint32_t *ints, uint32_t *cmps)
 {
     *na = *in = *ints = *cmps = 0;
@@ -2015,6 +2025,26 @@ static bool decl_attrs(const HleCmdDraw *c, bool prog, VkVertexInputAttributeDes
         *cmps |= (kind == 2 ? 1u : 0) << loc;
     }
     return true;
+}
+
+static bool decl_attrs(const HleCmdDraw *c, bool prog, VkVertexInputAttributeDescription2EXT *a,
+                       uint32_t *na, uint32_t *in, uint32_t *ints, uint32_t *cmps)
+{
+    if (!g_decl.valid || g_decl.prog != prog || g_decl.nbind != c->nbind ||
+        memcmp(g_decl.attr, c->attr, sizeof(g_decl.attr))) {
+        g_decl.valid = true;
+        g_decl.prog = prog;
+        g_decl.nbind = c->nbind;
+        memcpy(g_decl.attr, c->attr, sizeof(g_decl.attr));
+        g_decl.ok = decl_build(c, prog, g_decl.a, &g_decl.na, &g_decl.in, &g_decl.ints,
+                               &g_decl.cmps);
+    }
+    memcpy(a, g_decl.a, g_decl.na * sizeof(*a));
+    *na = g_decl.na;
+    *in = g_decl.in;
+    *ints = g_decl.ints;
+    *cmps = g_decl.cmps;
+    return g_decl.ok;
 }
 
 /* Immediate-mode vertices: 8 float4 registers at locations 0..7; only the
