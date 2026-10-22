@@ -2598,6 +2598,7 @@ static struct {
     VkRect2D sc;
     HleFfPush pc;
     uint32_t cull, ff, topo, zt, zw, zop, bias_en, stn, sop[4], smask, swmask, sref;
+    uint32_t sraw[4];               /* the registers sop was translated from */
     float bias[2], bc[4];
     uint32_t nbd, nad;
     VkVertexInputBindingDescription2EXT bd[HLE_DRAW_MAX_BIND];
@@ -3352,13 +3353,18 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
         g_dr.emits[EM_DYN]++;
     }
     {
-        uint32_t so[4] = { stencil_op(s->rs[RS_STENCILFAIL]), stencil_op(s->rs[RS_STENCILPASS]),
-                           stencil_op(s->rs[RS_STENCILZFAIL]), cmp_op(s->rs[RS_STENCILFUNC]) };
-        if (!g_rec.valid || memcmp(g_rec.sop, so, sizeof(so))) {
-            memcpy(g_rec.sop, so, sizeof(so));
-            T.vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, (VkStencilOp)so[0],
-                                (VkStencilOp)so[1], (VkStencilOp)so[2], (VkCompareOp)so[3]);
-            g_dr.emits[EM_DYN]++;
+        uint32_t raw[4] = { s->rs[RS_STENCILFAIL], s->rs[RS_STENCILPASS], s->rs[RS_STENCILZFAIL],
+                            s->rs[RS_STENCILFUNC] };
+        if (!g_rec.valid || memcmp(g_rec.sraw, raw, sizeof(raw))) {
+            memcpy(g_rec.sraw, raw, sizeof(raw));
+            uint32_t so[4] = { stencil_op(raw[0]), stencil_op(raw[1]), stencil_op(raw[2]),
+                               cmp_op(raw[3]) };
+            if (!g_rec.valid || memcmp(g_rec.sop, so, sizeof(so))) {
+                memcpy(g_rec.sop, so, sizeof(so));
+                T.vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, (VkStencilOp)so[0],
+                                    (VkStencilOp)so[1], (VkStencilOp)so[2], (VkCompareOp)so[3]);
+                g_dr.emits[EM_DYN]++;
+            }
         }
     }
     if (REC_CHANGED(smask, s->rs[RS_STENCILMASK] & 0xFF)) {
