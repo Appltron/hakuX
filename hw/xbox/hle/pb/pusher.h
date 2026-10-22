@@ -55,7 +55,14 @@ typedef struct HlePbSink {
     /* Optional: before a CALL or RETURN is taken, the sink may update the
      * pusher's subroutine state (the guest wrote DMA_SUBROUTINE itself). */
     void (*branch)(void *opaque, struct HlePusher *p);
+    /* Optional: the methods run batches, by method / 4 (2048): HLE_PB_RUN_INC
+     * in an increasing packet, HLE_PB_RUN_NONINC in a non-increasing one.
+     * Others go to method without a call to run. NULL: run sees every one. */
+    const uint8_t *run_map;
 } HlePbSink;
+
+#define HLE_PB_RUN_INC    1u
+#define HLE_PB_RUN_NONINC 2u
 
 /* Guest words at physical address pa, n of them contiguous, or NULL. */
 typedef const uint32_t *(*HlePbFetch)(void *opaque, uint32_t pa, uint32_t n);

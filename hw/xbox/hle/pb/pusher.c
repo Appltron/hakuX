@@ -66,9 +66,10 @@ static int data(HlePusher *p, uint32_t put, HlePbFetch fetch, void *ctx, const H
         return HLE_PB_STALL;
     }
     int stall = HLE_PB_GO;
+    const uint8_t run_bit = p->noninc ? HLE_PB_RUN_NONINC : HLE_PB_RUN_INC;
     for (uint32_t i = 0; i < n && stall == HLE_PB_GO;) {
         uint32_t k = 0;
-        if (s->run) {
+        if (s->run && (!s->run_map || (s->run_map[(p->method >> 2) & 0x7FF] & run_bit))) {
             k = MIN(s->run(s->opaque, p->subch, p->method, p->noninc, w + i, n - i, &stall), n - i);
         }
         if (!k) {

@@ -748,16 +748,21 @@ static int count_method(void *opaque, unsigned subch, uint32_t m, uint32_t v)
     return HLE_PB_GO;
 }
 
+/* The methods count_run batches: data no method here acts on. Program and
+ * constants (0x0B00-0x0FFC) either way; inline vertices (0x1818) and
+ * indices (0x1800, 0x1808) in non-increasing packets. The rest go to
+ * count_method without a call (per word, a sixth of the decoder's work). */
+static const uint8_t k_count_runs[2048] = {
+    [0x0B00 / 4 ... 0x0FFC / 4] = HLE_PB_RUN_INC | HLE_PB_RUN_NONINC,
+    [0x1800 / 4] = HLE_PB_RUN_NONINC,
+    [0x1808 / 4] = HLE_PB_RUN_NONINC,
+    [0x1818 / 4] = HLE_PB_RUN_NONINC,
+};
+
 static uint32_t count_run(void *opaque, unsigned subch, uint32_t m, bool noninc,
                           const uint32_t *w, uint32_t n, int *stall)
 {
-    /* runs only for data no method here acts on: inline vertices, indices,
-     * constants and programs */
-    bool bulk = m >= 0x0B00 && m < 0x1000;      /* program and constants */
-    bulk |= noninc && (m == 0x1818 || m == 0x1800 || m == 0x1808);
-    if (!bulk) {
-        return 0;                               /* count_method takes it (and the request) */
-    }
+    /* only the methods of k_count_runs */
     boundary_take();
     if (!fifo_open()) {
         return 0;
@@ -775,7 +780,7 @@ static void count_branch(void *opaque, HlePusher *p)
     sub_take();
 }
 
-static const HlePbSink k_count = { NULL, count_method, count_run, count_branch };
+static const HlePbSink k_count = { NULL, count_method, count_run, count_branch, k_count_runs };
 
 /* What the GPU's registers say the push buffer is: its DMA object in
  * instance memory (class, limit, frame). False if it isn't set up yet. */
