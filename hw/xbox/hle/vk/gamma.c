@@ -57,6 +57,7 @@ static struct {
         VkImageView view;
     } dst[GM_VIEWS];
     unsigned ndst;
+    uint32_t dst_gen;                   /* the display images' generation they are views of */
 } g_gm;
 
 static VkShaderModule module(HleShaderStage st, const char *src)
@@ -194,8 +195,19 @@ static bool init(void)
     return true;
 }
 
+/* A view of display image img, kept while the display's images are the same
+ * ones: made again (a new size), a handle can repeat a destroyed image's,
+ * and the views of the old ones go (their GPU work done: the display waited
+ * for the device before it destroyed them). */
 static VkImageView dst_view(VkImage img)
 {
+    if (g_gm.dst_gen != hle_disp_gen()) {
+        for (unsigned i = 0; i < g_gm.ndst; i++) {
+            T.vkDestroyImageView(g_hvk.dev, g_gm.dst[i].view, NULL);
+        }
+        g_gm.ndst = 0;
+        g_gm.dst_gen = hle_disp_gen();
+    }
     for (unsigned i = 0; i < g_gm.ndst; i++) {
         if (g_gm.dst[i].img == img) {
             return g_gm.dst[i].view;
