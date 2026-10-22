@@ -1,0 +1,16 @@
+# Savestate changelog
+
+One entry per section version (tools/native/statelock.py).
+
+## ACI, APU, CACHE, FILE, KERN, MISC, MM, NV2A, PAGE, PBD, RAM, THRD, TIMR, USB, VM v1 (2026-10-20)
+
+- first version
+
+## FILE v2 (2026-10-21, after ba8ad66cc6)
+
+- NcFile.del: a file deleted through a handle stays until the last handle on it closes (v1 states: a file deleted while open reopens empty)
+- upgraded: v1..v1 states load
+
+## MODS v1 (2026-10-21, after 6abc1f8db4)
+
+- first version

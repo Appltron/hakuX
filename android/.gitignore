@@ -17,3 +17,6 @@ app/.cxx/
 # OS
 .DS_Store
 Thumbs.db
+
+# Gradle temp artifacts (profile-out captures handled in root .gitignore)
+app/build.gradle.kts.tmp.*

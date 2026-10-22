@@ -1,0 +1,121 @@
+package com.rfandango.haku_x
+
+import android.app.Activity
+import android.app.ActivityManager
+import android.app.ActivityOptions
+import android.content.Context
+import android.content.Intent
+import android.graphics.BitmapFactory
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
+import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.widget.ImageView
+import java.io.File
+
+/**
+ * A title launched another of its XBEs (XLaunchNewImage: Splinter Cell into
+ * each level, Morrowind's New Game): the core lives for one run, so it starts
+ * again in a new process with "relaunch", once the old one has gone (else the
+ * new activity would come up in the dying process, with its state). This
+ * activity, in the app's main process, waits for that, showing the frame the
+ * game left on screen (NativeCoreActivity saved it, heldFrame) in a black
+ * full-screen window, and starts the core with no transition: the reboot
+ * looks like the game's own loading, not like a window closing and another
+ * opening.
+ */
+class RelaunchActivity : Activity() {
+  private val handler = Handler(Looper.getMainLooper())
+  private var loading: LoadingDialog? = null
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    setContentView(ImageView(this).apply {
+      scaleType = ImageView.ScaleType.FIT_XY
+      BitmapFactory.decodeFile(heldFrame(this@RelaunchActivity).path)?.let(::setImageBitmap)
+    })
+    /* a savestate's load: its dialog, until NativeCoreActivity shows its own */
+    loading = intent.getStringExtra(NativeCoreActivity.EXTRA_LOADSTATE)?.let { LoadingDialog(this, it).also { d -> d.show() } }
+    hideSystemBars()      /* after the content: the window's decor exists */
+    val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+    val coreProcess = "$packageName:native"
+    val start = SystemClock.uptimeMillis()
+    val poll = object : Runnable {
+      override fun run() {
+        val alive = am.runningAppProcesses?.any { it.processName == coreProcess } == true
+        if (alive && SystemClock.uptimeMillis() - start < WAIT_MS) {
+          handler.postDelayed(this, 20)
+          return
+        }
+        Log.i(TAG, "relaunch: core process gone after ${SystemClock.uptimeMillis() - start} ms")
+        startCore()
+      }
+    }
+    handler.post(poll)
+  }
+
+  private fun startCore() {
+    val core = Intent(this, NativeCoreActivity::class.java)
+      .putExtra(NativeCoreActivity.EXTRA_DVD_URI, intent.getStringExtra(NativeCoreActivity.EXTRA_DVD_URI))
+      .apply {
+        /* a savestate's load, or the title's own reboot */
+        val state = intent.getStringExtra(NativeCoreActivity.EXTRA_LOADSTATE)
+        if (state != null) putExtra(NativeCoreActivity.EXTRA_LOADSTATE, state)
+        else putExtra(NativeCoreActivity.EXTRA_RELAUNCH, true)
+      }
+      .putExtra(
+        LauncherActivity.EXTRA_LAUNCHED_EXTERNALLY,
+        intent.getBooleanExtra(LauncherActivity.EXTRA_LAUNCHED_EXTERNALLY, false),
+      )
+      .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
+    startActivity(core, noTransition(this).toBundle())
+    finish()
+    noCloseTransition(this)
+  }
+
+  private fun hideSystemBars() {
+    if (Build.VERSION.SDK_INT >= 30) {
+      window.insetsController?.let {
+        it.hide(WindowInsets.Type.systemBars())
+        it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+      }
+    }
+  }
+
+  override fun onDestroy() {
+    handler.removeCallbacksAndMessages(null)
+    loading?.dismiss()
+    super.onDestroy()
+  }
+
+  companion object {
+    private const val TAG = "hakuX-library"
+    private const val WAIT_MS = 3000L
+
+    /** The frame on screen when the title rebooted, held across the core's restart. */
+    fun heldFrame(context: Context) = File(context.cacheDir, "relaunch_frame.jpg")
+
+    /** An activity start with no window animation and, on Android 13+, a splash without the icon. */
+    fun noTransition(context: Context): ActivityOptions {
+      val o = ActivityOptions.makeCustomAnimation(context, 0, 0)
+      if (Build.VERSION.SDK_INT >= 33) {
+        o.setSplashScreenStyle(android.window.SplashScreen.SPLASH_SCREEN_STYLE_SOLID_COLOR)
+      }
+      return o
+    }
+
+    /** No animation as the finishing activity goes. */
+    @Suppress("DEPRECATION")
+    fun noCloseTransition(activity: Activity) {
+      if (Build.VERSION.SDK_INT >= 34) {
+        activity.overrideActivityTransition(Activity.OVERRIDE_TRANSITION_CLOSE, 0, 0)
+      } else {
+        activity.overridePendingTransition(0, 0)
+      }
+    }
+  }
+}

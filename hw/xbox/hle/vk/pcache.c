@@ -1,0 +1,227 @@
+/*
+ * hakuX HLE GPU — on-disk shader and pipeline caches (P3 Task 13).
+ * - SPIR-V: <base>/hle_spirv/<fnv64 of the GLSL>-<stage>.spv, a header with
+ *   the source length and a second hash so a collision reads as a miss.
+ * - Pipelines: <base>/hle_pipeline_cache.bin, the VkPipelineCache blob (the
+ *   driver rejects a blob from another device or driver version), written by
+ *   a worker thread: the blob is megabytes and the write syncs to flash
+ *   (~110 ms), which on the render thread stalled a frame every 5 s. The
+ *   cache is internally synchronized: the worker reads it while the render
+ *   thread creates pipelines.
+ */
+#include "hw/xbox/hle/base.h"
+#include <pthread.h>
+#include "hw/xbox/hle/hle.h"
+
+#include "hw/xbox/hle/vk/pcache.h"
+#include "hw/xbox/hle/vk/pipeasync.h"
+#include "hw/xbox/hle/vk/vkdev.h"
+
+#define T (g_hvk.t)
+#define SPV_MAGIC   0x56505348u     /* "HSPV" */
+#define SAVE_EVERY_US (5 * G_USEC_PER_SEC)
+
+static struct {
+    VkPipelineCache cache;
+    char *dir, *blob;
+    uint64_t added, saved;          /* pipelines created / at the last write */
+    int64_t last_save;
+    uint64_t spv_hits, spv_misses;
+    HleThread th;
+    HleSem go;
+    bool started, busy, stop;       /* busy: a write in flight */
+} g_pc;
+
+static uint64_t fnv64(const void *p, size_t n, uint64_t h)
+{
+    const uint8_t *b = p;
+    for (size_t i = 0; i < n; i++) {
+        h = (h ^ b[i]) * 0x100000001b3ull;
+    }
+    return h;
+}
+
+void hle_pcache_init(void)
+{
+    const char *base = hle_host_base_path();
+    gchar *data = NULL;
+    gsize len = 0;
+    if (!hle_pipe_nocache()) {      /* else neither read nor written (pipeasync.h) */
+        g_pc.dir = g_strdup_printf("%shle_spirv", base);
+        g_pc.blob = g_strdup_printf("%shle_pipeline_cache.bin", base);
+        g_mkdir_with_parents(g_pc.dir, 0700);
+        g_file_get_contents(g_pc.blob, &data, &len, NULL);
+    }
+    VkPipelineCacheCreateInfo ci = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        .initialDataSize = data ? len : 0, .pInitialData = data };
+    if (T.vkCreatePipelineCache(g_hvk.dev, &ci, NULL, &g_pc.cache) != VK_SUCCESS && data) {
+        ci.initialDataSize = 0;     /* a blob the driver refuses: start empty */
+        ci.pInitialData = NULL;
+        T.vkCreatePipelineCache(g_hvk.dev, &ci, NULL, &g_pc.cache);
+    }
+    hle_log("hakuX-hle-pipe", "pipeline cache %s: %zu bytes", g_pc.blob ? g_pc.blob : "(none)",
+            data ? (size_t)len : 0);
+    g_free(data);
+    g_pc.last_save = g_get_monotonic_time();
+}
+
+VkPipelineCache hle_pcache_get(void)
+{
+    hle_atomic_inc(&g_pc.added);       /* the render thread and the pipeline workers */
+    return g_pc.cache;
+}
+
+static void write_blob(void)
+{
+    size_t n = 0;
+    if (!g_pc.blob ||
+        T.vkGetPipelineCacheData(g_hvk.dev, g_pc.cache, &n, NULL) != VK_SUCCESS || !n) {
+        return;
+    }
+    void *buf = g_malloc(n);
+    if (T.vkGetPipelineCacheData(g_hvk.dev, g_pc.cache, &n, buf) == VK_SUCCESS) {
+        int64_t t0 = g_get_monotonic_time();
+        g_file_set_contents(g_pc.blob, buf, n, NULL);   /* temp file + rename */
+        hle_log("hakuX-hle-pipe", "pipeline cache saved: %zu bytes in %.1f ms, spirv "
+                "hits=%llu misses=%llu", n, (g_get_monotonic_time() - t0) / 1000.0,
+                (unsigned long long)g_pc.spv_hits, (unsigned long long)g_pc.spv_misses);
+    }
+    g_free(buf);
+}
+
+static void *save_thread(void *opaque)
+{
+    for (;;) {
+        hle_sem_wait(&g_pc.go);
+        if (hle_atomic_read(&g_pc.stop)) {
+            return NULL;
+        }
+        write_blob();
+        hle_atomic_set(&g_pc.busy, false);
+    }
+}
+
+/* Render thread (swaps): a write when pipelines were added since the last
+ * one, at most every SAVE_EVERY_US, on the worker; force: now, here, after
+ * the worker is done (destroy). */
+void hle_pcache_save(bool force)
+{
+    int64_t now = g_get_monotonic_time();
+    if (!g_pc.cache || g_pc.added == g_pc.saved ||
+        (!force && now - g_pc.last_save < SAVE_EVERY_US)) {
+        return;
+    }
+    if (force) {
+        write_blob();
+    } else {
+        if (hle_atomic_read(&g_pc.busy)) {
+            return;                     /* the previous write is still going */
+        }
+        if (!g_pc.started) {
+            hle_sem_init(&g_pc.go, 0);
+            hle_thread_create(&g_pc.th, "hle.pcache", save_thread, NULL,
+                               HLE_THREAD_JOINABLE);
+            g_pc.started = true;
+        }
+        hle_atomic_set(&g_pc.busy, true);
+        hle_sem_post(&g_pc.go);
+    }
+    g_pc.saved = g_pc.added;
+    g_pc.last_save = now;
+}
+
+void hle_pcache_destroy(void)
+{
+    if (g_pc.started) {
+        hle_atomic_set(&g_pc.stop, true);
+        hle_sem_post(&g_pc.go);
+        hle_thread_join(&g_pc.th);
+        g_pc.started = false;
+    }
+    hle_pcache_save(true);
+    if (g_pc.cache) {
+        T.vkDestroyPipelineCache(g_hvk.dev, g_pc.cache, NULL);
+        g_pc.cache = VK_NULL_HANDLE;
+    }
+    g_free(g_pc.dir);
+    g_free(g_pc.blob);
+    g_pc.dir = g_pc.blob = NULL;
+}
+
+typedef struct SpvHeader {
+    uint32_t magic, src_len;
+    uint64_t check;                 /* second hash of the source */
+    uint32_t nwords, pad;
+} SpvHeader;
+
+/* src's SPIR-V from the disk cache, or NULL (*path: the file, g_free'd by the caller) */
+static uint32_t *spv_read(HleShaderStage stage, const char *src, size_t *nwords, char **path,
+                          uint64_t *check_out)
+{
+    size_t len = strlen(src);
+    uint64_t key = fnv64(src, len, 0xcbf29ce484222325ull) ^ (uint64_t)stage;
+    uint64_t check = fnv64(src, len, 0x84222325cbf29ce4ull);
+    *check_out = check;
+    *path = g_pc.dir ? g_strdup_printf("%s/%016llx-%d.spv", g_pc.dir,
+                                       (unsigned long long)key, (int)stage) : NULL;
+    gchar *data = NULL;
+    gsize n = 0;
+    if (*path && g_file_get_contents(*path, &data, &n, NULL) && n >= sizeof(SpvHeader)) {
+        SpvHeader h;
+        memcpy(&h, data, sizeof(h));
+        if (h.magic == SPV_MAGIC && h.src_len == len && h.check == check &&
+            n == sizeof(h) + 4ull * h.nwords && h.nwords) {
+            uint32_t *spv = g_malloc(4ull * h.nwords);
+            memcpy(spv, data + sizeof(h), 4ull * h.nwords);
+            g_free(data);
+            *nwords = h.nwords;
+            hle_atomic_inc(&g_pc.spv_hits);
+            return spv;
+        }
+    }
+    g_free(data);
+    return NULL;
+}
+
+uint32_t *hle_spirv_peek(HleShaderStage stage, const char *src, size_t *nwords)
+{
+    char *path;
+    uint64_t check;
+    uint32_t *spv = spv_read(stage, src, nwords, &path, &check);
+    g_free(path);
+    return spv;
+}
+
+uint32_t *hle_spirv_get(HleShaderStage stage, const char *src, size_t *nwords)
+{
+    char *path;
+    uint64_t check;
+    uint32_t *spv = spv_read(stage, src, nwords, &path, &check);
+    if (spv) {
+        g_free(path);
+        return spv;
+    }
+    size_t len = strlen(src);
+    {   /* glslang one compile at a time: the render thread, the pipeline
+         * workers and the prebuild call this (a miss is the first sight of a
+         * shader, rare once the disk cache has it) */
+        static pthread_mutex_t glslang_mu = PTHREAD_MUTEX_INITIALIZER;
+        pthread_mutex_lock(&glslang_mu);
+        spv = hle_glsl_compile(stage, src, nwords);
+        pthread_mutex_unlock(&glslang_mu);
+    }
+    hle_atomic_inc(&g_pc.spv_misses);
+    if (spv && path) {
+        SpvHeader h = { SPV_MAGIC, (uint32_t)len, check, (uint32_t)*nwords, 0 };
+        size_t total = sizeof(h) + 4 * *nwords;
+        uint8_t *out = g_malloc(total);
+        memcpy(out, &h, sizeof(h));
+        memcpy(out + sizeof(h), spv, 4 * *nwords);
+        g_file_set_contents(path, (const gchar *)out, total, NULL);
+        g_free(out);
+    }
+    g_free(path);
+    return spv;
+}
+

@@ -4,6 +4,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
   id("com.android.application")
   id("org.jetbrains.kotlin.android")
+  id("org.jetbrains.kotlin.plugin.compose")
 }
 
 val keystorePropertiesFile = rootProject.file("key.properties")
@@ -27,7 +28,7 @@ android {
 
   defaultConfig {
     applicationId = "com.rfandango.haku_x"
-    minSdk = 26
+    minSdk = 28
     targetSdk = 36
 
     versionCode = 5
@@ -36,18 +37,10 @@ android {
     ndk {
       abiFilters += listOf("arm64-v8a")
     }
+    // The native core (libhakuxcore.so, libSDL3.so) comes prebuilt in
+    // src/main/jniLibs from native/ (tools/native/app-libs.sh); the app
+    // builds no native code of its own.
 
-    externalNativeBuild {
-      cmake {
-        arguments += listOf(
-          "-DXEMU_ANDROID_BUILD_ID=3",
-          "-DXEMU_ENABLE_XISO_CONVERTER=ON",
-          "-DCMAKE_C_FLAGS_DEBUG=-O2 -g1",
-          "-DCMAKE_CXX_FLAGS_DEBUG=-O2 -g1"
-        )
-        cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
-      }
-    }
   }
 
   signingConfigs {
@@ -68,24 +61,21 @@ android {
       ndk {
         debugSymbolLevel = "NONE"
       }
-      externalNativeBuild {
-        cmake {
-          arguments += listOf(
-            "-DCMAKE_BUILD_TYPE=Release"
-          )
-        }
-      }
+      // A debuggable app is never compiled ahead of time: its Kotlin runs in
+      // ART's interpreter until the JIT picks it up. Unshrunk (28 MB of dex),
+      // the interpreter's method and field caches kept missing, and the
+      // library stuttered on fast scrolls. R8 shrinks and optimizes it as in
+      // release; names are kept (proguard-debug.pro).
+      isMinifyEnabled = true
+      proguardFiles(
+        getDefaultProguardFile("proguard-android-optimize.txt"),
+        "proguard-rules.pro",
+        "proguard-debug.pro"
+      )
     }
     release {
       resValue("string", "app_name", "hakuX")
-      externalNativeBuild {
-        cmake {
-          arguments += listOf(
-            "-DCMAKE_BUILD_TYPE=Release"
-          )
-        }
-      }
-      isMinifyEnabled = false
+      isMinifyEnabled = true
       proguardFiles(
         getDefaultProguardFile("proguard-android-optimize.txt"),
         "proguard-rules.pro"
@@ -96,12 +86,6 @@ android {
     }
   }
 
-  externalNativeBuild {
-    cmake {
-      path = file("src/main/cpp/CMakeLists.txt")
-      version = "3.30.3"
-    }
-  }
 
   packaging {
     resources.excludes += setOf(
@@ -118,16 +102,42 @@ android {
     targetCompatibility = JavaVersion.VERSION_21
   }
 
+  buildFeatures {
+    compose = true
+    buildConfig = true    // BuildConfig.DEBUG: what only debug builds show (the hitch line)
+  }
+
+  // The repository's mods/ folder as assets/mods (syncModAssets below).
+  sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/modAssets").get().asFile)
 }
+
+// The repository's mods/ folder (mods and cheats per game: mods/README.md),
+// packed as the APK's assets/mods for the library's Mods & cheats; its
+// README stays out.
+val syncModAssets = tasks.register<Sync>("syncModAssets") {
+  from(rootProject.file("../mods")) { exclude("README.md") }
+  into(layout.buildDirectory.dir("generated/modAssets/mods"))
+}
+tasks.named("preBuild") { dependsOn(syncModAssets) }
 
 dependencies {
   implementation("androidx.core:core-ktx:1.15.0")
-  implementation("androidx.appcompat:appcompat:1.7.0")
-  implementation("androidx.constraintlayout:constraintlayout:2.1.4")
   implementation("androidx.documentfile:documentfile:1.0.1")
-  implementation("io.coil-kt:coil:2.7.0")
-  implementation("com.google.android.material:material:1.14.0-alpha07")
-  implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+
+  // The UI: Jetpack Compose with Material 3.
+  implementation(platform("androidx.compose:compose-bom:2025.06.00"))
+  implementation("androidx.compose.ui:ui")
+  implementation("androidx.compose.ui:ui-tooling-preview")
+  implementation("androidx.compose.material3:material3")
+  implementation("androidx.compose.material:material-icons-core")
+  implementation("androidx.activity:activity-compose:1.10.1")
+  implementation("androidx.navigation:navigation-compose:2.9.0")
+  implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.1")
+  implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
+  debugImplementation("androidx.compose.ui:ui-tooling")
+
+  // JVM unit tests (the hard disk image formats: data/hdd)
+  testImplementation("junit:junit:4.13.2")
 }
 
 kotlin {

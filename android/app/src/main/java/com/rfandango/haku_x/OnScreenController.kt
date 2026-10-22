@@ -3,49 +3,39 @@ package com.rfandango.haku_x
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.PointF
+import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import com.rfandango.haku_x.overlay.ControlId
+import com.rfandango.haku_x.overlay.ControlKind
+import com.rfandango.haku_x.overlay.ControlPainter
+import com.rfandango.haku_x.overlay.ControlSpec
+import com.rfandango.haku_x.overlay.OverlayLayout
+import com.rfandango.haku_x.overlay.OverlayStore
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.hypot
 import kotlin.math.max
-import kotlin.math.pow
-import kotlin.math.sqrt
+import kotlin.math.roundToInt
 
+/**
+ * The on-screen controller, drawn like the original Xbox controller, each
+ * control where and as large as the user put it (OverlayStore).
+ *
+ * Playing, touches drive the controls (ControllerListener). Editing, a
+ * control is dragged to move it and resized by its corner handle or a pinch;
+ * the editor bar (OverlayEditorBar) sizes, hides and resets, and saves.
+ */
 class OnScreenController @JvmOverloads constructor(
   context: Context,
   attrs: AttributeSet? = null,
-  defStyleAttr: Int = 0
+  defStyleAttr: Int = 0,
 ) : View(context, attrs, defStyleAttr) {
-
-  private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-  private val buttons = mutableMapOf<Button, ButtonState>()
-  private val sticks = mutableMapOf<Stick, StickState>()
-
-  private var menuButtonCenter = PointF(0f, 0f)
-  private var menuButtonRadius = 0f
-  private var menuButtonPressed = false
-  private var menuButtonPointerId = -1
-  private val swipeTouchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
-  private val swipeUpGestureRecognizer = SwipeUpGestureRecognizer(
-    minDistancePx = {
-      max(height * 0.14f, swipeTouchSlop * 8f)
-    },
-    touchSlopPx = { swipeTouchSlop },
-    canStartAt = { x, y ->
-      y >= height * 0.35f && !isPointInInteractiveElement(x, y)
-    },
-    onTriggered = {
-      handleCancel()
-      onMenuButtonTapped?.invoke()
-      invalidate()
-    },
-  )
-
-  var onMenuButtonTapped: (() -> Unit)? = null
-
-  private var controllerListener: ControllerListener? = null
 
   enum class Button {
     A, B, X, Y,
@@ -53,28 +43,10 @@ class OnScreenController @JvmOverloads constructor(
     LEFT_TRIGGER, RIGHT_TRIGGER,
     START, BACK,
     LEFT_STICK_BUTTON, RIGHT_STICK_BUTTON,
-    BLACK, WHITE
+    BLACK, WHITE,
   }
 
-  enum class Stick {
-    LEFT, RIGHT
-  }
-
-  data class ButtonState(
-    val center: PointF,
-    val radius: Float,
-    var isPressed: Boolean = false,
-    var activePointerId: Int = -1
-  )
-
-  data class StickState(
-    val center: PointF,
-    val radius: Float,
-    val deadZone: Float = 0.2f,
-    var currentPos: PointF = PointF(0f, 0f),
-    var isPressed: Boolean = false,
-    var activePointerId: Int = -1
-  )
+  enum class Stick { LEFT, RIGHT }
 
   interface ControllerListener {
     fun onButtonPressed(button: Button)
@@ -84,423 +56,361 @@ class OnScreenController @JvmOverloads constructor(
     fun onStickReleased(stick: Stick)
   }
 
+  /** The jewel was tapped, or the swipe up from the lower screen. */
+  var onMenuButtonTapped: (() -> Unit)? = null
+  /** Editing: the selected control changed (null: none). */
+  var onSelectionChanged: ((ControlId?) -> Unit)? = null
+  /** Editing: a size, visibility or the opacity changed. */
+  var onLayoutChanged: (() -> Unit)? = null
+
+  private var listener: ControllerListener? = null
+  private val painter = ControlPainter()
+  private var layout: OverlayLayout? = null
+  private var defaults: OverlayLayout? = null
+  private val density = resources.displayMetrics.density
+
+  // ---------------------------------------------------------------- playing
+  private val held = HashMap<ControlId, Int>()          /* button controls: the pointer holding each */
+  private val stickPointer = intArrayOf(-1, -1)
+  private val stickPos = arrayOf(PointF(), PointF())
+  private var dpadPointer = -1
+  private var dpadBits = 0
+  private var menuPointer = -1
+  private var menuPressed = false
+
+  /** Only the jewel shows (a gamepad is attached, or the user hid the controls). */
+  var minimal = false
+    set(value) {
+      if (field != value) {
+        field = value
+        resetAllInputs()
+      }
+    }
+
+  /** Minimal, not even the jewel (a gamepad is attached): the swipe up and back open the menu. */
+  var jewelHidden = false
+    set(value) {
+      if (field != value) {
+        field = value
+        resetAllInputs()
+      }
+    }
+
+  /** Not drawn and not touchable while playing. */
+  private fun off(s: ControlSpec) = !s.visible || (minimal && (s.id != ControlId.MENU || jewelHidden))
+
+  private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+  private val swipeUp = SwipeUpGestureRecognizer(
+    minDistancePx = { max(height * 0.14f, touchSlop * 8f) },
+    touchSlopPx = { touchSlop },
+    canStartAt = { x, y -> y >= height * 0.35f && hit(x, y) == null },
+    onTriggered = {
+      releaseAll()
+      onMenuButtonTapped?.invoke()
+      invalidate()
+    },
+  )
+
+  // ---------------------------------------------------------------- editing
+  /** Editing the layout instead of playing: touches move and size the controls. */
+  var editing = false
+    set(value) {
+      if (field == value) return
+      field = value
+      resetAllInputs()
+      select(null)
+      invalidate()
+    }
+  private var selected: ControlId? = null
+  private var dragPointer = -1
+  private var dragMode = Drag.NONE
+  private val dragOffset = PointF()
+  private var pinchStart = 0f
+  private var pinchStartRadius = 0f
+
+  private enum class Drag { NONE, MOVE, RESIZE, PINCH }
+
+  private val editPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+  private val dash = DashPathEffect(floatArrayOf(10f * density, 6f * density), 0f)
+  private val box = RectF()
+
   init {
     setBackgroundColor(Color.TRANSPARENT)
   }
 
   fun setControllerListener(listener: ControllerListener) {
-    this.controllerListener = listener
+    this.listener = listener
   }
 
   override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
     super.onSizeChanged(w, h, oldw, oldh)
-    initializeControls(w, h)
+    if (w == 0 || h == 0) return
+    val current = layout
+    if (current == null || oldw == 0 || oldh == 0) {
+      layout = OverlayStore.load(context, w.toFloat(), h.toFloat())
+    } else {
+      // Keep (unsaved) edits through a size change: everything scales with the view.
+      val sx = w.toFloat() / oldw
+      val sy = h.toFloat() / oldh
+      for (s in current.controls.values) {
+        s.cx *= sx
+        s.cy *= sy
+        s.radius *= sy
+      }
+    }
+    defaults = OverlayStore.defaults(w.toFloat(), h.toFloat())
   }
 
-  private fun initializeControls(width: Int, height: Int) {
-    val w = width.toFloat()
-    val h = height.toFloat()
-    
-    // Button sizes - made D-pad smaller
-    val faceButtonRadius = w * 0.032f
-    val dpadButtonRadius = w * 0.025f
-    val shoulderButtonRadius = w * 0.034f
-    val smallButtonRadius = w * 0.022f
-    val stickRadius = w * 0.07f
-
-    // Face buttons (right side) - A, B, X, Y in diamond formation
-    val faceButtonCenterX = w * 0.88f
-    val faceButtonCenterY = h * 0.55f
-    val faceButtonSpacing = w * 0.064f
-
-    buttons[Button.A] = ButtonState(
-      PointF(faceButtonCenterX, faceButtonCenterY + faceButtonSpacing),
-      faceButtonRadius
-    )
-    buttons[Button.B] = ButtonState(
-      PointF(faceButtonCenterX + faceButtonSpacing, faceButtonCenterY),
-      faceButtonRadius
-    )
-    buttons[Button.X] = ButtonState(
-      PointF(faceButtonCenterX - faceButtonSpacing, faceButtonCenterY),
-      faceButtonRadius
-    )
-    buttons[Button.Y] = ButtonState(
-      PointF(faceButtonCenterX, faceButtonCenterY - faceButtonSpacing),
-      faceButtonRadius
-    )
-
-    // Spread the left-side controls apart: D-pad farther left, left stick farther right.
-    val leftUpperControlCenterX = w * 0.13f
-    val leftUpperControlCenterY = h * 0.45f
-    val leftLowerControlCenterX = w * 0.18f
-    val leftLowerControlCenterY = h * 0.82f
-    val dpadSpacing = w * 0.045f
-
-    buttons[Button.DPAD_UP] = ButtonState(
-      PointF(leftUpperControlCenterX, leftUpperControlCenterY - dpadSpacing),
-      dpadButtonRadius
-    )
-    buttons[Button.DPAD_DOWN] = ButtonState(
-      PointF(leftUpperControlCenterX, leftUpperControlCenterY + dpadSpacing),
-      dpadButtonRadius
-    )
-    buttons[Button.DPAD_LEFT] = ButtonState(
-      PointF(leftUpperControlCenterX - dpadSpacing, leftUpperControlCenterY),
-      dpadButtonRadius
-    )
-    buttons[Button.DPAD_RIGHT] = ButtonState(
-      PointF(leftUpperControlCenterX + dpadSpacing, leftUpperControlCenterY),
-      dpadButtonRadius
-    )
-
-    // Trigger buttons - smaller and aligned to top corners
-    val shoulderEdgeMargin = shoulderButtonRadius + (w * 0.02f)
-    buttons[Button.LEFT_TRIGGER] = ButtonState(
-      PointF(shoulderEdgeMargin, shoulderEdgeMargin),
-      shoulderButtonRadius
-    )
-    buttons[Button.RIGHT_TRIGGER] = ButtonState(
-      PointF(w - shoulderEdgeMargin, shoulderEdgeMargin),
-      shoulderButtonRadius
-    )
-
-    // Analog sticks
-    sticks[Stick.LEFT] = StickState(
-      PointF(leftLowerControlCenterX, leftLowerControlCenterY),
-      stickRadius
-    )
-    sticks[Stick.RIGHT] = StickState(
-      PointF(w * 0.62f, h * 0.82f),
-      stickRadius
-    )
-
-    // Center buttons - keep these near the lower controls and right stick.
-    val centerButtonsBaseX = (leftLowerControlCenterX + sticks[Stick.RIGHT]!!.center.x) * 0.5f
-    val centerButtonsY = h * 0.9f
-    val centerButtonSpacing = smallButtonRadius * 3.4f
-    buttons[Button.BACK] = ButtonState(
-      PointF(centerButtonsBaseX - (centerButtonSpacing * 0.5f), centerButtonsY),
-      smallButtonRadius
-    )
-    buttons[Button.START] = ButtonState(
-      PointF(centerButtonsBaseX + (centerButtonSpacing * 0.5f), centerButtonsY),
-      smallButtonRadius
-    )
-
-    // Black and White buttons - black to the right of white
-    val whiteBlackY = h * 0.8f
-    val whiteX = w * 0.75f
-    val whiteBlackSpacing = smallButtonRadius * 2.6f
-    buttons[Button.WHITE] = ButtonState(
-      PointF(whiteX, whiteBlackY),
-      smallButtonRadius
-    )
-    buttons[Button.BLACK] = ButtonState(
-      PointF(whiteX + whiteBlackSpacing, whiteBlackY),
-      smallButtonRadius
-    )
-
-    // LS/RS (thumbstick click) as dedicated buttons separate from the stick
-    // circles so they can't be triggered accidentally by joystick movement.
-    // LS follows the left stick into the lower-left cluster.
-    buttons[Button.LEFT_STICK_BUTTON] = ButtonState(
-      PointF(leftLowerControlCenterX - (w * 0.10f), leftLowerControlCenterY + (h * 0.08f)),
-      smallButtonRadius
-    )
-    buttons[Button.RIGHT_STICK_BUTTON] = ButtonState(
-      PointF(w * 0.51f, h * 0.9f),
-      smallButtonRadius
-    )
-
-    // Menu button — bottom-right corner, opens in-game menu
-    menuButtonRadius = smallButtonRadius * 1.25f
-    menuButtonCenter = PointF(
-      w - menuButtonRadius - w * 0.018f,
-      h - menuButtonRadius - h * 0.022f
-    )
-  }
+  // =========================================================== drawing
 
   override fun onDraw(canvas: Canvas) {
     super.onDraw(canvas)
-
-    // Draw analog sticks
-    sticks.forEach { (stick, state) ->
-      // Outer circle
-      paint.style = Paint.Style.STROKE
-      paint.strokeWidth = 4f
-      paint.color = Color.argb(100, 255, 255, 255)
-      canvas.drawCircle(state.center.x, state.center.y, state.radius, paint)
-
-      // Dead zone circle
-      paint.color = Color.argb(50, 255, 255, 255)
-      canvas.drawCircle(state.center.x, state.center.y, state.radius * state.deadZone, paint)
-
-      // Stick position
-      val stickX = state.center.x + state.currentPos.x * state.radius
-      val stickY = state.center.y + state.currentPos.y * state.radius
-      
-      paint.style = Paint.Style.FILL
-      paint.color = if (state.isPressed) {
-        Color.argb(200, 100, 150, 255)
+    val l = layout ?: return
+    if (editing) {
+      drawEditBackdrop(canvas)
+    }
+    for (s in l.controls.values) {
+      if (!editing && off(s)) {
+        continue
+      }
+      // Each control at its own opacity; editing, a hidden one stays faint
+      // where it is, so it can be selected and shown again.
+      val opacity = if (s.visible) s.opacity else 0.25f
+      val b = s.radius * ControlPainter.reach(s.id.kind) * 1.3f
+      canvas.saveLayerAlpha(s.cx - b, s.cy - b, s.cx + b, s.cy + b, (opacity * 255).roundToInt())
+      drawControl(canvas, s)
+      canvas.restore()
+    }
+    if (editing) {
+      val sel = selected
+      if (sel != null) {
+        drawSelection(canvas, l[sel])
       } else {
-        Color.argb(150, 200, 200, 200)
+        editPaint.style = Paint.Style.FILL
+        editPaint.textSize = 15f * density
+        editPaint.textAlign = Paint.Align.CENTER
+        editPaint.color = Color.argb(220, 255, 255, 255)
+        editPaint.setShadowLayer(3f * density, 0f, 1f * density, Color.BLACK)
+        canvas.drawText(hint, width / 2f, height * 0.42f, editPaint)
+        editPaint.clearShadowLayer()
       }
-      canvas.drawCircle(stickX, stickY, state.radius * 0.4f, paint)
     }
+  }
 
-    // Draw buttons
-    buttons.forEach { (button, state) ->
+  private val hint by lazy { context.getString(R.string.overlay_editor_hint) }
 
-      paint.style = Paint.Style.FILL
-      paint.color = when {
-        state.isPressed -> getButtonPressedColor(button)
-        else -> getButtonColor(button)
+  private fun drawControl(canvas: Canvas, s: ControlSpec) {
+    when (s.id.kind) {
+      ControlKind.STICK -> {
+        val i = stickIndex(s.id)
+        painter.draw(canvas, s, stickPointer[i] != -1, stickPos[i].x, stickPos[i].y)
       }
-      canvas.drawCircle(state.center.x, state.center.y, state.radius, paint)
-
-      // Button outline
-      paint.style = Paint.Style.STROKE
-      paint.strokeWidth = 3f
-      paint.color = Color.argb(150, 255, 255, 255)
-      canvas.drawCircle(state.center.x, state.center.y, state.radius, paint)
-
-      // Button labels
-      paint.style = Paint.Style.FILL
-      paint.color = Color.WHITE
-      paint.textSize = state.radius * 0.8f
-      paint.textAlign = Paint.Align.CENTER
-      val label = getButtonLabel(button)
-      canvas.drawText(label, state.center.x, state.center.y + state.radius * 0.3f, paint)
-    }
-
-    // Draw menu button (bottom-right corner)
-    paint.style = Paint.Style.FILL
-    paint.color = if (menuButtonPressed) {
-      Color.argb(200, 120, 120, 220)
-    } else {
-      Color.argb(120, 100, 100, 180)
-    }
-    canvas.drawCircle(menuButtonCenter.x, menuButtonCenter.y, menuButtonRadius, paint)
-
-    paint.style = Paint.Style.STROKE
-    paint.strokeWidth = 3f
-    paint.color = Color.argb(150, 255, 255, 255)
-    canvas.drawCircle(menuButtonCenter.x, menuButtonCenter.y, menuButtonRadius, paint)
-
-    paint.style = Paint.Style.FILL
-    paint.color = Color.WHITE
-    paint.textSize = menuButtonRadius * 1.0f
-    paint.textAlign = Paint.Align.CENTER
-    canvas.drawText("☰", menuButtonCenter.x, menuButtonCenter.y + menuButtonRadius * 0.35f, paint)
-  }
-
-  private fun getButtonColor(button: Button): Int {
-    return when (button) {
-      Button.A -> Color.argb(150, 100, 200, 100)
-      Button.B -> Color.argb(150, 200, 100, 100)
-      Button.X -> Color.argb(150, 100, 150, 255)
-      Button.Y -> Color.argb(150, 255, 255, 100)
-      Button.BLACK -> Color.argb(150, 50, 50, 50)
-      Button.WHITE -> Color.argb(150, 220, 220, 220)
-      else -> Color.argb(120, 150, 150, 150)
+      ControlKind.DPAD -> painter.draw(canvas, s, dpadBits != 0, dpad = dpadBits)
+      ControlKind.MENU -> painter.draw(canvas, s, menuPressed)
+      else -> painter.draw(canvas, s, s.id in held)
     }
   }
 
-  private fun getButtonPressedColor(button: Button): Int {
-    return when (button) {
-      Button.A -> Color.argb(255, 100, 255, 100)
-      Button.B -> Color.argb(255, 255, 100, 100)
-      Button.X -> Color.argb(255, 100, 150, 255)
-      Button.Y -> Color.argb(255, 255, 255, 100)
-      Button.BLACK -> Color.argb(255, 80, 80, 80)
-      Button.WHITE -> Color.argb(255, 255, 255, 255)
-      else -> Color.argb(200, 200, 200, 200)
+  private fun drawEditBackdrop(canvas: Canvas) {
+    canvas.drawColor(Color.argb(110, 0, 0, 0))
+    editPaint.style = Paint.Style.STROKE
+    editPaint.pathEffect = null
+    editPaint.strokeWidth = 1f
+    editPaint.color = Color.argb(30, 255, 255, 255)
+    val step = height / 10f
+    var x = width / 2f % step
+    while (x < width) {
+      canvas.drawLine(x, 0f, x, height.toFloat(), editPaint)
+      x += step
+    }
+    var y = step
+    while (y < height) {
+      canvas.drawLine(0f, y, width.toFloat(), y, editPaint)
+      y += step
     }
   }
 
-  private fun getButtonLabel(button: Button): String {
-    return when (button) {
-      Button.A -> "A"
-      Button.B -> "B"
-      Button.X -> "X"
-      Button.Y -> "Y"
-      Button.DPAD_UP -> "↑"
-      Button.DPAD_DOWN -> "↓"
-      Button.DPAD_LEFT -> "←"
-      Button.DPAD_RIGHT -> "→"
-      Button.LEFT_TRIGGER -> "LT"
-      Button.RIGHT_TRIGGER -> "RT"
-      Button.START -> "▶"
-      Button.BACK -> "◀"
-      Button.BLACK -> "BK"
-      Button.WHITE -> "WH"
-      Button.LEFT_STICK_BUTTON -> "LS"
-      Button.RIGHT_STICK_BUTTON -> "RS"
-    }
+  private fun drawSelection(canvas: Canvas, s: ControlSpec) {
+    val b = s.radius * ControlPainter.reach(s.id.kind)
+    box.set(s.cx - b, s.cy - b, s.cx + b, s.cy + b)
+    editPaint.style = Paint.Style.STROKE
+    editPaint.strokeWidth = 2f * density
+    editPaint.pathEffect = dash
+    editPaint.color = ACCENT
+    canvas.drawRoundRect(box, 8f * density, 8f * density, editPaint)
+    editPaint.pathEffect = null
+
+    // The resize handle on the bottom-right corner, with a diagonal double arrow.
+    val hr = handleRadius()
+    editPaint.style = Paint.Style.FILL
+    editPaint.color = ACCENT
+    canvas.drawCircle(box.right, box.bottom, hr, editPaint)
+    editPaint.style = Paint.Style.STROKE
+    editPaint.strokeWidth = 2f * density
+    editPaint.color = Color.WHITE
+    canvas.drawCircle(box.right, box.bottom, hr, editPaint)
+    val a = hr * 0.45f
+    val hx = box.right
+    val hy = box.bottom
+    canvas.drawLine(hx - a, hy - a, hx + a, hy + a, editPaint)
+    canvas.drawLine(hx + a, hy + a, hx + a * 0.1f, hy + a, editPaint)
+    canvas.drawLine(hx + a, hy + a, hx + a, hy + a * 0.1f, editPaint)
+    canvas.drawLine(hx - a, hy - a, hx - a * 0.1f, hy - a, editPaint)
+    canvas.drawLine(hx - a, hy - a, hx - a, hy - a * 0.1f, editPaint)
+
+    editPaint.style = Paint.Style.FILL
+    editPaint.textSize = 14f * density
+    editPaint.textAlign = Paint.Align.CENTER
+    editPaint.color = Color.WHITE
+    editPaint.setShadowLayer(3f * density, 0f, 1f * density, Color.BLACK)
+    val title = if (s.visible) s.id.title else "${s.id.title} (hidden)"
+    val ty = if (box.top - 8f * density > 20f * density) box.top - 8f * density else box.bottom + 22f * density
+    canvas.drawText(title, s.cx, ty, editPaint)
+    editPaint.clearShadowLayer()
   }
+
+  private fun handleRadius() = max(14f * density, height * 0.03f)
+
+  // =========================================================== touches
 
   override fun onTouchEvent(event: MotionEvent): Boolean {
-    if (swipeUpGestureRecognizer.onTouchEvent(event)) {
-      invalidate()
-      return true
+    if (layout == null) return false
+    if (editing) {
+      editTouch(event)
+    } else {
+      playTouch(event)
     }
-
-    val pointerIndex = event.actionIndex
-    val pointerId = event.getPointerId(pointerIndex)
-    val x = event.getX(pointerIndex)
-    val y = event.getY(pointerIndex)
-
-    when (event.actionMasked) {
-      MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-        handleTouchDown(x, y, pointerId)
-      }
-      MotionEvent.ACTION_MOVE -> {
-        for (i in 0 until event.pointerCount) {
-          handleTouchMove(
-            event.getX(i),
-            event.getY(i),
-            event.getPointerId(i)
-          )
-        }
-      }
-      MotionEvent.ACTION_POINTER_UP -> {
-        handleTouchUp(pointerId)
-      }
-      MotionEvent.ACTION_UP -> {
-        handleTouchUp(pointerId)
-        // Last finger lifted — release everything as a safety net in case
-        // pointer ID tracking got confused by multi-touch or system gestures.
-        handleCancel()
-      }
-      MotionEvent.ACTION_CANCEL -> {
-        handleCancel()
-      }
-    }
-
     invalidate()
     return true
   }
 
-  private fun handleTouchDown(x: Float, y: Float, pointerId: Int) {
-    // Check menu button first (UI button, not a controller input)
-    if (menuButtonPointerId == -1 && isPointInCircle(x, y, menuButtonCenter, menuButtonRadius)) {
-      menuButtonPressed = true
-      menuButtonPointerId = pointerId
+  // ---------------------------------------------------------------- playing
+
+  private fun playTouch(event: MotionEvent) {
+    if (swipeUp.onTouchEvent(event)) {
       return
     }
-
-    // Check sticks first
-    sticks.forEach { (stick, state) ->
-      if (state.activePointerId == -1 && isPointInCircle(x, y, state.center, state.radius)) {
-        state.activePointerId = pointerId
-        updateStickPosition(stick, state, x, y)
-        return
+    val index = event.actionIndex
+    val pointer = event.getPointerId(index)
+    when (event.actionMasked) {
+      MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> down(event.getX(index), event.getY(index), pointer)
+      MotionEvent.ACTION_MOVE -> for (i in 0 until event.pointerCount) {
+        move(event.getX(i), event.getY(i), event.getPointerId(i))
       }
-    }
-
-    // Check buttons
-    buttons.forEach { (button, state) ->
-      if (state.activePointerId == -1 && isPointInCircle(x, y, state.center, state.radius)) {
-        pressButton(button, state, pointerId)
-        return
+      MotionEvent.ACTION_POINTER_UP -> up(pointer)
+      MotionEvent.ACTION_UP -> {
+        up(pointer)
+        releaseAll() // the last finger: nothing can still be held
       }
+      MotionEvent.ACTION_CANCEL -> releaseAll()
     }
   }
 
-  private fun handleTouchMove(x: Float, y: Float, pointerId: Int) {
-    if (menuButtonPointerId == pointerId) {
-      menuButtonPressed = isPointInCircle(x, y, menuButtonCenter, menuButtonRadius)
-      return
-    }
-
-    sticks.forEach { (stick, state) ->
-      if (state.activePointerId == pointerId) {
-        updateStickPosition(stick, state, x, y)
-        return
+  /** The control a touch at (x, y) lands on: the nearest in reach, by the share of its reach. */
+  private fun hit(x: Float, y: Float): ControlId? {
+    val l = layout ?: return null
+    var best: ControlId? = null
+    var bestScore = Float.MAX_VALUE
+    for (s in l.controls.values) {
+      if (off(s)) continue
+      val reach = s.radius * ControlPainter.reach(s.id.kind)
+      val score = hypot(x - s.cx, y - s.cy) / reach
+      if (score <= 1f && score < bestScore) {
+        best = s.id
+        bestScore = score
       }
     }
+    return best
+  }
 
-    val activeButton = buttons.entries.firstOrNull { it.value.activePointerId == pointerId }
-    if (activeButton != null) {
-      val (button, state) = activeButton
-      if (isPointInCircle(x, y, state.center, state.radius)) {
-        return
+  private fun down(x: Float, y: Float, pointer: Int) {
+    val id = hit(x, y) ?: return
+    when (id.kind) {
+      ControlKind.MENU -> if (menuPointer == -1) {
+        menuPointer = pointer
+        menuPressed = true
       }
-      releaseButton(button, state)
-      // Only slide to a new button when this pointer was already tracking one.
-      // This prevents other pointers from stealing a just-released button in the
-      // same ACTION_MOVE batch, which would cause triggers (LT/RT) to get stuck.
-      val hoveredButton = buttons.entries.firstOrNull { (_, s) ->
-        s.activePointerId == -1 && isPointInCircle(x, y, s.center, s.radius)
+      ControlKind.STICK -> {
+        val i = stickIndex(id)
+        if (stickPointer[i] == -1) {
+          stickPointer[i] = pointer
+          moveStick(i, x, y)
+        }
       }
-      if (hoveredButton != null) {
-        val (newButton, newState) = hoveredButton
-        pressButton(newButton, newState, pointerId)
+      ControlKind.DPAD -> if (dpadPointer == -1) {
+        dpadPointer = pointer
+        moveDpad(x, y)
       }
+      else -> if (id !in held) press(id, pointer)
     }
   }
 
-  private fun handleTouchUp(pointerId: Int) {
-    // Release menu button (fire on up = tap semantics)
-    if (menuButtonPointerId == pointerId) {
-      if (menuButtonPressed) {
+  private fun move(x: Float, y: Float, pointer: Int) {
+    val l = layout ?: return
+    if (pointer == menuPointer) {
+      val s = l[ControlId.MENU]
+      menuPressed = hypot(x - s.cx, y - s.cy) <= s.radius * ControlPainter.reach(ControlKind.MENU)
+      return
+    }
+    for (i in 0..1) {
+      if (stickPointer[i] == pointer) {
+        moveStick(i, x, y)
+        return
+      }
+    }
+    if (pointer == dpadPointer) {
+      moveDpad(x, y)
+      return
+    }
+    val id = held.entries.firstOrNull { it.value == pointer }?.key ?: return
+    val s = l[id]
+    if (hypot(x - s.cx, y - s.cy) <= s.radius * ControlPainter.reach(id.kind)) {
+      return
+    }
+    // Sliding off a button releases it; onto another free one presses that (A to B and so on).
+    release(id)
+    val next = hit(x, y) ?: return
+    if (next.kind != ControlKind.STICK && next.kind != ControlKind.DPAD && next.kind != ControlKind.MENU &&
+      next !in held
+    ) {
+      press(next, pointer)
+    }
+  }
+
+  private fun up(pointer: Int) {
+    if (pointer == menuPointer) {
+      if (menuPressed) {
         onMenuButtonTapped?.invoke()
       }
-      menuButtonPressed = false
-      menuButtonPointerId = -1
+      menuPressed = false
+      menuPointer = -1
     }
-
-    // Release sticks
-    sticks.forEach { (stick, state) ->
-      if (state.activePointerId == pointerId) {
-        state.activePointerId = -1
-        state.currentPos = PointF(0f, 0f)
-        controllerListener?.onStickMoved(stick, 0f, 0f)
-        if (state.isPressed) {
-          state.isPressed = false
-          controllerListener?.onStickReleased(stick)
-        }
+    for (i in 0..1) {
+      if (stickPointer[i] == pointer) {
+        releaseStick(i)
       }
     }
-
-    // Release buttons
-    buttons.forEach { (button, state) ->
-      if (state.activePointerId == pointerId) {
-        releaseButton(button, state)
-      }
+    if (pointer == dpadPointer) {
+      dpadPointer = -1
+      setDpad(0)
     }
+    held.entries.filter { it.value == pointer }.map { it.key }.forEach(::release)
   }
 
-  private fun handleCancel() {
-    swipeUpGestureRecognizer.reset()
-
-    if (menuButtonPointerId != -1) {
-      menuButtonPressed = false
-      menuButtonPointerId = -1
+  private fun releaseAll() {
+    swipeUp.reset()
+    menuPressed = false
+    menuPointer = -1
+    for (i in 0..1) {
+      if (stickPointer[i] != -1) releaseStick(i)
     }
-
-    sticks.forEach { (stick, state) ->
-      if (state.activePointerId != -1) {
-        state.activePointerId = -1
-        state.currentPos = PointF(0f, 0f)
-        controllerListener?.onStickMoved(stick, 0f, 0f)
-        if (state.isPressed) {
-          state.isPressed = false
-          controllerListener?.onStickReleased(stick)
-        }
-      }
-    }
-
-    buttons.forEach { (button, state) ->
-      if (state.isPressed) {
-        releaseButton(button, state)
-      }
-    }
+    dpadPointer = -1
+    setDpad(0)
+    held.keys.toList().forEach(::release)
   }
 
   fun resetAllInputs() {
-    handleCancel()
+    releaseAll()
     invalidate()
   }
 
@@ -511,67 +421,295 @@ class OnScreenController @JvmOverloads constructor(
 
   override fun onVisibilityChanged(changedView: View, visibility: Int) {
     super.onVisibilityChanged(changedView, visibility)
-    if (changedView === this && visibility != View.VISIBLE) {
+    if (changedView === this && visibility != VISIBLE) {
       resetAllInputs()
     }
   }
 
-  private fun pressButton(button: Button, state: ButtonState, pointerId: Int) {
-    state.isPressed = true
-    state.activePointerId = pointerId
-    controllerListener?.onButtonPressed(button)
+  private fun press(id: ControlId, pointer: Int) {
+    held[id] = pointer
+    buttonOf(id)?.let { listener?.onButtonPressed(it) }
   }
 
-  private fun releaseButton(button: Button, state: ButtonState) {
-    state.isPressed = false
-    state.activePointerId = -1
-    controllerListener?.onButtonReleased(button)
-  }
-
-  private fun updateStickPosition(stick: Stick, state: StickState, x: Float, y: Float) {
-    val dx = x - state.center.x
-    val dy = y - state.center.y
-    val distance = sqrt(dx.pow(2) + dy.pow(2))
-
-    if (distance > state.radius) {
-      // Clamp to circle boundary
-      state.currentPos.x = (dx / distance)
-      state.currentPos.y = (dy / distance)
-    } else {
-      // Normalize to -1..1 range
-      state.currentPos.x = dx / state.radius
-      state.currentPos.y = dy / state.radius
+  private fun release(id: ControlId) {
+    if (held.remove(id) != null) {
+      buttonOf(id)?.let { listener?.onButtonReleased(it) }
     }
-
-    // Apply dead zone
-    val magnitude = sqrt(state.currentPos.x.pow(2) + state.currentPos.y.pow(2))
-    if (magnitude < state.deadZone) {
-      state.currentPos.x = 0f
-      state.currentPos.y = 0f
-    }
-
-    controllerListener?.onStickMoved(stick, state.currentPos.x, state.currentPos.y)
   }
 
-  private fun isPointInCircle(x: Float, y: Float, center: PointF, radius: Float): Boolean {
-    val dx = x - center.x
-    val dy = y - center.y
-    return sqrt(dx.pow(2) + dy.pow(2)) <= radius
+  private fun moveStick(i: Int, x: Float, y: Float) {
+    val s = layout?.get(if (i == 0) ControlId.LEFT_STICK else ControlId.RIGHT_STICK) ?: return
+    var dx = (x - s.cx) / s.radius
+    var dy = (y - s.cy) / s.radius
+    val m = hypot(dx, dy)
+    if (m > 1f) {
+      dx /= m
+      dy /= m
+    }
+    if (m < STICK_DEAD_ZONE) {
+      dx = 0f
+      dy = 0f
+    }
+    stickPos[i].set(dx, dy)
+    listener?.onStickMoved(if (i == 0) Stick.LEFT else Stick.RIGHT, dx, dy)
   }
 
-  private fun isPointInInteractiveElement(x: Float, y: Float): Boolean {
-    if (isPointInCircle(x, y, menuButtonCenter, menuButtonRadius)) {
-      return true
-    }
-
-    if (sticks.values.any { isPointInCircle(x, y, it.center, it.radius) }) {
-      return true
-    }
-
-    return buttons.values.any { isPointInCircle(x, y, it.center, it.radius) }
+  private fun releaseStick(i: Int) {
+    stickPointer[i] = -1
+    stickPos[i].set(0f, 0f)
+    listener?.onStickMoved(if (i == 0) Stick.LEFT else Stick.RIGHT, 0f, 0f)
   }
 
-  fun setVisibility(visible: Boolean) {
-    visibility = if (visible) View.VISIBLE else View.GONE
+  /* Eight ways: 45-degree sectors around the axes; the middle is neutral. */
+  private fun moveDpad(x: Float, y: Float) {
+    val s = layout?.get(ControlId.DPAD) ?: return
+    val dx = x - s.cx
+    val dy = y - s.cy
+    var bits = 0
+    if (hypot(dx, dy) > s.radius * 0.22f) {
+      val deg = Math.toDegrees(atan2(dy, dx).toDouble()).toFloat() // 0 right, 90 down
+      val sector = (((deg + 360f + 22.5f) % 360f) / 45f).toInt()
+      bits = when (sector) {
+        0 -> ControlPainter.DPAD_RIGHT
+        1 -> ControlPainter.DPAD_RIGHT or ControlPainter.DPAD_DOWN
+        2 -> ControlPainter.DPAD_DOWN
+        3 -> ControlPainter.DPAD_DOWN or ControlPainter.DPAD_LEFT
+        4 -> ControlPainter.DPAD_LEFT
+        5 -> ControlPainter.DPAD_LEFT or ControlPainter.DPAD_UP
+        6 -> ControlPainter.DPAD_UP
+        else -> ControlPainter.DPAD_UP or ControlPainter.DPAD_RIGHT
+      }
+    }
+    setDpad(bits)
+  }
+
+  private fun setDpad(bits: Int) {
+    val changed = bits xor dpadBits
+    if (changed == 0) return
+    for ((bit, button) in DPAD_BUTTONS) {
+      if (changed and bit != 0) {
+        if (bits and bit != 0) listener?.onButtonPressed(button) else listener?.onButtonReleased(button)
+      }
+    }
+    dpadBits = bits
+  }
+
+  private fun stickIndex(id: ControlId) = if (id == ControlId.LEFT_STICK) 0 else 1
+
+  private fun buttonOf(id: ControlId): Button? = when (id) {
+    ControlId.A -> Button.A
+    ControlId.B -> Button.B
+    ControlId.X -> Button.X
+    ControlId.Y -> Button.Y
+    ControlId.WHITE -> Button.WHITE
+    ControlId.BLACK -> Button.BLACK
+    ControlId.BACK -> Button.BACK
+    ControlId.START -> Button.START
+    ControlId.LEFT_TRIGGER -> Button.LEFT_TRIGGER
+    ControlId.RIGHT_TRIGGER -> Button.RIGHT_TRIGGER
+    ControlId.LEFT_STICK_CLICK -> Button.LEFT_STICK_BUTTON
+    ControlId.RIGHT_STICK_CLICK -> Button.RIGHT_STICK_BUTTON
+    else -> null
+  }
+
+  // ---------------------------------------------------------------- editing
+
+  private fun editTouch(event: MotionEvent) {
+    val l = layout ?: return
+    val index = event.actionIndex
+    when (event.actionMasked) {
+      MotionEvent.ACTION_DOWN -> {
+        val x = event.getX(index)
+        val y = event.getY(index)
+        dragPointer = event.getPointerId(index)
+        val sel = selected
+        if (sel != null && onHandle(l[sel], x, y)) {
+          dragMode = Drag.RESIZE
+          return
+        }
+        val id = editHit(x, y)
+        select(id)
+        if (id != null) {
+          dragMode = Drag.MOVE
+          dragOffset.set(l[id].cx - x, l[id].cy - y)
+        } else {
+          dragMode = Drag.NONE
+        }
+      }
+      MotionEvent.ACTION_POINTER_DOWN -> {
+        val sel = selected ?: return
+        if (event.pointerCount == 2) {
+          pinchStart = hypot(event.getX(0) - event.getX(1), event.getY(0) - event.getY(1))
+          pinchStartRadius = l[sel].radius
+          dragMode = Drag.PINCH
+        }
+      }
+      MotionEvent.ACTION_MOVE -> {
+        val sel = selected ?: return
+        val s = l[sel]
+        when (dragMode) {
+          Drag.MOVE -> {
+            val i = event.findPointerIndex(dragPointer)
+            if (i < 0) return
+            s.cx = (event.getX(i) + dragOffset.x).coerceIn(0f, width.toFloat())
+            s.cy = (event.getY(i) + dragOffset.y).coerceIn(0f, height.toFloat())
+            onLayoutChanged?.invoke()
+          }
+          Drag.RESIZE -> {
+            val i = event.findPointerIndex(dragPointer)
+            if (i < 0) return
+            val b = max(abs(event.getX(i) - s.cx), abs(event.getY(i) - s.cy))
+            setRadius(s, b / ControlPainter.reach(s.id.kind))
+          }
+          Drag.PINCH -> if (event.pointerCount >= 2 && pinchStart > 0f) {
+            val d = hypot(event.getX(0) - event.getX(1), event.getY(0) - event.getY(1))
+            setRadius(s, pinchStartRadius * d / pinchStart)
+          }
+          Drag.NONE -> {}
+        }
+      }
+      MotionEvent.ACTION_POINTER_UP -> if (dragMode == Drag.PINCH) {
+        dragMode = Drag.NONE
+      }
+      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+        dragMode = Drag.NONE
+        dragPointer = -1
+      }
+    }
+  }
+
+  /* Editing reaches hidden controls too, so they can be shown again. */
+  private fun editHit(x: Float, y: Float): ControlId? {
+    val l = layout ?: return null
+    var best: ControlId? = null
+    var bestScore = Float.MAX_VALUE
+    for (s in l.controls.values) {
+      val reach = s.radius * ControlPainter.reach(s.id.kind)
+      val score = max(abs(x - s.cx), abs(y - s.cy)) / reach
+      if (score <= 1f && score < bestScore) {
+        best = s.id
+        bestScore = score
+      }
+    }
+    return best
+  }
+
+  private fun onHandle(s: ControlSpec, x: Float, y: Float): Boolean {
+    val b = s.radius * ControlPainter.reach(s.id.kind)
+    return hypot(x - (s.cx + b), y - (s.cy + b)) <= handleRadius() * 1.6f
+  }
+
+  private fun setRadius(s: ControlSpec, r: Float) {
+    s.radius = r.coerceIn(OverlayStore.minRadius(height.toFloat()), OverlayStore.maxRadius(height.toFloat()))
+    onLayoutChanged?.invoke()
+  }
+
+  private fun select(id: ControlId?) {
+    if (selected != id) {
+      selected = id
+      onSelectionChanged?.invoke(id)
+    }
+  }
+
+  /** The control being edited, or null. */
+  fun selectedControl(): ControlId? = selected
+
+  /**
+   * The selected control's size against its default, in percent; none
+   * selected, every control's if they share one, else null (they differ).
+   */
+  fun scalePercent(): Int? {
+    val l = layout ?: return null
+    val d = defaults ?: return null
+    fun percent(id: ControlId) = (l[id].radius / d[id].radius * 100f).roundToInt()
+    val id = selected
+    if (id != null) {
+      return percent(id)
+    }
+    return l.controls.keys.map(::percent).distinct().singleOrNull()
+  }
+
+  fun isSelectedVisible(): Boolean = selected?.let { layout?.get(it)?.visible } ?: true
+
+  /** Grows or shrinks the selected control (none selected: every control, each in place). */
+  fun resize(factor: Float) {
+    val l = layout ?: return
+    val targets = selected?.let { listOf(l[it]) } ?: l.controls.values
+    for (s in targets) {
+      setRadius(s, s.radius * factor)
+    }
+    invalidate()
+  }
+
+  /** Hides the selected control, or shows it again (the jewel always stays: it opens the menu). */
+  fun toggleSelectedVisible() {
+    val l = layout ?: return
+    val id = selected ?: return
+    if (id == ControlId.MENU) return
+    l[id].visible = !l[id].visible
+    onLayoutChanged?.invoke()
+    invalidate()
+  }
+
+  /**
+   * The selected control's opacity in percent; none selected, every
+   * control's if they share one, else null (they differ).
+   */
+  fun opacityPercent(): Int? {
+    val l = layout ?: return null
+    val id = selected
+    if (id != null) {
+      return (l[id].opacity * 100f).roundToInt()
+    }
+    val all = l.controls.values.map { (it.opacity * 100f).roundToInt() }.distinct()
+    return all.singleOrNull()
+  }
+
+  /** Makes the selected control (none selected: every control) more or less see-through. */
+  fun changeOpacity(delta: Float) {
+    val l = layout ?: return
+    val targets = selected?.let { listOf(l[it]) } ?: l.controls.values
+    for (s in targets) {
+      // In whole steps, so the controls changed together stay equal.
+      val v = ((s.opacity + delta) * 10f).roundToInt() / 10f
+      s.opacity = v.coerceIn(OverlayStore.MIN_OPACITY, 1f)
+    }
+    onLayoutChanged?.invoke()
+    invalidate()
+  }
+
+  /** Keeps the layout for the next game and the next edit. */
+  fun saveLayout() {
+    val l = layout ?: return
+    OverlayStore.save(context, l, width.toFloat(), height.toFloat())
+  }
+
+  /** The default layout (kept once saved). */
+  fun resetLayout() {
+    if (width == 0 || height == 0) return
+    layout = OverlayStore.defaults(width.toFloat(), height.toFloat())
+    select(null)
+    onLayoutChanged?.invoke()
+    invalidate()
+  }
+
+  /** Drops unsaved edits. */
+  fun reloadLayout() {
+    if (width == 0 || height == 0) return
+    layout = OverlayStore.load(context, width.toFloat(), height.toFloat())
+    select(null)
+    onLayoutChanged?.invoke()
+    invalidate()
+  }
+
+  private companion object {
+    const val STICK_DEAD_ZONE = 0.15f
+    val ACCENT = 0xFF8BC34A.toInt()
+    val DPAD_BUTTONS = listOf(
+      ControlPainter.DPAD_UP to Button.DPAD_UP,
+      ControlPainter.DPAD_DOWN to Button.DPAD_DOWN,
+      ControlPainter.DPAD_LEFT to Button.DPAD_LEFT,
+      ControlPainter.DPAD_RIGHT to Button.DPAD_RIGHT,
+    )
   }
 }

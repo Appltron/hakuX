@@ -1,0 +1,13 @@
+name: 60 fps
+description: Lifts the 30 fps cap in gameplay: up to 60 frames a second, the game at its normal speed (its logic still updates 30 times a second).
+author: hakuX
+
+# Halo 2's frame limiter (0x12B0E0) waits N vblanks a frame: N is the video
+# settings' interval mode (1, as in the menus), but at least 2 while a game
+# runs. Without that floor a game frame is one vblank. The frame's time step
+# is N / the refresh rate, so the game time keeps its 30 ticks a second (a
+# tick every other frame). The tick rate itself stays: 60 ticks (the game
+# options' rate, read at 0x1465E1 and 0x146999 / 0x1469D3) made skipping a
+# cutscene revert to the level's start.
+[default.xbe]
+0x0012B195: 7F 04 -> EB 04

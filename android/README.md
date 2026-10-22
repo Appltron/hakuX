@@ -1,39 +1,65 @@
-# xemu Android bootstrap
+# Building hakuX
 
-This directory mirrors Super3's Android setup (AGP, NDK, SDK levels) and wires
-up SDL2 for an Android-native entry point. It currently builds a minimal SDL2
-bootstrap (see `app/src/main/cpp/xemu_android.cpp`) that opens an ES context and
-runs an event loop. The xemu core is not yet wired.
+The app (this directory) builds no native code itself: it packs the native
+core's libraries from `app/src/main/jniLibs`. Build the core first, copy its
+libraries in, then build the APK.
 
-## Toolchain expectations
-- Android SDK 36
-- Build Tools 36.1.0
-- NDK r29+ (configured to 29.0.14206865 in Gradle)
-- CMake 3.30.3
+## Toolchain
+
+- Android SDK 36, Build Tools 36.1.0
+- NDK 29.0.14206865
+- CMake 3.20 or later, Ninja
 - JDK 21
-- Rust toolchain (`cargo`) for ISO->XISO converter
-  - On Windows, this project uses `stable-x86_64-pc-windows-gnu` (to avoid MSVC `link.exe`)
-  - Install once:
-    - `rustup toolchain install stable-x86_64-pc-windows-gnu`
-    - `rustup target add aarch64-linux-android --toolchain stable-x86_64-pc-windows-gnu`
 
-If Rust is not available, configure CMake with `-DXEMU_ENABLE_XISO_CONVERTER=OFF`.
+## Sources outside the repository
 
-## Build
-From this directory:
+- The FEX fork, branch `haku` (CMake `HAKUX_FEX_DIR`).
+- The core's third-party sources (CMake `NC_DEPS`):
+
+| Path in `NC_DEPS` | Revision |
+|---|---|
+| `volk` | 1.4.304 |
+| `glslang` | 16.1.0 |
+| `spirv_reflect` | vulkan-sdk-1.4.328.0 |
+| `vma` | v3.3.0 |
+| `SDL3` | release-3.4.18 |
+| `adrenotools` | 8fae8ce |
+| `root/subprojects/nv2a_vsh_cpu` | 561fe80 |
+
+## Steps
+
+From the repository root:
 
 ```
+cmake -S native -B build/native/core -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=<ndk>/build/cmake/android.toolchain.cmake \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 -DCMAKE_BUILD_TYPE=Release \
+  -DHAKUX_FEX_DIR=<fex> -DNC_DEPS=<native-deps>
+ninja -C build/native/core hakuxcore
+bash tools/native/app-libs.sh
+cd android
 ./gradlew assembleDebug
 ```
 
-## SDL2
-SDL2 is fetched via CMake (default `release-2.32.10`). To use a local checkout:
+`app-libs.sh` copies the core, SDL3 and adrenotools' hook libraries into
+`app/src/main/jniLibs`, stripped. Run it again after each core build: the
+APK packs whatever is there.
+
+A release build (`assembleRelease`) is signed with the keystore that
+`key.properties` names (`storeFile`, `storePassword`, `keyAlias`,
+`keyPassword`).
+
+## Host tests
+
+The HLE layer's pure modules have host tests (any C compiler with CMake):
 
 ```
-./gradlew assembleDebug -Pandroid.experimental.cmake.arguments=-DSDL2_LOCAL_DIR=/path/to/SDL
+cmake -S tests/hle -B build/hle-tests -G Ninja
+ninja -C build/hle-tests
+cd build/hle-tests && ctest
 ```
 
-## Core integration note
-Mainline xemu moved to SDL3 on 2026-01-21. The last SDL2-based tag is `v0.8.133`.
-If you plan to wire the core into Android with SDL2, start from that tag or
-cherry-pick the SDL2-based frontend changes.
+## Debug builds
+
+Debug builds also carry the Khronos validation layer, which Android loads
+on request (see [app/src/debug/jniLibs/arm64-v8a/README.md](app/src/debug/jniLibs/arm64-v8a/README.md)).
