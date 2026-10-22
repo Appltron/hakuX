@@ -36,6 +36,11 @@ void nc_present_stats(float *fps, float *avg_ms, float *last_ms);
 /* A title frame has been on screen (any thread). */
 bool nc_present_shown(void);
 
+/* vklayer.c — debug.hakux.vkvalidation=1: the Khronos validation layer in
+ * front of the custom driver, its vkGetInstanceProcAddr returned in place of
+ * the driver's (drv_gipa as it is otherwise, or without the layer). */
+void *nc_vk_layers(void *drv_gipa);
+
 /* vsync.c — the panel's vsyncs to the emulated display's vblank clock. */
 void nc_vsync_start(void);
 

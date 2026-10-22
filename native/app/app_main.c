@@ -580,7 +580,7 @@ EXPORT int SDL_main(int argc, char *argv[])
                                                      NULL);
                 void *gipa = h ? dlsym(h, "vkGetInstanceProcAddr") : NULL;
                 if (gipa) {
-                    nc_hle_set_vk_loader(gipa);
+                    nc_hle_set_vk_loader(nc_vk_layers(gipa));
                 }
                 nc_log("hakuX-app", "Vulkan driver %s from %s: %s", lib, spec,
                        gipa ? "loaded" : "failed, the system driver it is");

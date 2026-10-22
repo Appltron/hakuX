@@ -30,6 +30,7 @@ add_library(hakuxcore SHARED
   "${CMAKE_CURRENT_SOURCE_DIR}/app/app_main.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/present.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/vsync.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/app/vklayer.c"
 )
 target_link_libraries(hakuxcore PRIVATE hakux_native hakux_hle SDL3::SDL3-shared android log)
 if(TARGET adrenotools)
