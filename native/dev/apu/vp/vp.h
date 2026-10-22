@@ -59,6 +59,14 @@ typedef struct MCPXAPUVoiceFilter {
      *   transition. */
     bool cb_skip_decode;
     bool muted_prev;
+    /* The ADPCM block decoded last (voice_get_samples): its bytes as read
+     * and its samples. A call that reads the same bytes takes the samples:
+     * each GP frame's call decoded its first block again (a 64-sample block
+     * spans two 32-sample frames). Not saved: a load starts it empty. */
+    uint32_t adpcm_raw[36 * 2 / 4];
+    int16_t adpcm_pcm[65 * 2];
+    uint32_t adpcm_raw_len;     /* 0: none */
+    uint8_t adpcm_channels;
 } MCPXAPUVoiceFilter;
 
 typedef struct VoiceWorkItem {

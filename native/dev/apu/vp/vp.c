@@ -1252,7 +1252,8 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
 
     int adpcm_block_index = -1;
     uint32_t adpcm_block[36*2/4];
-    int16_t adpcm_decoded[65*2]; // FIXME: Move out of here
+    MCPXAPUVoiceFilter *const vf = &d->vp.filters[v];
+    const int16_t *adpcm_decoded = vf->adpcm_pcm;
 
     // FIXME: Only update if necessary
     struct McpxApuDebugVoice *dbg = &g_dbg.vp.v[v];
@@ -1429,8 +1430,16 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
                         linear_addr += 4;
                     }
                 }
-                adpcm_decode_block(adpcm_decoded, (uint8_t *)adpcm_block,
-                                   block_size, channels);
+                /* the block this voice decoded last, byte for byte: its
+                 * samples are still there */
+                if (vf->adpcm_raw_len != block_size || vf->adpcm_channels != channels ||
+                    memcmp(vf->adpcm_raw, adpcm_block, block_size)) {
+                    adpcm_decode_block(vf->adpcm_pcm, (uint8_t *)adpcm_block,
+                                       block_size, channels);
+                    memcpy(vf->adpcm_raw, adpcm_block, block_size);
+                    vf->adpcm_raw_len = block_size;
+                    vf->adpcm_channels = channels;
+                }
                 adpcm_block_index = block_index;
             }
 
