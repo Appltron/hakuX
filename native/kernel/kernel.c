@@ -143,6 +143,46 @@ static void install_fast_paths(NcKernel *k, uint8_t *km)
         0x83, 0xE8, 0x20,                         /* sub eax, 0x20              */
         0xC2, 0x04, 0x00,                         /* done: ret 4                */
     };
+    /* The IRQL is the KPCR's byte at fs:[0x24], which the kernel reads there
+     * too: raising it and reading it need no kernel (a guest spun on
+     * KfRaiseIrql ~50k times a second, each a kernel entry). Lowering enters
+     * the kernel only for what that may let run: queued DPCs (lowering below
+     * DISPATCH_LEVEL with fs:[NC_KPCR_DPC_PENDING] set) or interrupts held
+     * above DISPATCH_LEVEL (lowering from there). KIRQL in CL (fastcall). */
+    static const uint8_t lower_irql[] = {
+        0x64, 0x80, 0x3D, 0x24, 0x00, 0x00, 0x00, 0x02, /* cmp byte fs:[0x24], 2 */
+        0x77, 0x17,                               /* ja kernel                  */
+        0x80, 0xF9, 0x02,                         /* cmp cl, 2                  */
+        0x73, 0x0A,                               /* jae set                    */
+        0x64, 0x80, 0x3D, (uint8_t)NC_KPCR_DPC_PENDING, (uint8_t)(NC_KPCR_DPC_PENDING >> 8),
+        0x00, 0x00, 0x00,                         /* cmp byte fs:[DPC_PENDING], 0 */
+        0x75, 0x08,                               /* jne kernel                 */
+        0x64, 0x88, 0x0D, 0x24, 0x00, 0x00, 0x00, /* set: mov fs:[0x24], cl     */
+        0xC3,                                     /* ret                        */
+    };
+    static const uint8_t raise_irql[] = {
+        0x64, 0x0F, 0xB6, 0x05, 0x24, 0x00, 0x00, 0x00, /* movzx eax, byte fs:[0x24] */
+        0x64, 0x88, 0x0D, 0x24, 0x00, 0x00, 0x00, /* mov fs:[0x24], cl          */
+        0xC3,                                     /* ret                        */
+    };
+    static const uint8_t raise_dpc[] = {
+        0x64, 0x0F, 0xB6, 0x05, 0x24, 0x00, 0x00, 0x00, /* movzx eax, byte fs:[0x24] */
+        0x64, 0xC6, 0x05, 0x24, 0x00, 0x00, 0x00, 0x02, /* mov byte fs:[0x24], 2 */
+        0xC3,                                     /* ret                        */
+    };
+    static const uint8_t raise_synch[] = {
+        0x64, 0x0F, 0xB6, 0x05, 0x24, 0x00, 0x00, 0x00, /* movzx eax, byte fs:[0x24] */
+        0x64, 0xC6, 0x05, 0x24, 0x00, 0x00, 0x00, 0x1C, /* mov byte fs:[0x24], 28 */
+        0xC3,                                     /* ret                        */
+    };
+    static const uint8_t get_irql[] = {
+        0x64, 0x0F, 0xB6, 0x05, 0x24, 0x00, 0x00, 0x00, /* movzx eax, byte fs:[0x24] */
+        0xC3,                                     /* ret                        */
+    };
+    static const uint8_t get_thread[] = {
+        0x64, 0xA1, 0x28, 0x00, 0x00, 0x00,       /* mov eax, fs:[0x28]         */
+        0xC3,                                     /* ret                        */
+    };
     static const struct {
         const char *name;
         const uint8_t *code;
@@ -150,7 +190,13 @@ static void install_fast_paths(NcKernel *k, uint8_t *km)
     } fast[] = {{"RtlEnterCriticalSection", enter, sizeof(enter)},
                 {"RtlLeaveCriticalSection", leave, sizeof(leave)},
                 {"RtlLowerChar", lower, sizeof(lower)},
-                {"RtlUpperChar", upper, sizeof(upper)}};
+                {"RtlUpperChar", upper, sizeof(upper)},
+                {"KfLowerIrql", lower_irql, sizeof(lower_irql)},
+                {"KfRaiseIrql", raise_irql, sizeof(raise_irql)},
+                {"KeRaiseIrqlToDpcLevel", raise_dpc, sizeof(raise_dpc)},
+                {"KeRaiseIrqlToSynchLevel", raise_synch, sizeof(raise_synch)},
+                {"KeGetCurrentIrql", get_irql, sizeof(get_irql)},
+                {"KeGetCurrentThread", get_thread, sizeof(get_thread)}};
     k->code_next = NC_KERNEL_VA + K_FAST;
     if (getenv("NC_NO_FAST")) { /* dev switch: every call enters the kernel */
         return;

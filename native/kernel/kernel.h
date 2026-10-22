@@ -27,6 +27,9 @@ extern "C" {
 #define NC_KERNEL_PA     0x00010000u
 #define NC_KERNEL_SIZE   0x00040000u
 #define NC_KCALL_VECTOR  0x3Fu
+/* In the KPCR's page, past its fields (guest code reads it at fs:): 1 while
+ * DPCs are queued (timer.c), for the guest-code KfLowerIrql (kernel.c). */
+#define NC_KPCR_DPC_PENDING 0x800u
 #define NC_KORDINAL_MAX  512u
 #define NC_KORDINAL_THREAD_RETURN 0x3FFu  /* a thread's start routine returned */
 #define NC_KORDINAL_DPC_RETURN    0x3FEu  /* a DPC routine returned */
@@ -465,6 +468,8 @@ uint64_t nc_timer_poll(NcKernel *k, bool *fired);
 /* Queues a DPC with its system arguments; false if it was already queued. */
 bool nc_dpc_queue(NcKernel *k, uint32_t dpc, uint32_t arg1, uint32_t arg2);
 bool nc_dpc_pending(void);
+/* The queue's state where guest code reads it (NC_KPCR_DPC_PENDING). */
+void nc_dpc_sync(NcKernel *k);
 /* Readies the DPC thread for the next queued DPC (scheduler, below DISPATCH_LEVEL). */
 void nc_dpc_dispatch(NcKernel *k);
 /* A DPC routine returned to the stub. */

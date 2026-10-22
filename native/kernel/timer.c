@@ -87,6 +87,14 @@ static void next_due(NcKernel *k)
 
 /* ----------------------------------------------------------------- DPCs */
 
+/* Whether DPCs are queued, where the guest-code KfLowerIrql reads it
+ * (fs:NC_KPCR_DPC_PENDING): it enters the kernel only then. Kept with the
+ * queue, on the guest CPU's thread. */
+void nc_dpc_sync(NcKernel *k)
+{
+    *(uint8_t *)nc_vm_host(k->vm, k->kpcr_va + NC_KPCR_DPC_PENDING) = g_ndpcs != 0;
+}
+
 bool nc_dpc_queue(NcKernel *k, uint32_t dpc, uint32_t arg1, uint32_t arg2)
 {
     uint8_t *d = nc_vm_host(k->vm, dpc);
@@ -99,6 +107,7 @@ bool nc_dpc_queue(NcKernel *k, uint32_t dpc, uint32_t arg1, uint32_t arg2)
     nc_vm_wr32(k->vm, dpc + DPC_ARG2, arg2);
     g_dpc_t[(g_dpc_head + g_ndpcs) % MAX_DPCS] = nc_ke_now_ns();
     g_dpcs[(g_dpc_head + g_ndpcs++) % MAX_DPCS] = dpc;
+    nc_dpc_sync(k);
     if (*irql(k) < DISPATCH_LEVEL) {
         k->resched = true;
     }
@@ -119,6 +128,7 @@ static bool dpc_unqueue(NcKernel *k, uint32_t dpc)
                 g_dpc_t[(g_dpc_head + j) % MAX_DPCS] = g_dpc_t[(g_dpc_head + j + 1) % MAX_DPCS];
             }
             g_ndpcs--;
+            nc_dpc_sync(k);
             ((uint8_t *)nc_vm_host(k->vm, dpc))[DPC_INSERTED] = 0;
             return true;
         }
@@ -159,6 +169,7 @@ void nc_dpc_dispatch(NcKernel *k)
     g_dpc_run.refused_dpc = g_dpc_run.refused_irql = 0;
     g_dpc_head = (g_dpc_head + 1) % MAX_DPCS;
     g_ndpcs--;
+    nc_dpc_sync(k);
     ((uint8_t *)nc_vm_host(k->vm, dpc))[DPC_INSERTED] = 0;
 
     NcThread *t = k->dpc_thread;
