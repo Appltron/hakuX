@@ -26,7 +26,6 @@
 #include "hw/xbox/hle/vk/guest_ram.h"
 
 #define T (g_hvk.t)
-#define HLE_FRAMES 3
 
 typedef struct HleFrame {
     VkCommandPool pool;

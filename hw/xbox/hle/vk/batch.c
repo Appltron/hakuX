@@ -26,10 +26,11 @@
 
 void hle_draw_ibuf_lost(void);
 
-/* Indices per frame slot (4 MiB each): a run that would not fit is recorded
- * as it stands and a new one starts. */
+/* Indices per frame slot (4 MiB each, one slot per command buffer in
+ * flight): a run that would not fit is recorded as it stands and a new one
+ * starts. */
 #define SLOT_INDICES (1u << 20)
-#define SLOTS        8u
+#define SLOTS        HLE_FRAMES
 #define RESTART      0xFFFFFFFFu
 
 static struct VolkDeviceTable R;    /* the real entry points */

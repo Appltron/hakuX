@@ -12,7 +12,7 @@
 #include "hw/xbox/hle/vk/back_int.h"
 
 #define T (g_hvk.t)
-#define ZR_SLOTS    3                   /* >= frames in flight (back.c HLE_FRAMES) */
+#define ZR_SLOTS    HLE_FRAMES          /* one per command buffer in flight */
 #define ZR_PER_SLOT 16                  /* conversions a recording */
 
 static const char k_vs[] =

@@ -8,6 +8,11 @@
 #include <volk.h>
 #include <vulkan/vulkan_android.h>
 
+/* Command buffers in flight (back.c's ring, one recording each): a slot's
+ * recording starts once its previous submission has completed, so the
+ * per-slot resources (batch.c's indices, gamma.c, zread.c) hold one each. */
+#define HLE_FRAMES 3
+
 /* VK_KHR_dynamic_rendering_local_read (Vulkan 1.4) for headers older than it
  * (the NDK's): what HleCaps.fbfetch uses */
 #ifndef VK_KHR_dynamic_rendering_local_read

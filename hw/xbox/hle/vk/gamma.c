@@ -10,7 +10,7 @@
 #include "hw/xbox/hle/vk/back_int.h"
 
 #define T (g_hvk.t)
-#define GM_SLOTS  3                     /* >= frames in flight (back.c HLE_FRAMES) */
+#define GM_SLOTS  HLE_FRAMES            /* one per command buffer in flight */
 #define GM_STRIDE 1024                  /* per slot in the ramp buffer (768 used) */
 #define GM_VIEWS  8
 
