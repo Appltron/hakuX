@@ -810,6 +810,36 @@ static uint64_t NtWaitForSingleObjectEx(NcKernel *k, NcFrame *f, const uint32_t 
     return obj ? wait(k, &obj, 1, false, a[3], 0, a[2] & 0xff) : NC_STATUS_INVALID_HANDLE;
 }
 
+/* NtSignalAndWaitForSingleObjectEx(SignalHandle, WaitHandle, WaitMode, Alertable, Timeout):
+ * the first object signalled (an event set, a semaphore released by one, a
+ * mutant released), then a wait on the second, in the one call (no thread
+ * runs between them). A semaphore at its limit is not waited on, as on NT. */
+static uint64_t NtSignalAndWaitForSingleObjectEx(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    enum NcObType type;
+    const uint32_t sig = nc_ob_lookup(k, a[0], &type);
+    const uint32_t obj = handle_object(k, a[1]);
+    if (!sig || !obj) {
+        return NC_STATUS_INVALID_HANDLE;
+    }
+    uint32_t status = NC_STATUS_SUCCESS;
+    switch (type) {
+    case NC_OB_EVENT:
+        set_event(k, sig);
+        break;
+    case NC_OB_SEMAPHORE:
+        release_semaphore(k, sig, 1, &status);
+        break;
+    case NC_OB_MUTANT:
+        release_mutant(k, sig);
+        break;
+    default:
+        status = 0xC0000024u;   /* STATUS_OBJECT_TYPE_MISMATCH */
+        break;
+    }
+    return status == NC_STATUS_SUCCESS ? wait(k, &obj, 1, false, a[4], 0, a[3] & 0xff) : status;
+}
+
 /* NtWaitForMultipleObjectsEx(Count, Handles, WaitType, WaitMode, Alertable, Timeout) */
 static uint64_t NtWaitForMultipleObjectsEx(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
@@ -1195,6 +1225,7 @@ void nc_ke_register(NcKernel *k)
     nc_kernel_impl(k, "KeWaitForMultipleObjects", KeWaitForMultipleObjects);
     nc_kernel_impl(k, "NtWaitForSingleObject", NtWaitForSingleObject);
     nc_kernel_impl(k, "NtWaitForSingleObjectEx", NtWaitForSingleObjectEx);
+    nc_kernel_impl(k, "NtSignalAndWaitForSingleObjectEx", NtSignalAndWaitForSingleObjectEx);
     nc_kernel_impl(k, "NtWaitForMultipleObjectsEx", NtWaitForMultipleObjectsEx);
     nc_kernel_impl(k, "KeDelayExecutionThread", KeDelayExecutionThread);
     nc_kernel_impl(k, "NtYieldExecution", NtYieldExecution);
