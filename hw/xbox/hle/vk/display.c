@@ -455,6 +455,30 @@ void hle_disp_set_gamma(const uint8_t rgb[3][256], bool identity)
     hle_atomic_set(&g_gamma.seq, g_gamma.seq + 1);
 }
 
+uint32_t hle_disp_gamma_seq(void)
+{
+    return hle_atomic_load_acquire(&g_gamma.seq);
+}
+
+bool hle_disp_front(uint32_t *gen, uint32_t *swap_id)
+{
+    bool found = false;
+    if (!hle_atomic_load_acquire(&g_disp.inited)) {
+        return false;
+    }
+    hle_mutex_lock(&g_disp.lock);
+    for (int i = 0; i < HLE_DISP_SLOTS && !found; i++) {
+        const HleDispSlot *s = &g_disp.s[i];
+        if (s->state == SLOT_FRONT && s->img) {
+            *gen = g_disp.gen;
+            *swap_id = s->swap_id;
+            found = true;
+        }
+    }
+    hle_mutex_unlock(&g_disp.lock);
+    return found;
+}
+
 bool hle_disp_gamma(uint8_t rgb[3][256], bool *identity, uint32_t *gen)
 {
     const uint32_t s0 = hle_atomic_load_acquire(&g_gamma.seq);

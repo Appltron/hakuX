@@ -153,9 +153,30 @@ static void place(uint32_t fw, uint32_t fh, uint32_t ww, uint32_t wh, float *sx,
     }
 }
 
+/* With nothing new to show, the refresh goes by: the panel keeps the image,
+ * and the loop waits for the next vsync, as acquiring an image paced it. */
+static void wait_next_vsync(void)
+{
+    const uint64_t now = now_ns(), next = nc_dev_nv2a_next_vsync(now);
+    const uint64_t until = next ? next + 500000ull : now + 4000000ull;
+    const struct timespec ts = {(time_t)(until / 1000000000ull), (long)(until % 1000000000ull)};
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
+}
+
 bool nc_present_frame(struct ANativeWindow *win)
 {
     count_frames();
+    debug_poll();
+    const bool fxaa = g_dbg.fxaa < 0 ? g_fxaa : g_dbg.fxaa != 0;
+    const int upscale = g_dbg.upscale < 0 ? g_upscale : g_dbg.upscale;
+    /* what places and filters the frame, beside it and the window */
+    const uint64_t key = (uint64_t)fxaa | (uint64_t)upscale << 1 | (uint64_t)g_dbg.average << 4 |
+                         (uint64_t)g_widescreen << 5 | (uint64_t)(uint32_t)g_aspect << 8;
+    if (hle_present_unchanged(win, key)) {
+        nc_dev_nv2a_display_pickup(now_ns()); /* it looked: the vblank keeps clear of it */
+        wait_next_vsync();
+        return true;
+    }
     uint32_t ww = 0, wh = 0, fw = 0, fh = 0;
     if (!hle_present_begin(win, &ww, &wh)) {
         return false;
@@ -166,8 +187,6 @@ bool nc_present_frame(struct ANativeWindow *win)
         place(fw, fh, ww, wh, &sx, &sy);
         __atomic_store_n(&g_shown, true, __ATOMIC_RELAXED);
     }
-    debug_poll();
-    hle_present_end(sx, sy, g_dbg.fxaa < 0 ? g_fxaa : g_dbg.fxaa != 0,
-                    g_dbg.upscale < 0 ? g_upscale : g_dbg.upscale, g_dbg.average);
+    hle_present_end(sx, sy, fxaa, upscale, g_dbg.average, key);
     return true;
 }

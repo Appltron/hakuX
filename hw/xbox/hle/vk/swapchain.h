@@ -14,6 +14,13 @@ struct ANativeWindow;
  * Snapdragon Game Super Resolution (a larger one is always averaged down). */
 enum { HLE_UPSCALE_BILINEAR, HLE_UPSCALE_SGSR };
 
+/* This refresh would put up what win already shows (the same front frame,
+ * gamma ramp, window and swapchain, and key: the caller's placement and
+ * filters, as at the last present that went through): the caller may skip
+ * it, the panel keeping the image. A 30 fps title on a 120 Hz panel drew,
+ * submitted and presented each frame four times. */
+bool hle_present_unchanged(struct ANativeWindow *win, uint64_t key);
+
 /* Each display refresh, on the window's thread, these three in order.
  * begin: an image of win's swapchain (made or remade as the window comes,
  * goes or changes size), waiting for one: the panel's pace. *w, *h: the
@@ -26,7 +33,8 @@ bool hle_present_frame(uint32_t *w, uint32_t *h);
 /* end: the frame drawn into the window's middle (sx, sy: its half size in
  * clip space, 1 the whole window), the rest black, through the display's
  * gamma ramp, and presented. fxaa: FXAA over each new frame first; average:
- * false samples a frame larger than its place bilinearly too (comparisons). */
-void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average);
+ * false samples a frame larger than its place bilinearly too (comparisons).
+ * key: what hle_present_unchanged compares next. */
+void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, uint64_t key);
 
 #endif

@@ -23,6 +23,8 @@ void nc_dev_nv2a_display_vsync(uint64_t ns);
 /* The presenter looked for a new front image (host monotonic ns): the vblank
  * keeps half a panel period from its pickups. */
 void nc_dev_nv2a_display_pickup(uint64_t ns);
+/* The panel's next vsync after `after` (host monotonic ns); 0 if not known. */
+uint64_t nc_dev_nv2a_next_vsync(uint64_t after);
 /* Register files for the remaining windows (0xFE000000-0xFFFFFFFF). */
 void nc_dev_misc_init(void);
 

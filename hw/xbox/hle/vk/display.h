@@ -55,5 +55,10 @@ bool hle_disp_gamma_consumer(void);
 void hle_disp_set_gamma(const uint8_t rgb[3][256], bool identity);
 /* Consumer: the ramp, when it changed since *gen (false: unchanged). */
 bool hle_disp_gamma(uint8_t rgb[3][256], bool *identity, uint32_t *gen);
+/* The ramp's sequence number now (what *gen becomes): a look, no copy. */
+uint32_t hle_disp_gamma_seq(void);
+/* The front frame's generation and swap id, without taking it (the
+ * presenter's look for a new frame); false: none. */
+bool hle_disp_front(uint32_t *gen, uint32_t *swap_id);
 
 #endif

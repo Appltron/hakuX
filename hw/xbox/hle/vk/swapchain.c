@@ -95,6 +95,10 @@ static struct {
     /* the display's gamma ramp */
     uint8_t ramp[3][256];
     uint32_t ramp_gen;
+    /* the last present went through, of f (have), the ramp and the caller's
+     * key (hle_present_unchanged) */
+    bool shown;
+    uint64_t shown_key;
 } g_ps;
 
 /* ---- shaders ---- */
@@ -479,6 +483,7 @@ static void drop_images(void)
 /* The window gone, or another: its swapchain and surface go. */
 static void drop_window(void)
 {
+    g_ps.shown = false;
     if (g_ps.sc || g_ps.surf) {
         idle();
     }
@@ -623,6 +628,21 @@ static void lose_window(void)
 {
     g_ps.lost_ns = hle_now_ns();
     drop_window();
+}
+
+bool hle_present_unchanged(struct ANativeWindow *win, uint64_t key)
+{
+    if (!g_ps.shown || !win || win != g_ps.win || g_ps.stale || !g_ps.sc || key != g_ps.shown_key ||
+        (uint32_t)ANativeWindow_getWidth(win) != g_ps.wsize.width ||
+        (uint32_t)ANativeWindow_getHeight(win) != g_ps.wsize.height || hle_disp_gamma_seq() != g_ps.ramp_gen) {
+        return false;
+    }
+    uint32_t gen, swap_id;
+    const bool front = hle_disp_front(&gen, &swap_id);
+    if (front != g_ps.have) {
+        return false;
+    }
+    return !front || (gen == g_ps.f.gen && swap_id == g_ps.f.swap_id);
 }
 
 bool hle_present_begin(struct ANativeWindow *win, uint32_t *w, uint32_t *h)
@@ -830,8 +850,9 @@ static void log_path(unsigned p, bool fxaa, uint32_t vw, uint32_t vh)
             p == P_AREA ? "averaged down" : p == P_SGSR ? "scaled up by SGSR" : "bilinear");
 }
 
-void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average)
+void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, uint64_t key)
 {
+    g_ps.shown = false;
     PsFrame *f = &g_ps.fr[g_ps.cur];
     const uint32_t ww = g_ps.wsize.width, wh = g_ps.wsize.height, iw = g_ps.ext.width, ih = g_ps.ext.height;
     uint8_t rgb[3][256];
@@ -957,6 +978,10 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average)
         pr = T.vkQueuePresentKHR(g_hvk.queue, &pi);
         g_present_ns += hle_now_ns() - tp0;
         hle_vk_queue_unlock();
+    }
+    if (pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR) {
+        g_ps.shown = true;
+        g_ps.shown_key = key;
     }
     if (pr == VK_ERROR_OUT_OF_DATE_KHR || (pr == VK_SUBOPTIMAL_KHR && g_ps.follows)) {
         g_ps.stale = true;
