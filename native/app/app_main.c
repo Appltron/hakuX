@@ -60,6 +60,45 @@ static SDL_AtomicInt g_core_state; /* 0 booting, 1 running, -1 failed */
 static pthread_mutex_t g_overlay_lock = PTHREAD_MUTEX_INITIALIZER;
 static NcPadState g_overlay;
 
+/* The physical controllers' states, by player (NativeCoreActivity's
+ * controller router: each device's events through its mapping); the
+ * overlay adds to player 1's. "padinput=sdl" (the app's legacy input) reads
+ * the first SDL gamepad into player 1 instead, as before the router. */
+static NcPadState g_phys[4];
+static bool g_sdl_pads;
+
+/* The overlay o over the controller state s: buttons and analog buttons
+ * either, each stick the one pushed furthest. */
+static void merge_pad(NcPadState *s, const NcPadState *o)
+{
+    s->buttons |= o->buttons;
+    for (unsigned i = 0; i < 8; i++) {
+        if (o->analog[i] > s->analog[i]) {
+            s->analog[i] = o->analog[i];
+        }
+    }
+    if (abs(o->lx) + abs(o->ly) > abs(s->lx) + abs(s->ly)) {
+        s->lx = o->lx;
+        s->ly = o->ly;
+    }
+    if (abs(o->rx) + abs(o->ry) > abs(s->rx) + abs(s->ry)) {
+        s->rx = o->rx;
+        s->ry = o->ry;
+    }
+}
+
+/* Router input goes to the pad as it comes, not at the SDL loop's next pass
+ * (a refresh later). Under g_overlay_lock: two setters publish in the order
+ * they stored. */
+static void publish_pad(unsigned player)
+{
+    NcPadState s = g_phys[player];
+    if (player == 0) {
+        merge_pad(&s, &g_overlay);
+    }
+    nc_pad_set(player, &s);
+}
+
 EXPORT JNIEXPORT void JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeSetOverlayPad(
     JNIEnv *env, jclass cls, jint buttons, jint analog_mask, jfloat lx, jfloat ly, jfloat rx, jfloat ry,
     jfloat lt, jfloat rt)
@@ -77,15 +116,11 @@ EXPORT JNIEXPORT void JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nati
     s.ry = (int16_t)(-ry * 32767.0f);
     pthread_mutex_lock(&g_overlay_lock);
     g_overlay = s;
+    if (!g_sdl_pads) {
+        publish_pad(0);
+    }
     pthread_mutex_unlock(&g_overlay_lock);
 }
-
-/* The physical controllers' states, by player (NativeCoreActivity's
- * controller router: each device's events through its mapping); the
- * overlay adds to player 1's. "padinput=sdl" (the app's legacy input) reads
- * the first SDL gamepad into player 1 instead, as before the router. */
-static NcPadState g_phys[4];
-static bool g_sdl_pads;
 
 EXPORT JNIEXPORT void JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeSetPad(
     JNIEnv *env, jclass cls, jint player, jint buttons, jlong analog, jint lx, jint ly, jint rx, jint ry)
@@ -104,6 +139,9 @@ EXPORT JNIEXPORT void JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nati
     s.ry = (int16_t)ry;
     pthread_mutex_lock(&g_overlay_lock);
     g_phys[player] = s;
+    if (!g_sdl_pads) {
+        publish_pad((unsigned)player);
+    }
     pthread_mutex_unlock(&g_overlay_lock);
 }
 
@@ -197,26 +235,6 @@ EXPORT JNIEXPORT jint JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nati
         nc_pad_rumble((unsigned)player, &l, &r);
     }
     return (jint)((uint32_t)l << 16 | r);
-}
-
-/* The overlay o over the controller state s: buttons and analog buttons
- * either, each stick the one pushed furthest. */
-static void merge_pad(NcPadState *s, const NcPadState *o)
-{
-    s->buttons |= o->buttons;
-    for (unsigned i = 0; i < 8; i++) {
-        if (o->analog[i] > s->analog[i]) {
-            s->analog[i] = o->analog[i];
-        }
-    }
-    if (abs(o->lx) + abs(o->ly) > abs(s->lx) + abs(s->ly)) {
-        s->lx = o->lx;
-        s->ly = o->ly;
-    }
-    if (abs(o->rx) + abs(o->ry) > abs(s->rx) + abs(s->ry)) {
-        s->rx = o->rx;
-        s->ry = o->ry;
-    }
 }
 
 /* SIGSEGV/SIGBUS: the core's own faults first (MMIO, dirty tracking, the
@@ -664,19 +682,9 @@ EXPORT int SDL_main(int argc, char *argv[])
                 rumble_l = l;
                 rumble_r = r;
             }
-        } else {
-            /* the activity routes each controller to its player (and rumble
-             * back, nativeGetRumble); the overlay adds to player 1 */
-            NcPadState s[4], o;
-            pthread_mutex_lock(&g_overlay_lock);
-            memcpy(s, g_phys, sizeof(s));
-            o = g_overlay;
-            pthread_mutex_unlock(&g_overlay_lock);
-            merge_pad(&s[0], &o);
-            for (unsigned p = 0; p < 4; p++) {
-                nc_pad_set(p, &s[p]);
-            }
         }
+        /* else the activity's router sets each player's pad as its input
+         * comes (publish_pad), and takes rumble back (nativeGetRumble) */
 
         /* the activity's surface: replaced when it is made again, NULL while
          * it's gone */
