@@ -676,11 +676,20 @@ static uint32_t release_semaphore(NcKernel *k, uint32_t sem, int32_t count, uint
     return (uint32_t)old;
 }
 
-/* KeReleaseSemaphore(Semaphore, Increment, Adjustment, Wait) -> previous count */
+/* KeReleaseSemaphore(Semaphore, Increment, Adjustment, Wait) -> previous count.
+ * Past its limit the Xbox kernel raises STATUS_SEMAPHORE_LIMIT_EXCEEDED (an
+ * unhandled one ends the title); here it isn't released, and told once. */
 static uint64_t KeReleaseSemaphore(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
+    static bool told;
     uint32_t status;
-    return release_semaphore(k, a[0], (int32_t)a[2], &status);
+    const uint32_t old = release_semaphore(k, a[0], (int32_t)a[2], &status);
+    if (status != NC_STATUS_SUCCESS && !told) {
+        told = true;
+        nc_log("hakuX-native", "ke: KeReleaseSemaphore %08x by %d past its limit %d (count %d): not released",
+               a[0], (int32_t)a[2], (int32_t)nc_vm_rd32(k->vm, a[0] + SEMAPHORE_LIMIT), (int32_t)old);
+    }
+    return old;
 }
 
 /* NtCreateSemaphore(SemaphoreHandle, ObjectAttributes, InitialCount, MaximumCount) */
