@@ -68,19 +68,57 @@ static void list_init(NcVm *vm, uint32_t head)
     nc_vm_wr32(vm, head + 4, head);
 }
 
-/* Stack slots in the kernel stack region, each with an unmapped guard below. */
+/* Stack slots in the kernel stack region, each with an unmapped guard below.
+ * A slot given back (a thread's end, MmDeleteKernelStack) is taken again by
+ * a stack it holds, what it has over kept as a slot of its own; the region
+ * ends at the GPU's view of RAM, where an allocation fails instead of
+ * mapping over it (titles start a thread per movie and load). */
 bool nc_ps_stack_alloc(NcKernel *k, uint32_t size, uint32_t *base)
 {
     if (!k->next_stack_va) {
         k->next_stack_va = STACK_REGION;
     }
-    uint32_t slot = k->next_stack_va;
+    const uint32_t span = STACK_GUARD + nc_align_up(size, STACK_GUARD);
+    for (unsigned i = 0; i < k->nstack_free; i++) {
+        const uint32_t va = k->stack_free[i].va, have = k->stack_free[i].span;
+        if (have < span || !nc_vm_alloc_at(k->vm, va + STACK_GUARD, size, NULL)) {
+            continue;
+        }
+        k->stack_free[i] = k->stack_free[--k->nstack_free];
+        if (have - span >= 2 * STACK_GUARD) {
+            k->stack_free[k->nstack_free].va = va + span;   /* the rest, a slot of its own */
+            k->stack_free[k->nstack_free++].span = have - span;
+        }
+        *base = va + STACK_GUARD;
+        return true;
+    }
+    const uint32_t slot = k->next_stack_va;
+    if (span > NC_GPU_WINDOW - slot) {
+        nc_log("hakuX-native", "ps: the stack region is full (%u KiB more asked)", size >> 10);
+        return false;
+    }
     if (!nc_vm_alloc_at(k->vm, slot + STACK_GUARD, size, NULL)) {
         return false;
     }
-    k->next_stack_va = slot + STACK_GUARD + nc_align_up(size, STACK_GUARD);
+    k->next_stack_va = slot + span;
     *base = slot + STACK_GUARD;
     return true;
+}
+
+void nc_ps_stack_free(NcKernel *k, uint32_t base, uint32_t size)
+{
+    const uint32_t slot = base - STACK_GUARD, span = STACK_GUARD + nc_align_up(size, STACK_GUARD);
+    if (base < STACK_REGION + STACK_GUARD || base % STACK_GUARD || !size || span > k->next_stack_va - slot ||
+        k->nstack_free == sizeof(k->stack_free) / sizeof(k->stack_free[0])) {
+        return;     /* not a slot of the region, or no room to keep it: its addresses stay used */
+    }
+    for (unsigned i = 0; i < k->nstack_free; i++) {
+        if (slot < k->stack_free[i].va + k->stack_free[i].span && k->stack_free[i].va < slot + span) {
+            return; /* given back already */
+        }
+    }
+    k->stack_free[k->nstack_free].va = slot;
+    k->stack_free[k->nstack_free++].span = span;
 }
 
 static NcThread *thread_create(NcKernel *k, uint32_t stack_size, uint32_t tls_size, uint32_t ext_size)
@@ -365,6 +403,7 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
                 nc_vm_free_phys(k->vm, pa & ~(NC_PAGE - 1), NC_PAGE);
             }
         }
+        nc_ps_stack_free(k, cur->stack_limit, cur->stack_base - cur->stack_limit);
         cur->state = NC_T_FREE;
     }
     nc_frame_load(f, &next->ctx);

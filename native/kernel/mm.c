@@ -816,6 +816,9 @@ static uint64_t MmCreateKernelStack(NcKernel *k, NcFrame *f, const uint32_t *a)
 static uint64_t MmDeleteKernelStack(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     decommit(k, a[1], a[0] - a[1]);
+    if (a[0] > a[1]) {
+        nc_ps_stack_free(k, a[1], a[0] - a[1]);
+    }
     return 0;
 }
 

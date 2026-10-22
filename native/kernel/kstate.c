@@ -89,6 +89,7 @@ bool nc_kern_state_load(NcRd *r, unsigned v)
     if (r->fail) {
         return false;
     }
+    k->nstack_free = 0;                 /* the boot's slots given back, not the state's */
     nc_ke_state_set(s.boot_ns, s.time_offset, s.guest_ns);
     nc_cpu_guest_cycles_set(k->cpu, s.guest_cycles);
     if (s.x87_single) {

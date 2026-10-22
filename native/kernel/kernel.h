@@ -212,6 +212,12 @@ struct NcKernel {
     NcThread *current;
     bool resched;              /* pick another thread before returning to the guest */
     uint32_t next_stack_va;
+    /* stack slots given back (nc_ps_stack_free), first fit; not in a
+     * savestate: a load starts with none */
+    struct {
+        uint32_t va, span;
+    } stack_free[32];
+    unsigned nstack_free;
     uint32_t next_thread_id;
 
     uint64_t timer_due_ns;     /* earliest inserted timer (host monotonic), 0 if none */
@@ -307,6 +313,8 @@ void nc_ps_yield(NcKernel *k);
 void nc_ps_terminate_current(NcKernel *k, uint32_t status);
 
 bool nc_ps_stack_alloc(NcKernel *k, uint32_t size, uint32_t *base);
+/* The stack at base (size bytes, its pages gone) gives its slot back. */
+void nc_ps_stack_free(NcKernel *k, uint32_t base, uint32_t size);
 /* A kernel-owned thread, suspended, with no start context yet. */
 NcThread *nc_ps_kernel_thread(NcKernel *k, uint32_t stack_size, int priority);
 
