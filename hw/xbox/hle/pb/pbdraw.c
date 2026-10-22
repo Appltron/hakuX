@@ -93,7 +93,7 @@
 #define MAX_ZREADS 8
 #define SCAN_IDLE_NS 100000000              /* nothing presented this long: the title isn't flipping */
 #define TEX_SLOTS 2048u                     /* the texture table (open addressing) */
-#define TEX_MAX 1536u                       /* ... flushed when this full */
+#define TEX_MAX 1536u                       /* ... this full: the least recently used go (tex_evict) */
 
 typedef struct PbObj {
     uint32_t id;
@@ -1832,6 +1832,68 @@ static void tex_flush(void)
     g_pd.tex_flushes++;
 }
 
+static int cmp_u64(const void *a, const void *b)
+{
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* The table full: the quarter of its textures checked longest ago go, their
+ * images with them, and the rest are placed again (open addressing has no
+ * deletion). Keys of memory a title has reused piled up until every texture
+ * went at once, and the working set was defined again over the next frames.
+ * None checked this epoch goes: the draw being built may hold its id. */
+static void tex_evict(void)
+{
+    static uint64_t when[TEX_SLOTS];
+    static PbTex keep[TEX_SLOTS];
+    unsigned n = 0, nkeep = 0;
+    for (unsigned i = 0; i < TEX_SLOTS; i++) {
+        if (g_pd.tex[i].id) {
+            when[n++] = g_pd.tex[i].checked;
+        }
+    }
+    qsort(when, n, sizeof(when[0]), cmp_u64);
+    /* a quarter: all checked before the cut, and as many checked at it as
+     * that leaves room for (a scene's textures all checked at one epoch) */
+    const uint64_t cut = when[n / 4];
+    unsigned ties = n / 4;
+    for (unsigned i = 0; when[i] < cut; i++) {
+        ties--;
+    }
+    for (unsigned i = 0; i < TEX_SLOTS; i++) {
+        PbTex *t = &g_pd.tex[i];
+        if (!t->id) {
+            continue;
+        }
+        bool go = t->checked != g_pd.epoch && (t->checked < cut || (t->checked == cut && ties));
+        ties -= go && t->checked == cut;
+        if (!go) {
+            keep[nkeep++] = *t;
+            continue;
+        }
+        HleCmdObjDestroy *x = begin(HLE_OP_OBJ_DESTROY, sizeof(*x));
+        x->after = 0;
+        x->id = t->id;
+        hle_fe_commit();
+    }
+    if (nkeep == n) {
+        tex_flush();                    /* all of them checked this epoch */
+        return;
+    }
+    memset(g_pd.tex, 0, TEX_SLOTS * sizeof(PbTex));
+    for (unsigned i = 0; i < nkeep; i++) {
+        uint32_t h = hash32(keep[i].key, sizeof(keep[i].key)) % TEX_SLOTS;
+        while (g_pd.tex[h].id) {
+            h = (h + 1) % TEX_SLOTS;
+        }
+        g_pd.tex[h] = keep[i];
+    }
+    g_pd.ntex = nkeep;
+    hle_log("hakuX-hle-pb", "textures: table full, the %u checked longest ago dropped (%u kept)", n - nkeep,
+            nkeep);
+}
+
 /* A 32-bit linear colour texture (w x h at pa, channels from the depth
  * word's bytes as map says) over a D24S8 target's memory reads the target's
  * depth words, as the NV2A's memory holds them (Conker's glow mask: its
@@ -2065,7 +2127,7 @@ static uint32_t texture(unsigned s, bool *unset)
     bool redefine = false;
     if (!t->id) {
         if (g_pd.ntex >= TEX_MAX) {
-            tex_flush();
+            tex_evict();
             return texture(s, unset);
         }
         memcpy(t->key, key, sizeof(key));
