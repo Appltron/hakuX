@@ -182,12 +182,15 @@ object Logs {
             while (true) {
               val n = input.read(buf)
               if (n < 0) break
-              if (total >= MAX_BYTES) continue
               out.write(buf, 0, n)                  /* unbuffered: on disk as it comes */
               total += n
-              if (total >= MAX_BYTES) out.write("\n=== log stopped at ${MAX_BYTES shr 20} MB\n".toByteArray())
+              if (total >= MAX_BYTES) {
+                out.write("\n=== log stopped at ${MAX_BYTES shr 20} MB\n".toByteArray())
+                break                               /* and logcat with it, not read on for nothing */
+              }
             }
           }
+          logcat.destroy()
         }
       } catch (e: Exception) {
         Log.e(TAG, "logs: capture into ${file.name} failed", e)

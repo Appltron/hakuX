@@ -572,7 +572,10 @@ private fun ScaleDialog(current: Int, onPick: (Int) -> Unit, onDismiss: () -> Un
 private fun DriverDialog(onDismiss: () -> Unit, onInstalled: () -> Unit, onInstallZip: () -> Unit) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
-  val drivers = remember { GpuDriverHelper.getAvailableDrivers() }
+  // each driver's ZIP opened for its metadata: off the main thread, listed when read
+  val drivers by produceState(emptyList<GpuDriverHelper.DriverMetadata>()) {
+    value = withContext(Dispatchers.IO) { GpuDriverHelper.getAvailableDrivers() }
+  }
   val active = remember { GpuDriverHelper.getInstalledDriverName() }
   AlertDialog(
     onDismissRequest = onDismiss,

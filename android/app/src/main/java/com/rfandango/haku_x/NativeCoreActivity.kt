@@ -318,7 +318,9 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       fpsHandler.postDelayed(fatalRunnable, FPS_INTERVAL_MS)
     }
     fpsHandler.removeCallbacks(stateRequestRunnable)
-    fpsHandler.postDelayed(stateRequestRunnable, STATE_POLL_MS)
+    if (BuildConfig.DEBUG) {
+      fpsHandler.postDelayed(stateRequestRunnable, STATE_POLL_MS)
+    }
     router?.let {
       it.reload()
       fpsHandler.removeCallbacks(rumbleRunnable)
@@ -507,12 +509,20 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   /** The running game's overrides: by its disc's title ID and version, else its path. */
   private fun gameOverrides(): GameOverrides? = discUri?.let { GameOverrides(this, gameKey()) }
 
-  /** The game's key for its per-game settings and its savestates (the library's too). */
+  /**
+   * The game's key for its per-game settings and its savestates (the library's
+   * too): the disc opened and its XBE read once (it was three times before boot).
+   */
   private fun gameKey(): String {
+    gameKeyMemo?.let { (uri, key) -> if (uri == discUri) return key }
     val (titleId, version) = discUri?.let { uri -> XboxDisc.open(this, uri) { it.titleId to it.version } } ?: (0L to 0L)
     val path = getSharedPreferences(AppPrefs.NAME, Context.MODE_PRIVATE).getString("current_game_relative_path", null)
-    return GameOverrides.gameKey(titleId, version, path)
+    val key = GameOverrides.gameKey(titleId, version, path)
+    gameKeyMemo = discUri to key
+    return key
   }
+
+  private var gameKeyMemo: Pair<Uri?, String>? = null
 
   private var discUri: Uri? = null
 

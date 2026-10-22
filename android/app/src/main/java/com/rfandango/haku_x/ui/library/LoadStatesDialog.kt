@@ -24,11 +24,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
@@ -37,6 +39,8 @@ import com.rfandango.haku_x.R
 import com.rfandango.haku_x.data.SaveStateStore
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * A game's savestates from the library (its long-press menu's Load state):
@@ -109,19 +113,22 @@ fun LoadStatesDialog(
   }
 }
 
-/** A slot's frame, small (or a blank box without one). */
+/** A slot's frame, small (or a blank box without one, also while it decodes off the main thread). */
 @Composable
 private fun Thumbnail(store: SaveStateStore, slot: Int) {
   val file = store.thumb(slot)
-  val bitmap = remember(slot, file.lastModified()) {
-    file.takeIf { it.isFile }?.let {
-      BitmapFactory.decodeFile(it.path, BitmapFactory.Options().apply { inSampleSize = 4 })?.asImageBitmap()
+  val bitmap by produceState<ImageBitmap?>(null, slot, file.lastModified()) {
+    value = withContext(Dispatchers.IO) {
+      file.takeIf { it.isFile }?.let {
+        BitmapFactory.decodeFile(it.path, BitmapFactory.Options().apply { inSampleSize = 4 })?.asImageBitmap()
+      }
     }
   }
   val shape = RoundedCornerShape(6.dp)
-  if (bitmap != null) {
+  val shown = bitmap
+  if (shown != null) {
     Image(
-      bitmap,
+      shown,
       contentDescription = null,
       contentScale = ContentScale.Crop,
       modifier = Modifier.size(96.dp, 72.dp).clip(shape),
