@@ -199,6 +199,10 @@ int hle_vk_init(void)
             v->qfam = i;
         }
     }
+    for (uint32_t i = 0; i < nq; i++) {
+        hle_log("hakuX-hle-back", "vk: queue family %u: flags %x, %u queues%s", i, qf[i].queueFlags,
+                qf[i].queueCount, i == v->qfam ? " (used)" : "");
+    }
 
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(v->phys, NULL, &ne, NULL);
