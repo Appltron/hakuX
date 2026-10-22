@@ -312,7 +312,7 @@ static uint64_t NtFreeVirtualMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
     uint32_t size = nc_vm_rd32(k->vm, a[1]);
     Region *r = region_at(base);
     if (!r || r->image) {
-        return 0xC000009Fu; /* STATUS_MEMORY_NOT_ALLOCATED */
+        return 0xC00000A0u; /* STATUS_MEMORY_NOT_ALLOCATED */
     }
     if (a[2] & MEM_RELEASE) {
         base = r->base;
