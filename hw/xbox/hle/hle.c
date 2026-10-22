@@ -353,8 +353,7 @@ void hle_prof_diag(void)
     if (!g_hle_prof_on) {
         return;
     }
-    static const char *const k_name[HLE_PROF_N] = {
-        "impl", "draw", "state", "consts", "tex", "vtx", "back", "submit" };
+    static const char *const k_name[HLE_PROF_N] = {"back", "submit"};
     char buf[512];
     int off = 0;
     for (int k = 0; k < HLE_PROF_N; k++) {

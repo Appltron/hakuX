@@ -9,12 +9,6 @@
 #include <stdint.h>
 
 enum {
-    HLE_PROF_IMPL,      /* every replace impl (vCPU) */
-    HLE_PROF_DRAW,      /* emit_draw, whole */
-    HLE_PROF_STATE,     /* send_state */
-    HLE_PROF_CONSTS,    /* program constants */
-    HLE_PROF_TEX,       /* texture preparation and uploads */
-    HLE_PROF_VTX,       /* vertex and index data into the arena */
     HLE_PROF_BACK,      /* back-end command processing (render thread) */
     HLE_PROF_SUBMIT,    /* back-end queue submits */
     HLE_PROF_N
