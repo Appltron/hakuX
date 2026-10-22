@@ -78,6 +78,8 @@ add_library(hakux_hle STATIC
 )
 target_include_directories(hakux_hle PUBLIC "${NC_REPO}" "${NC_DEPS}/root" "${NC_DEPS}/vma/include"
                            "${NC_DEPS}/glslang")
+# xxhash (single header, FEX's copy): pb/pbdraw.c's span hashes
+target_include_directories(hakux_hle PRIVATE "${HAKUX_FEX_DIR}/External/xxhash")
 target_compile_definitions(hakux_hle PUBLIC CONFIG_VULKAN=1 HAKUX_HLE_GPU=1 HAKUX_NATIVE_CORE=1)
 target_compile_options(hakux_hle PRIVATE -Wno-unused-parameter -Wno-unused-function -Wno-sign-compare)
 target_link_libraries(hakux_hle PUBLIC nc_glib nc_volk nc_spirv_reflect glslang SPIRV

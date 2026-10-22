@@ -24,6 +24,9 @@
 #include "hw/xbox/hle/shader/ffhw.h"
 #include "hw/xbox/hle/shader/vsh.h"
 
+#define XXH_INLINE_ALL
+#include "xxhash.h"                     /* span_hash */
+
 /* Kelvin methods read here */
 #define NV097_SET_SURFACE_CLIP_HORIZONTAL 0x0200u   /* x 15:0, width 31:16 */
 #define NV097_SET_SURFACE_CLIP_VERTICAL   0x0204u
@@ -1872,25 +1875,12 @@ static uint32_t zread(uint32_t pa, uint32_t w, uint32_t h, const uint8_t map[4],
  * pages wholly inside the span count by their dirty bits; the first and last
  * by the span's bytes on them against their hashes at definition. A dirty
  * edge page is left writable (no fault per write), and its bytes compared at
- * each use. */
+ * each use: XXH3 (NEON), as a serial multiply chain they were ~22% of the
+ * decoder in a Burnout 3 race. */
 static uint64_t span_hash(uint32_t pa, uint32_t len)
 {
     const uint8_t *m = hle_pa_ptr(pa, len);
-    if (!m) {
-        return 0;
-    }
-    uint64_t h = 0x9E3779B97F4A7C15ull;
-    uint32_t i = 0;
-    for (; i + 8 <= len; i += 8) {
-        uint64_t w;
-        memcpy(&w, m + i, 8);
-        h = (h ^ w) * 0x100000001B3ull;
-        h ^= h >> 29;
-    }
-    for (; i < len; i++) {
-        h = (h ^ m[i]) * 0x100000001B3ull;
-    }
-    return h;
+    return m ? XXH3_64bits(m, len) : 0;
 }
 
 static void tex_edges_set(PbTex *t)
