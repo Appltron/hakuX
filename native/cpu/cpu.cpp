@@ -21,6 +21,8 @@
 #include <FEXCore/Utils/LogManager.h>
 
 #include <asm/sigcontext.h>
+#include <cerrno>
+#include <cstring>
 #include <string>
 #include <sys/mman.h>
 #ifdef __ANDROID__
@@ -351,9 +353,12 @@ extern "C" NcCpu* nc_cpu_create(const NcCpuConfig* cfg, uint32_t fs_base) {
 
   // Call-ret stack with a guard page on each side, as FEX's front ends do.
   constexpr size_t CRS = FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE;
-  auto* Alloc = static_cast<uint8_t*>(mmap(nullptr, CRS + 2 * NC_PAGE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-  cpu->Thread->CallRetStackBase = Alloc + NC_PAGE;
-  mprotect(cpu->Thread->CallRetStackBase, CRS, PROT_READ | PROT_WRITE);
+  void* Map = mmap(nullptr, CRS + 2 * NC_PAGE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (Map == MAP_FAILED || mprotect(static_cast<uint8_t*>(Map) + NC_PAGE, CRS, PROT_READ | PROT_WRITE) != 0) {
+    nc_log("hakuX-native", "cpu: no call-ret stack (%s)", strerror(errno));
+    return nullptr;
+  }
+  cpu->Thread->CallRetStackBase = static_cast<uint8_t*>(Map) + NC_PAGE;
   S.callret_sp = reinterpret_cast<uint64_t>(cpu->Thread->CallRetStackBase) + CRS / 4;
 
   // Flat 32-bit segments everywhere; selector 0x28 is FS at the KPCR. LDT mirrors the GDT.

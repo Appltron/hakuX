@@ -347,6 +347,7 @@ typedef struct Walk {
     NcCacheFile *files;
     uint64_t *ctime;        /* per file: its change time (not stored in the state) */
     unsigned nfiles, capf;
+    bool fail;              /* out of memory: the lists are incomplete */
 } Walk;
 
 static uint64_t ts_ns(const struct timespec *t)
@@ -364,7 +365,7 @@ static void walk(const char *root, const char *rel, Walk *w)
         return;
     }
     struct dirent *de;
-    while ((de = readdir(d))) {
+    while (!w->fail && (de = readdir(d))) {
         if (de->d_name[0] == '.') {
             continue;
         }
@@ -380,16 +381,31 @@ static void walk(const char *root, const char *rel, Walk *w)
         }
         if (S_ISDIR(sb.st_mode)) {
             if (w->ndirs == w->capd) {
-                w->capd = w->capd ? w->capd * 2 : 16;
-                w->dirs = realloc(w->dirs, w->capd * sizeof(*w->dirs));
+                const unsigned cap = w->capd ? w->capd * 2 : 16;
+                NcCacheDir *dirs = realloc(w->dirs, cap * sizeof(*dirs));
+                if (!dirs) {
+                    w->fail = true;
+                    break;
+                }
+                w->dirs = dirs;
+                w->capd = cap;
             }
             snprintf(w->dirs[w->ndirs++].path, 256, "%s", sub);
             walk(root, sub, w);
         } else if (S_ISREG(sb.st_mode)) {
             if (w->nfiles == w->capf) {
-                w->capf = w->capf ? w->capf * 2 : 32;
-                w->files = realloc(w->files, w->capf * sizeof(*w->files));
-                w->ctime = realloc(w->ctime, w->capf * sizeof(*w->ctime));
+                const unsigned cap = w->capf ? w->capf * 2 : 32;
+                NcCacheFile *files = realloc(w->files, cap * sizeof(*files));
+                if (files) {
+                    w->files = files;
+                }
+                uint64_t *ctime = files ? realloc(w->ctime, cap * sizeof(*ctime)) : NULL;
+                if (!ctime) {
+                    w->fail = true;
+                    break;
+                }
+                w->ctime = ctime;
+                w->capf = cap;
             }
             w->ctime[w->nfiles] = ts_ns(&sb.st_ctim);
             NcCacheFile *f = &w->files[w->nfiles++];
@@ -446,6 +462,10 @@ bool nc_cache_state_save(NcBuf *b)
         snprintf(proot, sizeof(proot), "%s/Partition%d", nc_io_hdd_root(), p);
         if (p >= 3) {
             walk(proot, "", &w);
+        }
+        if (w.fail) {
+            nc_log("hakuX-native-state", "cache: out of memory listing %s", proot);
+            ok = false;                         /* not a state missing files */
         }
         for (unsigned i = 0; ok && i < w.nfiles; i++) {
             NcCacheFile *f = &w.files[i];
@@ -657,8 +677,14 @@ static bool collect(NcRd *r, unsigned v, void *ctx)
         for (uint32_t k = 0; k < cp.nfiles && !r->fail; k++) {
             nc_rec_get(r, &nc_rec_NcCacheFile, &f, v);
             if (refs->n == refs->cap) {
-                refs->cap = refs->cap ? refs->cap * 2 : 64;
-                refs->h = realloc(refs->h, refs->cap * 16);
+                const unsigned cap = refs->cap ? refs->cap * 2 : 64;
+                uint8_t (*h)[16] = realloc(refs->h, cap * 16);
+                if (!h) {
+                    r->fail = true;             /* no list: no blob is let go */
+                    break;
+                }
+                refs->h = h;
+                refs->cap = cap;
             }
             memcpy(refs->h[refs->n++], f.hash, 16);
         }
