@@ -2107,6 +2107,48 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, uint8_t *c, int v,
     }
 }
 
+/* One share of the frame's voices: processed outside the lock, then added
+ * in under it. Called and returning with vwd->lock held, by a helper
+ * thread or (share 0) the frame thread. */
+static void voice_work_share(MCPXAPUState *d, VoiceWorker *self)
+{
+    VoiceWorkDispatch *vwd = &d->vp.voice_work_dispatch;
+    pthread_mutex_unlock(&vwd->lock);
+
+    // Process queued voices
+    memset(self->mixbins, 0, sizeof(self->mixbins));
+    if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
+        memset(self->sample_buf, 0, sizeof(self->sample_buf));
+    }
+    /* The frame's voice table (voice_process and its callees take
+     * it as `c`; their stores are reported with the batch). */
+    {
+        uint8_t *c = vwd->table;
+        for (int i = 0; i < self->queue_len; i++) {
+            voice_process(d, c, self->mixbins, self->sample_buf,
+                          self->queue[i].voice, self->queue[i].list);
+        }
+    }
+
+    pthread_mutex_lock(&vwd->lock);
+
+    // Add voice contributions
+    for (int b = 0; b < NUM_MIXBINS; b++) {
+        for (int s = 0; s < NUM_SAMPLES_PER_FRAME; s++) {
+            vwd->mixbins[b][s] += self->mixbins[b][s];
+        }
+    }
+    if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
+        for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
+            d->vp.sample_buf[i][0] += self->sample_buf[i][0];
+            d->vp.sample_buf[i][1] += self->sample_buf[i][1];
+        }
+    }
+
+    self->queue_len = 0;
+}
+
+/* A helper: shares 1 and up (share 0 is the frame thread's own). */
 static void *voice_worker_thread(void *arg)
 {
     MCPXAPUState *d = arg;
@@ -2123,39 +2165,7 @@ static void *voice_worker_thread(void *arg)
         g_dbg.vp.workers[worker_id].num_voices = self->queue_len;
 
         if (self->queue_len) {
-            pthread_mutex_unlock(&vwd->lock);
-
-            // Process queued voices
-            memset(self->mixbins, 0, sizeof(self->mixbins));
-            if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
-                memset(self->sample_buf, 0, sizeof(self->sample_buf));
-            }
-            /* The frame's voice table (voice_process and its callees take
-             * it as `c`; their stores are reported with the batch). */
-            {
-                uint8_t *c = vwd->table;
-                for (int i = 0; i < self->queue_len; i++) {
-                    voice_process(d, c, self->mixbins, self->sample_buf,
-                                  self->queue[i].voice, self->queue[i].list);
-                }
-            }
-
-            pthread_mutex_lock(&vwd->lock);
-
-            // Add voice contributions
-            for (int b = 0; b < NUM_MIXBINS; b++) {
-                for (int s = 0; s < NUM_SAMPLES_PER_FRAME; s++) {
-                    vwd->mixbins[b][s] += self->mixbins[b][s];
-                }
-            }
-            if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
-                for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
-                    d->vp.sample_buf[i][0] += self->sample_buf[i][0];
-                    d->vp.sample_buf[i][1] += self->sample_buf[i][1];
-                }
-            }
-
-            self->queue_len = 0;
+            voice_work_share(d, self);
         }
 
         vwd->workers_pending &= ~(1 << worker_id);
@@ -2209,9 +2219,14 @@ static void voice_work_release_voice_locks(MCPXAPUState *d)
     }
 }
 
+/* Fewer voices than this a frame: all the frame thread's, no helper woken
+ * (a wake and a merge cost more than the voices). */
+#define VOICES_INLINE 8
+
 static void voice_work_schedule(MCPXAPUState *d, uint8_t *c)
 {
     VoiceWorkDispatch *vwd = &d->vp.voice_work_dispatch;
+    const int shares = vwd->queue_len < VOICES_INLINE ? 1 : vwd->num_workers;
     int next_worker_to_schedule = 0;
     bool group = false;
     uint32_t dirty = 0;
@@ -2252,8 +2267,7 @@ static void voice_work_schedule(MCPXAPUState *d, uint8_t *c)
         }
 
         if (!group) {
-            next_worker_to_schedule =
-                (next_worker_to_schedule + 1) % vwd->num_workers;
+            next_worker_to_schedule = (next_worker_to_schedule + 1) % shares;
         }
     }
 }
@@ -2272,13 +2286,19 @@ voice_work_dispatch(MCPXAPUState *d, uint8_t *c,
         memset(vwd->mixbins, 0, sizeof(vwd->mixbins));
         vwd->table = c;
 
-        // Signal only workers that have been assigned work
+        // Signal only the helpers that have been assigned work
         voice_work_schedule(d, c);
-        uint64_t pending = vwd->workers_pending;
+        uint64_t pending = vwd->workers_pending & ~1ull;
         while (pending) {
             int id = ctz64(pending);
             pthread_cond_signal(&vwd->workers[id].cond);
             pending &= pending - 1;
+        }
+        /* share 0 here, meanwhile: a wake fewer, and no wait at all when
+         * it is the only one */
+        if (vwd->workers_pending & 1) {
+            voice_work_share(d, &vwd->workers[0]);
+            vwd->workers_pending &= ~1ull;
         }
         while (vwd->workers_pending) {  /* a spurious wake-up: workers still running */
             pthread_cond_wait(&vwd->work_finished, &vwd->lock);
@@ -2305,12 +2325,13 @@ static int mcpx_apu_default_vp_worker_count(void)
     int cpu_count = MAX(1, (int)sysconf(_SC_NPROCESSORS_ONLN));
 
     /*
-     * Two workers. Each costs a wake, a wait and a mixbin merge per GP
-     * frame (1500 a second), and on big.LITTLE SoCs the third and fourth
-     * run on the little cores beside the JIT and the renderers: on the RP5
-     * (Forza's race start, slot 3) four workers took 37% of a core where
-     * two took 27% and one 25% (one: the frame thread waits on all the
-     * voices). NC_APU_WORKERS overrides (g_apu_config).
+     * Two shares: the frame thread's and one helper's. A helper costs a
+     * wake, a wait and a mixbin merge per GP frame (1500 a second), and on
+     * big.LITTLE SoCs the third and fourth run on the little cores beside
+     * the JIT and the renderers: on the RP5 (Forza's race start, slot 3)
+     * four workers took 37% of a core where two took 27% and one 25%, when
+     * the frame thread only waited for them. NC_APU_WORKERS overrides
+     * (g_apu_config).
      */
     return cpu_count <= 2 ? 1 : 2;
 }
@@ -2336,6 +2357,8 @@ static void voice_work_init(MCPXAPUState *d)
     apu_cond_init(&vwd->work_finished);
     for (int i = 0; i < vwd->num_workers; i++) {
         apu_cond_init(&vwd->workers[i].cond);
+    }
+    for (int i = 1; i < vwd->num_workers; i++) {    /* share 0: the frame thread */
         vwd->workers_pending |= 1 << i;
         apu_thread_start(&vwd->workers[i].thread, "apu.voice",
                            voice_worker_thread, d, true);
@@ -2356,7 +2379,7 @@ static void voice_work_finalize(MCPXAPUState *d)
         pthread_cond_signal(&vwd->workers[i].cond);
     }
     pthread_mutex_unlock(&vwd->lock);
-    for (int i = 0; i < vwd->num_workers; i++) {
+    for (int i = 1; i < vwd->num_workers; i++) {
         pthread_join(vwd->workers[i].thread, NULL);
     }
     free(vwd->workers);
