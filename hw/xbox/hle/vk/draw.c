@@ -1242,8 +1242,16 @@ static uint32_t sampler_index(const uint32_t *tss, uint32_t lod_down)
                    (uint64_t)(tss[TSS_ADDRESSW] & 7) << 15 | (uint64_t)base << 18 |
                    (uint64_t)tss[TSS_BORDERCOLOR] << 32;
     uint64_t key2 = tss[TSS_MIPMAPLODBIAS] | (uint64_t)lod_down << 32;
-    for (uint32_t i = 0; i < g_dr.nsmp; i++) {
+    /* one per stage a draw: the index last found for the key's hash, before the scan */
+    static uint16_t hot[64];
+    unsigned h = (unsigned)(((key ^ key2 * 0x9E3779B97F4A7C15ull) * 0xFF51AFD7ED558CCDull) >> 58);
+    uint32_t i = hot[h];
+    if (i < g_dr.nsmp && g_dr.smp[i].key == key && g_dr.smp[i].key2 == key2) {
+        return i;
+    }
+    for (i = 0; i < g_dr.nsmp; i++) {
         if (g_dr.smp[i].key == key && g_dr.smp[i].key2 == key2) {
+            hot[h] = (uint16_t)i;
             return i;
         }
     }
@@ -1281,7 +1289,8 @@ static uint32_t sampler_index(const uint32_t *tss, uint32_t lod_down)
     if (T.vkCreateSampler(g_hvk.dev, &sci, NULL, &s) != VK_SUCCESS) {
         return 0;
     }
-    uint32_t i = g_dr.nsmp++;
+    i = g_dr.nsmp++;
+    hot[h] = (uint16_t)i;
     g_dr.smp[i].key = key;
     g_dr.smp[i].key2 = key2;
     g_dr.smp[i].s = s;
