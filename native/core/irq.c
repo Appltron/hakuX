@@ -158,6 +158,23 @@ void nc_irq_attach(NcCpu *cpu)
     }
 }
 
+volatile int g_nc_idle_waiting;
+
+/* The guest's CPU woken from its idle wait (nc_irq_idle_wait, the only one
+ * waiting on g_cv) for a line or work just set; not woken, nothing to do.
+ * The set, a full fence, the flag read here, against the wait's flag set, a
+ * full fence and its checks: one of the two sees the other's store. A
+ * broadcast a rise was a mutex and a futex wake each time. */
+static void wake_idle(void)
+{
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&g_nc_idle_waiting, __ATOMIC_RELAXED)) {
+        pthread_mutex_lock(&g_mu);
+        pthread_cond_broadcast(&g_cv);
+        pthread_mutex_unlock(&g_mu);
+    }
+}
+
 void nc_irq_set(unsigned line, bool level)
 {
     if (line >= NC_IRQ_LINES) {
@@ -198,7 +215,9 @@ void nc_irq_set(unsigned line, bool level)
      * it, as soon as it is set. Stored after, it outlived that lowering and
      * the next rise was timed from it: "delivered 20.0 ms after it rose"
      * for vblanks taken at once (PGR2's movies, many a second). */
-    __atomic_store_n(&g_up_cpu_ns[line], nc_irq_cpu_ns(), __ATOMIC_RELAXED);
+    /* the guest thread's CPU time at the rise, for the slow-delivery log
+     * (intr.c): a syscall a rise, so only with NC_IRQ_SCHED, as the delay */
+    __atomic_store_n(&g_up_cpu_ns[line], sched_on() ? nc_irq_cpu_ns() : 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_up_delay_ns[line], nc_irq_delay_ns(), __ATOMIC_RELAXED);
     __atomic_store_n(&g_up_ns[line], mono_ns(), __ATOMIC_RELEASE);
     if (__atomic_fetch_or(&g_lines, 1u << line, __ATOMIC_ACQ_REL) & (1u << line)) {
@@ -211,9 +230,7 @@ void nc_irq_set(unsigned line, bool level)
     if (cpu) {
         nc_cpu_request_interrupt(cpu);
     }
-    pthread_mutex_lock(&g_mu);
-    pthread_cond_broadcast(&g_cv);
-    pthread_mutex_unlock(&g_mu);
+    wake_idle();
 }
 
 uint32_t nc_irq_lines(void)
@@ -237,13 +254,10 @@ void nc_irq_enable(unsigned line, bool on)
         if (cpu) {
             nc_cpu_request_interrupt(cpu);
         }
-        pthread_mutex_lock(&g_mu);
-        pthread_cond_broadcast(&g_cv);
-        pthread_mutex_unlock(&g_mu);
+        wake_idle();
     }
 }
 
-volatile int g_nc_idle_waiting;
 static uint32_t g_work;
 
 void nc_irq_post_work(void)
@@ -254,9 +268,7 @@ void nc_irq_post_work(void)
     if (cpu) {
         nc_cpu_request_interrupt(cpu);
     }
-    pthread_mutex_lock(&g_mu);
-    pthread_cond_broadcast(&g_cv);
-    pthread_mutex_unlock(&g_mu);
+    wake_idle();
 }
 
 /* The emulation paused (the activity paused: the device suspends, another
@@ -418,7 +430,8 @@ uint32_t nc_irq_idle_wait(uint64_t deadline_ns, uint64_t max_ns)
         until = deadline_ns;
     }
     const struct timespec ts = {(time_t)(until / 1000000000ull), (long)(until % 1000000000ull)};
-    g_nc_idle_waiting = 1;
+    __atomic_store_n(&g_nc_idle_waiting, 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);    /* against wake_idle's */
     pthread_mutex_lock(&g_mu);
     while (!nc_irq_lines() && !__atomic_load_n(&g_work, __ATOMIC_ACQUIRE)) {
         if (pthread_cond_timedwait(&g_cv, &g_mu, &ts) != 0) {
@@ -426,6 +439,6 @@ uint32_t nc_irq_idle_wait(uint64_t deadline_ns, uint64_t max_ns)
         }
     }
     pthread_mutex_unlock(&g_mu);
-    g_nc_idle_waiting = 0;
+    __atomic_store_n(&g_nc_idle_waiting, 0, __ATOMIC_RELAXED);
     return nc_irq_lines();
 }
