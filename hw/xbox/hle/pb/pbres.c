@@ -16,30 +16,53 @@
 
 /* ---- arena ------------------------------------------------------------------- */
 
-static uint32_t arena_alloc(uint32_t len, uint32_t align, uint8_t **ptr)
+/* Room in arena a for len bytes (HLE_ARENA_FULL: none even with the GPU
+ * idle). Full: while its oldest block is a submitted one, wait for just
+ * that submission (the blocks behind it stay in flight, the GPU busy);
+ * once only the open one holds it, kick that and wait for it. Waiting for
+ * all that was submitted left the GPU idle and the decoder stopped for
+ * over 50 ms at a time. */
+static uint32_t ring_alloc(HleArena *a, uint32_t len, uint32_t align)
 {
-    for (unsigned tries = 0; tries < 2; tries++) {
-        hle_arena_retire(&g_harena.alloc, hle_tl_completed());
-        uint32_t off = hle_arena_alloc(&g_harena.alloc, len, align, hle_fe_last_value() + 1);
+    for (unsigned kicks = 0; kicks < 2;) {
+        hle_arena_retire(a, hle_tl_completed());
+        uint32_t off = hle_arena_alloc(a, len, align, hle_fe_last_value() + 1);
         if (off != HLE_ARENA_FULL) {
-            *ptr = g_harena.map + off;
             return off;
         }
-        /* everything pending belongs to the next submit: kick it and wait */
-        uint64_t v = hle_fe_next_value();
         uint32_t pa = hle_hitch_enter(HLE_ACT_ARENA);
-        HleCmdFence *f = hle_fe_begin(HLE_OP_KICK, sizeof(*f));
-        f->value = v;
-        hle_fe_commit();
+        uint64_t v = hle_arena_oldest(a);
+        if (!v || v > hle_fe_last_value()) {
+            /* everything pending belongs to the next submit: kick it */
+            v = hle_fe_next_value();
+            HleCmdFence *f = hle_fe_begin(HLE_OP_KICK, sizeof(*f));
+            f->value = v;
+            hle_fe_commit();
+            kicks++;
+        }
         hle_tl_wait(v);
         hle_hitch_leave(pa);
     }
     return HLE_ARENA_FULL;
 }
 
+static uint32_t arena_alloc(uint32_t len, uint32_t align, uint8_t **ptr)
+{
+    uint32_t off = ring_alloc(&g_harena.alloc, len, align);
+    if (off != HLE_ARENA_FULL) {
+        *ptr = g_harena.map + off;
+    }
+    return off;
+}
+
 uint32_t hle_draw_arena_alloc(uint32_t len, uint8_t **ptr)
 {
     return arena_alloc(len, 256, ptr);
+}
+
+uint32_t hle_draw_arena_alloc16(uint32_t len, uint8_t **ptr)
+{
+    return arena_alloc(len, 16, ptr);
 }
 
 /* ---- textures ------------------------------------------------------------------ */
@@ -519,19 +542,8 @@ uint32_t hle_res_rb_fb(uint32_t len)
     }
     /* the landing buffer (host-cached): its space is free again once the
      * GPU passes the value, after the landing read it */
-    for (unsigned tries = 0; tries < 2; tries++) {
-        hle_arena_retire(&g_hland.alloc, hle_tl_completed());
-        uint32_t off = hle_arena_alloc(&g_hland.alloc, len, 256, hle_fe_last_value() + 1);
-        if (off != HLE_ARENA_FULL) {
-            return off + 1;
-        }
-        uint64_t v = hle_fe_next_value();       /* full: kick what is pending and wait */
-        HleCmdFence *f = hle_fe_begin(HLE_OP_KICK, sizeof(*f));
-        f->value = v;
-        hle_fe_commit();
-        hle_tl_wait(v);
-    }
-    return 0;
+    uint32_t off = ring_alloc(&g_hland.alloc, len, 256);
+    return off == HLE_ARENA_FULL ? 0 : off + 1;
 }
 
 void hle_res_rb_land(HleCmdReadback *rb, uint32_t fb, uint32_t len, uint64_t value)

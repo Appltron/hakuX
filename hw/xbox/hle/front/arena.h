@@ -32,4 +32,11 @@ static inline uint32_t hle_arena_used(const HleArena *a)
     return a->used;
 }
 
+/* The oldest live block's value (the first the GPU's progress frees), 0 if
+ * none. */
+static inline uint64_t hle_arena_oldest(const HleArena *a)
+{
+    return a->nb ? a->blk[a->b0].value : 0;
+}
+
 #endif

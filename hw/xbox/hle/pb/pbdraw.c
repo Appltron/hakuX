@@ -234,6 +234,19 @@ static uint32_t arena(uint32_t len, uint8_t **ptr)
     return off;
 }
 
+/* A draw's 16-bit indices: the index buffer is bound at the arena's start
+ * (firstIndex), so 16 bytes apart will do where 256 wasted ~120 bytes a
+ * draw, and back-to-back draws' indices end up contiguous more often (the
+ * back end's strip batching). Vertex copies stay 256 apart: their binding
+ * offsets then match from draw to draw, which that batching needs. */
+static uint32_t arena_idx(uint32_t len, uint8_t **ptr)
+{
+    g_phase = 1;
+    uint32_t off = hle_draw_arena_alloc16(len, ptr);
+    g_phase = 0;
+    return off;
+}
+
 static void *begin(uint16_t op, uint32_t len)
 {
     g_phase = 2;
@@ -2507,7 +2520,7 @@ static bool sequential(HleCmdDraw *d, uint32_t n)
 {
     uint32_t cnt = hle_draw_prim_count(g_pd.prim, n);
     uint8_t *ib;
-    uint32_t ib_off = cnt ? arena(2 * cnt + 4, &ib) : HLE_ARENA_FULL;
+    uint32_t ib_off = cnt ? arena_idx(2 * cnt + 4, &ib) : HLE_ARENA_FULL;
     if (ib_off == HLE_ARENA_FULL) {
         return false;
     }
@@ -2774,7 +2787,7 @@ static void draw_arrays(void)
     }
     uint32_t cnt = hle_draw_prim_count(pt, n);
     uint8_t *ib;
-    uint32_t ib_off = cnt ? arena(2 * cnt + 4, &ib) : HLE_ARENA_FULL;
+    uint32_t ib_off = cnt ? arena_idx(2 * cnt + 4, &ib) : HLE_ARENA_FULL;
     if (ib_off == HLE_ARENA_FULL) {
         skip(SK_DRAW_ARRAYS_ARENA2);
         return;
