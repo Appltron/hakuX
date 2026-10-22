@@ -1,5 +1,6 @@
 package com.rfandango.haku_x.data
 
+import android.app.Application
 import android.content.Context
 import androidx.core.content.edit
 import java.util.Locale
@@ -30,12 +31,15 @@ enum class GameSetting(val key: String) {
  */
 class GameOverrides(context: Context, val game: String) {
   private val sp = context.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+  /** The bare title ID the overrides were kept under before the version joined the key. */
+  private val legacy = if (!game.startsWith(PATH) && '.' in game) game.substringBefore('.') else null
 
   init {
     // Overrides from before the version joined the key were the bare title
-    // ID's: the first of its discs to open takes them.
-    if (!game.startsWith(PATH) && '.' in game) {
-      val legacy = game.substringBefore('.')
+    // ID's: the first of its discs to open takes them. In the main process
+    // only: one written by the game's (its own process) is overwritten by
+    // the settings' cached copy; the game's reads them where they are (get).
+    if (legacy != null && Application.getProcessName() == context.packageName) {
       val old = GameSetting.entries.mapNotNull { s -> sp.getString("$legacy/${s.key}", null)?.let { s to it } }
       if (old.isNotEmpty()) {
         sp.edit {
@@ -48,7 +52,8 @@ class GameOverrides(context: Context, val game: String) {
     }
   }
 
-  operator fun get(setting: GameSetting): String? = sp.getString(key(setting), null)
+  operator fun get(setting: GameSetting): String? =
+    sp.getString(key(setting), null) ?: legacy?.let { sp.getString("$it/${setting.key}", null) }
 
   operator fun set(setting: GameSetting, value: String?) = sp.edit {
     if (value == null) remove(key(setting)) else putString(key(setting), value)
