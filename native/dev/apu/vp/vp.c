@@ -1993,7 +1993,14 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
         }
     }
 
+    /* The VP's own mix (the default, no DSP): the frame's mixbins are
+     * cleared unread at its end, but for the multipass bin the next voices
+     * of a group read (scheduled together, voice_work_schedule) */
+    const bool mon_vp = d->monitor.point == MCPX_APU_DEBUG_MON_VP;
     for (int b = 0; b < 8; b++) {
+        if (mon_vp && bin[b] != MULTIPASS_BIN) {
+            continue;
+        }
         float g = ea_value;
         float hr;
         if ((v < MCPX_HW_MAX_3D_VOICES) && (b < 4)) {
@@ -2116,9 +2123,14 @@ static void voice_work_share(MCPXAPUState *d, VoiceWorker *self)
     pthread_mutex_unlock(&vwd->lock);
 
     // Process queued voices
-    memset(self->mixbins, 0, sizeof(self->mixbins));
-    if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
+    const bool mon_vp = d->monitor.point == MCPX_APU_DEBUG_MON_VP;
+    if (mon_vp) {
+        /* only the multipass bin is mixed (voice_process), and it stays in
+         * the share: its group is scheduled together */
+        memset(self->mixbins[MULTIPASS_BIN], 0, sizeof(self->mixbins[0]));
         memset(self->sample_buf, 0, sizeof(self->sample_buf));
+    } else {
+        memset(self->mixbins, 0, sizeof(self->mixbins));
     }
     /* The frame's voice table (voice_process and its callees take
      * it as `c`; their stores are reported with the batch). */
@@ -2132,13 +2144,14 @@ static void voice_work_share(MCPXAPUState *d, VoiceWorker *self)
 
     pthread_mutex_lock(&vwd->lock);
 
-    // Add voice contributions
-    for (int b = 0; b < NUM_MIXBINS; b++) {
-        for (int s = 0; s < NUM_SAMPLES_PER_FRAME; s++) {
-            vwd->mixbins[b][s] += self->mixbins[b][s];
+    // Add voice contributions (the mixbins: the DSP's, which the VP's own mix has none of)
+    if (!mon_vp) {
+        for (int b = 0; b < NUM_MIXBINS; b++) {
+            for (int s = 0; s < NUM_SAMPLES_PER_FRAME; s++) {
+                vwd->mixbins[b][s] += self->mixbins[b][s];
+            }
         }
-    }
-    if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
+    } else {
         for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
             d->vp.sample_buf[i][0] += self->sample_buf[i][0];
             d->vp.sample_buf[i][1] += self->sample_buf[i][1];
@@ -2283,7 +2296,9 @@ voice_work_dispatch(MCPXAPUState *d, uint8_t *c,
     pthread_mutex_lock(&vwd->lock);
 
     if (vwd->queue_len) {
-        memset(vwd->mixbins, 0, sizeof(vwd->mixbins));
+        if (d->monitor.point != MCPX_APU_DEBUG_MON_VP) {
+            memset(vwd->mixbins, 0, sizeof(vwd->mixbins));
+        }
         vwd->table = c;
 
         // Signal only the helpers that have been assigned work
@@ -2306,10 +2321,12 @@ voice_work_dispatch(MCPXAPUState *d, uint8_t *c,
         voice_work_release_voice_locks(d);
         vwd->queue_len = 0;
 
-        // Add voice contributions
-        for (int b = 0; b < NUM_MIXBINS; b++) {
-            for (int s = 0; s < NUM_SAMPLES_PER_FRAME; s++) {
-                mixbins[b][s] += vwd->mixbins[b][s];
+        // Add voice contributions (none to the mixbins in the VP's own mix)
+        if (d->monitor.point != MCPX_APU_DEBUG_MON_VP) {
+            for (int b = 0; b < NUM_MIXBINS; b++) {
+                for (int s = 0; s < NUM_SAMPLES_PER_FRAME; s++) {
+                    mixbins[b][s] += vwd->mixbins[b][s];
+                }
             }
         }
     }

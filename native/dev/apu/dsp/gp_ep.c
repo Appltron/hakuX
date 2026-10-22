@@ -473,10 +473,15 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
                    NUM_MIXBINS * NUM_SAMPLES_PER_FRAME == DSP_MIXBUFFER_SIZE,
                    "the mixbins fill the GP's mix buffer");
     uint32_t *mixbuf = d->gp.dsp->core.mixbuffer;
-    for (int mixbin = 0; mixbin < NUM_MIXBINS; mixbin++) {
-        for (int sample = 0; sample < NUM_SAMPLES_PER_FRAME; sample++) {
-            mixbuf[mixbin * NUM_SAMPLES_PER_FRAME + sample] =
-                float_to_24b(mixbins[mixbin][sample]);
+    if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
+        /* the VP's own mix: the mixbins are all zero (mcpx_apu_vp_frame) */
+        memset(mixbuf, 0, NUM_MIXBINS * NUM_SAMPLES_PER_FRAME * sizeof(*mixbuf));
+    } else {
+        for (int mixbin = 0; mixbin < NUM_MIXBINS; mixbin++) {
+            for (int sample = 0; sample < NUM_SAMPLES_PER_FRAME; sample++) {
+                mixbuf[mixbin * NUM_SAMPLES_PER_FRAME + sample] =
+                    float_to_24b(mixbins[mixbin][sample]);
+            }
         }
     }
 
