@@ -1254,6 +1254,8 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
     uint32_t adpcm_block[36*2/4];
     MCPXAPUVoiceFilter *const vf = &d->vp.filters[v];
     const int16_t *adpcm_decoded = vf->adpcm_pcm;
+    uint32_t pcm_page = UINT32_MAX;     /* a buffer's page last looked up, its address */
+    uint64_t pcm_page_base = 0;
 
     // FIXME: Only update if necessary
     struct McpxApuDebugVoice *dbg = &g_dbg.vp.v[v];
@@ -1454,9 +1456,15 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
             if (stream) {
                 addr = segment_offset + cbo * block_size;
             } else {
+                /* the buffer's page looked up once per page, not per sample
+                 * (a read of the guest's page table each) */
                 uint32_t linear_addr = ba + cbo * block_size;
-                addr = get_data_ptr(d, d->regs[NV_PAPU_VPSGEADDR], 0xFFFFFFFF,
-                                    linear_addr);
+                if (linear_addr / APU_PAGE_SIZE != pcm_page) {
+                    pcm_page = linear_addr / APU_PAGE_SIZE;
+                    pcm_page_base = get_data_ptr(d, d->regs[NV_PAPU_VPSGEADDR], 0xFFFFFFFF,
+                                                 pcm_page * APU_PAGE_SIZE);
+                }
+                addr = pcm_page_base + linear_addr % APU_PAGE_SIZE;
             }
 
             /* Read directly from the host-mapped RAM pointer. */

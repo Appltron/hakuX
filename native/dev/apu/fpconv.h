@@ -28,14 +28,17 @@ static inline float int8_to_float(int8_t x)
     return x / 128.0f;
 }
 
+/* hakuX: these scale by powers of two, so the float forms give the double
+ * division's result bit for bit (the voices' per-sample decode did each in
+ * double). */
 static inline float uint8_to_float(uint8_t value)
 {
-    return ((int)value - 0x80) / (1.0 * 0x80);
+    return (float)((int)value - 0x80) * (1.0f / 0x80);
 }
 
 static inline float int16_to_float(int16_t value)
 {
-    return value / (1.0 * 0x8000);
+    return (float)value * (1.0f / 0x8000);
 }
 
 static inline float s6p9_to_float(int16_t value)
@@ -45,7 +48,7 @@ static inline float s6p9_to_float(int16_t value)
 
 static inline float int32_to_float(int32_t value)
 {
-    return value / (1.0 * 0x80000000);
+    return (float)value * (1.0f / 0x80000000u);   /* rounding commutes with the power of two */
 }
 
 static inline float int24_to_float(int32_t value)
