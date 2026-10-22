@@ -1228,12 +1228,16 @@ static void kcall(NcKernel *k, NcFrame *f, unsigned ordinal)
     } else if ((uint32_t)r >= 0xC0000000u && !k->redirected &&
                (!strncmp(e->name, "Nt", 2) || !strncmp(e->name, "Io", 2) || !strncmp(e->name, "Ob", 2))) {
         /* Failed object and I/O calls are rare and usually tell the story,
-         * with the title code that led there. */
-        char calls[96];
-        nc_kernel_frame_chain(k, f, calls, sizeof(calls));
-        nc_log("hakuX-ktrace", "t%u %s from %08x [%08x %08x %08x %08x %08x %08x] -> %08x | frames%s",
-               caller ? caller->id : 0, e->name, ret, args[0], args[1], args[2], args[3], args[4], args[5],
-               (uint32_t)r, calls);
+         * with the title code that led there; a title failing one in a loop
+         * has its first 400 told, then one in 100. */
+        static unsigned failed;
+        if (failed++ < 400 || failed % 100 == 0) {
+            char calls[96];
+            nc_kernel_frame_chain(k, f, calls, sizeof(calls));
+            nc_log("hakuX-ktrace", "t%u %s from %08x [%08x %08x %08x %08x %08x %08x] -> %08x | frames%s%s",
+                   caller ? caller->id : 0, e->name, ret, args[0], args[1], args[2], args[3], args[4], args[5],
+                   (uint32_t)r, calls, failed > 400 ? " (one of 100)" : "");
+        }
     }
     if ((caller && caller->state == NC_T_TERMINATED) || k->redirected) {
         return; /* PsTerminateSystemThread doesn't return; a callout returns later */

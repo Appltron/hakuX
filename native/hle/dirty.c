@@ -105,17 +105,25 @@ static void open_view(uint32_t pa, void *at)
  * RAM that reports itself dirty (the APU's DMA, a device model writing guest
  * memory through the RAM view, which nothing protects), with the host code
  * that wrote it as offsets in this library (llvm-addr2line). */
+static int g_watch_on = -1;
+static uint32_t g_watch_lo, g_watch_hi;
+
+/* (the callers' return addresses are taken only when it is) */
+static bool dev_watch_on(void)
+{
+    if (g_watch_on < 0) {
+        const char *s = getenv("NC_DEVWATCH");
+        g_watch_on = s && sscanf(s, "%x:%x", &g_watch_lo, &g_watch_hi) == 2 && g_watch_hi;
+        g_watch_hi += g_watch_lo;
+    }
+    return g_watch_on;
+}
+
 static void dev_watch(uint32_t start, uint32_t length, void *ra0, void *ra1)
 {
-    static int on = -1;
-    static uint32_t lo, hi;
     static unsigned logged;
-    if (on < 0) {
-        const char *s = getenv("NC_DEVWATCH");
-        on = s && sscanf(s, "%x:%x", &lo, &hi) == 2 && hi;
-        hi += lo;
-    }
-    if (!on || start >= hi || start + length <= lo || logged >= 200) {
+    const uint32_t lo = g_watch_lo, hi = g_watch_hi;
+    if (start >= hi || start + length <= lo || logged >= 200) {
         return;
     }
     logged++;
@@ -128,7 +136,9 @@ static void dev_watch(uint32_t start, uint32_t length, void *ra0, void *ra1)
 
 void hle_host_mem_set_dirty(uint32_t pa, uint32_t len)
 {
-    dev_watch(pa, len, __builtin_return_address(0), __builtin_return_address(1));
+    if (dev_watch_on()) {
+        dev_watch(pa, len, __builtin_return_address(0), __builtin_return_address(1));
+    }
     if (!g_vm) {
         return;
     }
