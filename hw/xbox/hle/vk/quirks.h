@@ -32,6 +32,14 @@ enum {
      * toward the eye and discard in the shader what is further in front
      * (vk/draw.c eq_tol, hle_draw_zeq). */
     HLE_QUIRK_EQ_DEPTH_STEP = 1u << 2,
+    /* A depth clear by the pass's loadOp (an LRZ fast clear the driver keeps
+     * on chip) is lost when the pass's first draws run without LRZ (the
+     * depth test off: a backdrop): the depth-tested draws after them read
+     * the LRZ state stored at the last pass's end and are rejected in blocks
+     * of 128 x 32 pixels against the previous frame's depth. Such a pass is
+     * preceded by an empty one of one pixel that clears depth, whose end
+     * stores the cleared state (back.c open_pass). */
+    HLE_QUIRK_LRZ_CLEAR = 1u << 3,
 };
 
 extern uint32_t g_hle_quirks;

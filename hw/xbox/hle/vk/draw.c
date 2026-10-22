@@ -1817,6 +1817,25 @@ static VkCompareOp cmp_op(uint32_t f)
     return (f >= 0x200 && f <= 0x207) ? (VkCompareOp)(f - 0x200) : VK_COMPARE_OP_ALWAYS;
 }
 
+/* The next draw runs without the driver's LRZ (quirks.h HLE_QUIRK_LRZ_CLEAR):
+ * no depth test, a test LRZ does not keep (EQUAL, ALWAYS, NEVER, NOT_EQUAL),
+ * or a stencil write when the depth test fails. */
+bool hle_draw_lrz_off(void)
+{
+    const uint32_t *rs = g_dr.st.rs;
+    if (!g_dr.st_valid || !rs[RS_ZENABLE] ||
+        (rs[RS_STENCILENABLE] && stencil_op(rs[RS_STENCILZFAIL]) != VK_STENCIL_OP_KEEP)) {
+        return true;
+    }
+    switch (cmp_op(rs[RS_ZFUNC])) {
+    case VK_COMPARE_OP_LESS: case VK_COMPARE_OP_LESS_OR_EQUAL:
+    case VK_COMPARE_OP_GREATER: case VK_COMPARE_OP_GREATER_OR_EQUAL:
+        return false;
+    default:
+        return true;
+    }
+}
+
 /* Vertex attributes for an FVF on binding 0. */
 static uint32_t fvf_attrs(uint32_t fvf, VkVertexInputAttributeDescription2EXT *a)
 {

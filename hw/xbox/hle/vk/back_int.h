@@ -157,6 +157,8 @@ void hle_draw_snap_end(void);
  * (shader/ff.h) by depth buffer ds_id's step, its fragments in front of the
  * stored depth discarded by reading it (set 2, binding 1); 0 = not. */
 unsigned hle_draw_zeq(const HleCmdDraw *c, uint32_t ds_id);
+/* The next draw runs without the driver's LRZ (vk/quirks.h HLE_QUIRK_LRZ_CLEAR). */
+bool hle_draw_lrz_off(void);
 /* What the next hle_draw_cmd_draw has bound of that (back.c): the bits, or 0. */
 extern unsigned g_hle_zeq;
 /* In the open pass: rt's view as input attachment 0 and depth view zv as the

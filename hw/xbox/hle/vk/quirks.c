@@ -44,6 +44,11 @@ static const HleQuirk k_quirks[] = {
      * passes over the base pass split by a mid-frame kick; the stock Adreno
      * driver drew them right (A/B, 2026-10-14). */
     { HLE_QUIRK_EQ_DEPTH_STEP, "eq_depth_step", mesa_turnip },
+    /* Turnip 26.3 (Adreno 650): Blood Wake's boat select and Crazy Taxi 3's
+     * driver select showed the model in blocks only; both clear, draw a
+     * backdrop with the depth test off, then the model. TU_DEBUG=nolrzfc
+     * (LRZ cleared by a blit) drew them right (2026-10-22). */
+    { HLE_QUIRK_LRZ_CLEAR, "lrz_clear", mesa_turnip },
 };
 
 static uint32_t g_defaults;

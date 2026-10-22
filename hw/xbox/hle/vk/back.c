@@ -24,6 +24,7 @@
 #include "hw/xbox/hle/prof.h"
 #include "hw/xbox/hle/vk/display.h"
 #include "hw/xbox/hle/vk/guest_ram.h"
+#include "hw/xbox/hle/vk/quirks.h"
 
 #define T (g_hvk.t)
 
@@ -537,7 +538,9 @@ static VkClearColorValue color_of(uint32_t argb)
  * one (the draw merge count, hle_draw_ff_diag). */
 uint64_t hle_back_breaks;
 
-static bool open_pass(void)
+/* lrz_off: the pass's first draw runs without the driver's LRZ
+ * (hle_draw_lrz_off; true when not known) */
+static bool open_pass(bool lrz_off)
 {
     hle_back_breaks++;
     HleVkSurf *rt = hle_surf_get(g_back.rt), *ds = hle_surf_get(g_back.ds);
@@ -591,6 +594,22 @@ static bool open_pass(void)
         }
         hle_surf_transition(cb, ds, ds->local_read ? VK_IMAGE_LAYOUT_RENDERING_LOCAL_READ_KHR
                                                    : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        /* A pass clearing depth that opens on a draw without LRZ: an empty
+         * pass of one pixel clears it first, and its end stores the driver's
+         * cleared LRZ state, which the pass falls back to (quirks.h). */
+        if ((pf & HLE_CLEAR_ZBUFFER) && lrz_off && hle_quirk(HLE_QUIRK_LRZ_CLEAR)) {
+            VkRenderingAttachmentInfo za = {
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = ds->view,
+                .imageLayout = ds->layout, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .clearValue.depthStencil.depth = g_back.pend_z };
+            VkRenderingInfo zi = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                                   .renderArea = { { 0, 0 }, { 1, 1 } }, .layerCount = 1,
+                                   .pDepthAttachment = &za };
+            T.vkCmdBeginRendering(cb, &zi);
+            T.vkCmdEndRendering(cb);
+            hle_img_barrier(cb, ds->img, ds->aspect, ds->layout, ds->layout);
+        }
         if (title_pf & (HLE_CLEAR_ZBUFFER | HLE_CLEAR_STENCIL)) {
             hle_surf_written(ds);       /* else its draws say (draw.c), when they write it */
         }
@@ -647,7 +666,7 @@ static void close_pass_why(unsigned why)
 {
     hle_back_breaks++;
     if (!g_back.pass_open && g_back.pend_clear) {
-        open_pass();                          /* clear-only pass: loadOp=CLEAR */
+        open_pass(false);                     /* clear-only pass: loadOp=CLEAR */
     }
     if (g_back.pass_open) {
         vis_pass_end(g_back.fr[g_back.cur].cb);
@@ -1465,7 +1484,7 @@ static void cmd_clear(const HleCmdClear *c)
     if ((flags & HLE_CLEAR_TARGET) && (flags & HLE_CLEAR_TARGET) != HLE_CLEAR_TARGET) {
         /* a channel subset: drawn through the write mask, the rest as usual */
         uint32_t rest = flags & ~HLE_CLEAR_TARGET;
-        if (!g_back.pass_open && !open_pass()) {
+        if (!g_back.pass_open && !open_pass(true)) {
             return;
         }
         if (clear_masked(c, rt, ds, flags)) {
@@ -1514,7 +1533,7 @@ static void cmd_clear(const HleCmdClear *c)
         g_back.pend_clear = true;
         return;
     }
-    if (!g_back.pass_open && !open_pass()) {
+    if (!g_back.pass_open && !open_pass(true)) {
         return;
     }
     VkClearAttachment at[2];
@@ -2311,9 +2330,9 @@ static void dispatch(const HleCmdHdr *h)
         }
         if (g_hle_gpucut == 3) {
             if (!g_back.pass_open) {
-                open_pass();            /* debug: the passes alone, no draw state */
+                open_pass(true);        /* debug: the passes alone, no draw state */
             }
-        } else if (g_back.pass_open || open_pass()) {
+        } else if (g_back.pass_open || open_pass(hle_draw_lrz_off())) {
             vis_draw(g_back.fr[g_back.cur].cb);
             VkImageView zv = zds ? hle_zread_depth_view(zds) : VK_NULL_HANDLE;
             if (fbrt || zv) {
