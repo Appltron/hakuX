@@ -129,6 +129,8 @@ void hle_draw_cmd_state_part(const HleCmdStatePart *p);
 void hle_draw_cmd_tex(const HleCmdTex *c, VkCommandBuffer cb);
 void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
                        uint32_t ds_id, const HleCmdViewport *vp);
+/* A recording starts (back.c cb_get, outside any pass). */
+void hle_draw_rec_begin(VkCommandBuffer cb);
 /* The command buffer's pipeline / dynamic state is no longer what the draws
  * recorded: a new command buffer, or another pipeline bound into it. */
 void hle_draw_state_lost(void);

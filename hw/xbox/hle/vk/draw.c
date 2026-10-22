@@ -517,7 +517,8 @@ int hle_draw_init(void)
 }
 
 /* The white texture's contents and layout, recorded once into the first
- * command buffer that draws. */
+ * command buffer, before any pass (a clear and layout changes are not
+ * allowed in one; at the first draw they were, the validation layer said). */
 static void white_init(VkCommandBuffer cb)
 {
     static bool done;
@@ -2630,6 +2631,13 @@ static uint32_t rec_state_hash(void)
     return h;
 }
 
+void hle_draw_rec_begin(VkCommandBuffer cb)
+{
+    if (g_dr.ready) {
+        white_init(cb);
+    }
+}
+
 void hle_draw_state_lost(void)
 {
     memset(&g_rec, 0, sizeof(g_rec));   /* also what a draw does not record */
@@ -2794,7 +2802,6 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
             }
         }
     }
-    white_init(cb);
     PipeKey k;
     memset(&k, 0, sizeof(k));
     k.vs.fvf = c->fvf;

@@ -510,6 +510,7 @@ static VkCommandBuffer cb_get(void)
                 .memoryBarrierCount = 1, .pMemoryBarriers = &mb };
             T.vkCmdPipelineBarrier2(f->cb, &di);
         }
+        hle_draw_rec_begin(f->cb);
         hle_draw_state_lost();
         gput_begin(f->cb, g_back.cur);
         pt_slot_begin(f->cb, g_back.cur);
