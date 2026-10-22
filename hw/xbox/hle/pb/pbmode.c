@@ -1009,8 +1009,12 @@ static void catch_up(void)
  * FLIP_INCREMENT_WRITEs (the frames), a packet's data at once. Synced at the
  * PUT, the first time and after the push buffer changed, the guest set GET
  * or the stream lost it: what came before that isn't gated. At a software
- * trap it waits until the decoder is past it (scout_take). Debug:
+ * trap it waits until the decoder is past it (scout_take). The small blits
+ * D3D patches a recorded buffer's closing JUMP with, before it jumps there
+ * (RunPushBuffer), it applies to the words it reads next (scout_blit). Debug:
  * HAKUX_HLE_PB_VISGATE=0, no gate (A/B). */
+#define SC_PATCHES 16
+
 static struct {
     HlePusher p;
     bool synced;
@@ -1019,6 +1023,10 @@ static struct {
     bool at_trap;                       /* stopped at the trap word at PA trap */
     uint32_t trap;
     uint64_t past;                      /* the decoder's traps past (g_trel) looked through */
+    uint32_t s2d[0x400 / 4];            /* the 2D surfaces' methods, as read */
+    uint32_t blit_in[8], blit_out[8];   /* the blits' POINT_IN / POINT_OUT, by subchannel */
+    struct { uint32_t pa, v; } patch[SC_PATCHES];   /* words the blits read will write */
+    unsigned npatch;
 } g_sc;
 
 static void scout_report(uint32_t v)
@@ -1027,6 +1035,66 @@ static void scout_report(uint32_t v)
     if (ri && v >> 24 == 1) {                       /* z-pass pixel counts */
         hle_barrier_report_pushed(dma_base(ri) + (v & 0x00FFFFFFu), g_sc.frame);
     }
+}
+
+/* An NV09F SIZE the scout reads: a blit of one to four 32-bit words in a
+ * row, D3D's patch of a recorded buffer's closing JUMP (Riddick runs dozens
+ * a frame), is noted as the words it will write. Read before the decoder
+ * made it, the JUMP went back to the buffer's last run and the scout round
+ * old commands to its budget at most PUTs: a third of Riddick's guest
+ * thread on the RP5. */
+static void scout_blit(unsigned subch, uint32_t size)
+{
+    static const uint8_t k_bpp[16] = { 0, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 4 };
+    const uint32_t *s = g_sc.s2d;
+    const uint32_t w = size & 0xFFFF, h = size >> 16;
+    if (k_bpp[s[0x300 >> 2] & 0xF] != 4 || h != 1 || !w || w > 4) {
+        return;
+    }
+    const uint32_t pin = g_sc.blit_in[subch], pout = g_sc.blit_out[subch];
+    const uint32_t so = ((ctx_base(s[0x184 >> 2]) + s[0x308 >> 2]) & 0x07FFFFFFu) +
+                        (pin >> 16) * (s[0x304 >> 2] & 0xFFFF) + (pin & 0xFFFF) * 4;
+    const uint32_t d = ((ctx_base(s[0x188 >> 2]) + s[0x30C >> 2]) & 0x07FFFFFFu) +
+                       (pout >> 16) * (s[0x304 >> 2] >> 16) + (pout & 0xFFFF) * 4;
+    const uint32_t *src = (const uint32_t *)hle_pa_ptr(so, 4 * w);
+    for (uint32_t i = 0; src && i < w; i++) {
+        unsigned k = g_sc.npatch++ % SC_PATCHES;
+        g_sc.patch[k].pa = d + 4 * i;
+        g_sc.patch[k].v = src[i];
+    }
+}
+
+static void scout_2d(uint8_t cls, unsigned subch, uint32_t m, uint32_t v)
+{
+    if (m >= 0x400) {
+        return;
+    }
+    if (cls == NV_CLASS_SURFACES2D) {
+        g_sc.s2d[m >> 2] = v;
+    } else if (m == 0x300) {
+        g_sc.blit_in[subch] = v;
+    } else if (m == 0x304) {
+        g_sc.blit_out[subch] = v;
+    } else if (m == 0x308) {
+        scout_blit(subch, v);
+    }
+}
+
+/* The push buffer's words as the scout reads them: a method or branch word
+ * a blit read before will write, that one (newest first, once: the next
+ * run of the buffer comes with its own blit). */
+static const uint32_t *scout_fetch(void *ctx, uint32_t pa, uint32_t n)
+{
+    static uint32_t v;
+    for (unsigned i = 0; n == 1 && i < MIN(g_sc.npatch, SC_PATCHES); i++) {
+        const unsigned k = (g_sc.npatch - 1 - i) % SC_PATCHES;
+        if (g_sc.patch[k].pa == pa) {
+            g_sc.patch[k].pa = 0;
+            v = g_sc.patch[k].v;
+            return &v;
+        }
+    }
+    return fetch(ctx, pa, n);
 }
 
 static uint32_t scout_take(void *opaque, unsigned subch, uint32_t m, bool noninc,
@@ -1060,7 +1128,14 @@ static uint32_t scout_take(void *opaque, unsigned subch, uint32_t m, bool noninc
             return i + 1;
         }
     }
-    if (g_pb.obj_class[subch & 7] != 0x97) {
+    const uint8_t cls = g_pb.obj_class[subch & 7];
+    if (cls == NV_CLASS_SURFACES2D || cls == NV_CLASS_BLIT) {
+        for (uint32_t i = 0; i < n; i++) {
+            scout_2d(cls, subch & 7, noninc ? m : m + 4 * i, w[i]);
+        }
+        return n;
+    }
+    if (cls != 0x97) {
         return n;
     }
     if (noninc) {
@@ -1132,6 +1207,11 @@ static uint32_t scout_to(uint32_t put)
         g_sc.inst = inst;
         g_sc.synced = true;
         g_sc.at_trap = false;
+        g_sc.npatch = 0;
+        /* the format, pitches and DMA objects come with the device's set-up,
+         * long before: the decoder's (its offsets are behind, the scout's
+         * own come with each blit) */
+        memcpy(g_sc.s2d, g_pb.s2d, sizeof(g_sc.s2d));
         g_sc.past = __atomic_load_n(&g_trel.n, __ATOMIC_ACQUIRE);
         return g_sc.frame;
     }
@@ -1139,7 +1219,7 @@ static uint32_t scout_to(uint32_t put)
         return g_sc.frame;
     }
     g_sc.at_trap = false;
-    if (hle_pb_pusher_run(&g_sc.p, put, fetch, NULL, &k_scout) == HLE_PB_ERR_LOOP) {
+    if (hle_pb_pusher_run(&g_sc.p, put, scout_fetch, NULL, &k_scout) == HLE_PB_ERR_LOOP) {
         static unsigned logged;                 /* it syncs again at the next PUT */
         if (logged++ < 8) {
             hle_log("hakuX-hle-pb", "report scout: lost the stream at GET %08x (PUT %08x, %s)",
