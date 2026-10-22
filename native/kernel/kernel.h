@@ -445,6 +445,13 @@ void nc_kstate_capture_frame(NcKernel *k, const NcFrame *f, bool idle);
 const NcCpuContext *nc_kstate_start_context(NcKernel *k);
 /* Refreshes KeTickCount, KeInterruptTime and KeSystemTime. */
 void nc_ke_update_time(NcKernel *k);
+/* The same at a kernel entry, from the published time (no clock read) when
+ * there is one. */
+void nc_ke_tick_time(NcKernel *k);
+/* The clock thread's (about every millisecond): the guest's time now. */
+void nc_ke_publish_time(uint64_t guest_ns);
+/* That time, 0 if none or stale. */
+uint64_t nc_ke_published_ns(void);
 /* How many refreshes so far (any thread may read it: the clock's tick). */
 uint32_t nc_ke_time_refreshes(void);
 /* Wakes waiting threads whose waits are satisfied or timed out. Returns the

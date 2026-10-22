@@ -664,6 +664,10 @@ static NcCpu *g_clock_cpu;
  * Theory waits ten ticks that way at boot; on the RP5 nothing else was due
  * and it spun for good. NC_CLOCK_TICK=0: the time only with what is due. */
 #define CLOCK_PERIOD_NS 1000000ull
+/* How far behind now the published time may be (its period, and the
+ * thread's wake-up late): within this of a due time, an entry reads the
+ * clock (clock_tick). */
+#define CLOCK_SLACK_NS (2 * CLOCK_PERIOD_NS)
 
 static void *clock_thread(void *arg)
 {
@@ -672,7 +676,11 @@ static void *clock_thread(void *arg)
     pthread_mutex_lock(&g_clock_mu);
     uint32_t seen = nc_ke_time_refreshes();
     for (;;) {
-        uint64_t wake = tick ? nc_ke_now_ns() + CLOCK_PERIOD_NS : 0;
+        const uint64_t now = nc_ke_now_ns();
+        if (tick) {
+            nc_ke_publish_time(now);    /* the kernel entries' time (nc_ke_tick_time) */
+        }
+        uint64_t wake = tick ? now + CLOCK_PERIOD_NS : 0;
         if (g_clock_due && (!wake || g_clock_due < wake)) {
             wake = g_clock_due;
         }
@@ -694,7 +702,11 @@ static void *clock_thread(void *arg)
             continue; /* re-armed, or paused */
         }
         bool irq = false;
-        if (g_clock_due && nc_ke_now_ns() >= g_clock_due) {
+        const uint64_t woke = nc_ke_now_ns();
+        if (tick) {
+            nc_ke_publish_time(woke);   /* before the interrupt: its clock_tick looks by it */
+        }
+        if (g_clock_due && woke >= g_clock_due) {
             g_clock_due = 0;
             irq = true;
         }
@@ -759,6 +771,26 @@ static void clock_tick(NcKernel *k)
 {
     if (!k->timer_due_ns && !k->wait_due_ns && !k->slice_due_ns) {
         return;
+    }
+    /* Nothing due for a while by the published time: no clock read (one a
+     * kernel entry otherwise, something being armed nearly always). Each due
+     * time is armed with the clock thread (nc_kernel_clock_arm), which wakes
+     * the guest for it on time if no entry comes after it. */
+    const uint64_t pub = nc_ke_published_ns();
+    if (pub) {
+        uint64_t due = UINT64_MAX;
+        if (k->timer_due_ns) {
+            due = k->timer_due_ns;
+        }
+        if (k->wait_due_ns && k->wait_due_ns < due) {
+            due = k->wait_due_ns;
+        }
+        if (k->slice_due_ns && k->slice_due_ns < due) {
+            due = k->slice_due_ns;
+        }
+        if (pub + CLOCK_SLACK_NS < due) {
+            return;
+        }
     }
     const uint64_t now = nc_ke_now_ns();
     const bool timer_due = k->timer_due_ns && now >= k->timer_due_ns;
@@ -864,7 +896,7 @@ static void slow_note(const char *what, uint32_t at, const uint32_t *args, uint6
 
 static void kcall(NcKernel *k, NcFrame *f, unsigned ordinal)
 {
-    nc_ke_update_time(k);
+    nc_ke_tick_time(k);
     clock_tick(k);
     const uint32_t esp = nc_frame_gpr(f, NC_ESP);
     const uint32_t ret = nc_vm_rd32(k->vm, esp);

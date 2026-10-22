@@ -215,20 +215,73 @@ uint32_t nc_ke_time_refreshes(void)
     return __atomic_load_n(&g_refreshes, __ATOMIC_RELAXED);
 }
 
-void nc_ke_update_time(NcKernel *k)
+/* The guest's time as the clock thread last read it (nc_ke_publish_time,
+ * about every millisecond, the Xbox's clock interrupt), with the coarse
+ * clock then; 0 until it runs. Kernel entries take the tick counts from it
+ * (nc_ke_tick_time) and look whether something may be due by it (kernel.c
+ * clock_tick), without a clock read of their own. */
+static uint64_t g_pub_ns, g_pub_coarse;
+
+void nc_ke_publish_time(uint64_t guest_ns)
 {
-    nc_ke_time_stale();                 /* after a wait: now is later */
-    __atomic_store_n(&g_refreshes, g_refreshes + 1, __ATOMIC_RELAXED);  /* the guest's thread */
+    __atomic_store_n(&g_pub_coarse, coarse_ns(), __ATOMIC_RELAXED);
+    __atomic_store_n(&g_pub_ns, guest_ns, __ATOMIC_RELEASE);
+}
+
+/* The published time, or 0 when there is none or the coarse clock says it
+ * is stale (more than its tick, 4 ms on the RP5, without a publish: the
+ * clock thread held off). */
+uint64_t nc_ke_published_ns(void)
+{
+    const uint64_t pub = __atomic_load_n(&g_pub_ns, __ATOMIC_ACQUIRE);
+    if (!pub || coarse_ns() - __atomic_load_n(&g_pub_coarse, __ATOMIC_RELAXED) > 4000000ull) {
+        return 0;
+    }
+    return pub;
+}
+
+/* KeTickCount, KeInterruptTime and KeSystemTime at t (100 ns since boot):
+ * only ever forward, whichever clock they came from. */
+static uint64_t g_times_t;
+
+static void write_times(NcKernel *k, uint64_t t)
+{
     static uint32_t tick, interrupt, system;
     if (!tick) {
         tick = data_va(k, "KeTickCount");
         interrupt = data_va(k, "KeInterruptTime");
         system = data_va(k, "KeSystemTime");
     }
-    const uint64_t t = since_boot_100ns();
+    if (t < g_times_t) {
+        t = g_times_t;
+    }
+    g_times_t = t;
+    __atomic_store_n(&g_refreshes, g_refreshes + 1, __ATOMIC_RELAXED);  /* the guest's thread */
     nc_vm_wr32(k->vm, tick, (uint32_t)(t / 10000u));
     wr_ksystem_time(k->vm, interrupt, t);
     wr_ksystem_time(k->vm, system, BOOT_FILETIME + g_time_offset + t);
+}
+
+void nc_ke_update_time(NcKernel *k)
+{
+    nc_ke_time_stale();                 /* after a wait: now is later */
+    write_times(k, since_boot_100ns());
+}
+
+/* A kernel entry's: the times from the published clock when it moved, as
+ * nc_ke_update_time without its clock read (~160 ns on the RP5, one each
+ * entry). */
+void nc_ke_tick_time(NcKernel *k)
+{
+    const uint64_t pub = nc_ke_published_ns();
+    if (pub < g_boot_ns + 1) {
+        nc_ke_update_time(k);           /* none yet */
+        return;
+    }
+    const uint64_t t = (pub - g_boot_ns) / 100u;
+    if (t > g_times_t) {
+        write_times(k, t);
+    }
 }
 
 static uint32_t data_va(NcKernel *k, const char *name)
