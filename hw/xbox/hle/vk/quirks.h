@@ -26,6 +26,12 @@ enum {
     /* Every dynamic state recorded again after a pipeline bind: the broad
      * form of the one above, for telling which state a driver loses. */
     HLE_QUIRK_STATE_AFTER_PIPELINE = 1u << 1,
+    /* Two programs with the same invariant position math come out a depth
+     * step apart when they run in different command buffers: an EQUAL pass
+     * that does not write misses whole triangles. Such passes test a step
+     * toward the eye and discard in the shader what is further in front
+     * (vk/draw.c eq_tol, hle_draw_zeq). */
+    HLE_QUIRK_EQ_DEPTH_STEP = 1u << 2,
 };
 
 extern uint32_t g_hle_quirks;

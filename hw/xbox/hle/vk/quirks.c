@@ -28,6 +28,11 @@ static bool qualcomm_proprietary(const HleDriver *d)
     return d->drv.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
 }
 
+static bool mesa_turnip(const HleDriver *d)
+{
+    return d->drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
+}
+
 /* Seen on (driver, version, what showed it). */
 static const HleQuirk k_quirks[] = {
     /* Adreno 840 stock driver 0x8034a02c: Forza's menu text picks its glyph
@@ -35,6 +40,10 @@ static const HleQuirk k_quirks[] = {
      * read v4 from offset 144 of the vertex instead of 64 (wrong letters). */
     { HLE_QUIRK_VI_AFTER_PIPELINE, "vi_after_pipeline", qualcomm_proprietary },
     { HLE_QUIRK_STATE_AFTER_PIPELINE, "state_after_pipeline", NULL },
+    /* Turnip: Halo's floors flashed unlit in single frames, its lighting
+     * passes over the base pass split by a mid-frame kick; the stock Adreno
+     * driver drew them right (A/B, 2026-10-14). */
+    { HLE_QUIRK_EQ_DEPTH_STEP, "eq_depth_step", mesa_turnip },
 };
 
 static uint32_t g_defaults;

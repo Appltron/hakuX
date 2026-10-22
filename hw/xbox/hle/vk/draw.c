@@ -965,7 +965,8 @@ unsigned g_hle_zeq;
 unsigned hle_draw_zeq(const HleCmdDraw *c, uint32_t ds_id)
 {
     const uint32_t *rs = g_dr.st.rs;
-    if (!g_hvk.caps.fbfetch || !g_dr.st_valid || g_eqtol_off || g_zeq_off || !ds_id ||
+    if (!g_hvk.caps.fbfetch || !g_dr.st_valid || !hle_quirk(HLE_QUIRK_EQ_DEPTH_STEP) || g_eqtol_off ||
+        g_zeq_off || !ds_id ||
         rs[RS_ZENABLE] != 1 || rs[RS_ZWRITEENABLE] || rs[RS_ZFUNC] != 0x202 ||
         rs[RS_SOLIDOFFSETENABLE] || c->prim < VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST) {
         return 0;
@@ -3123,10 +3124,10 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
      * Adreno driver does not), and the pass then misses whole triangles,
      * which flash unlit. LESSEQUAL one step toward the eye passes a step
      * either way and still fails hidden surfaces; the shader discards what
-     * is further in front (hle_draw_zeq, bound by back.c). debug.hakux.eqtol=0
-     * turns it off (live). */
+     * is further in front (hle_draw_zeq, bound by back.c). Only on the drivers
+     * with HLE_QUIRK_EQ_DEPTH_STEP; debug.hakux.eqtol=0 turns it off (live). */
     bool eq_tol = zt && tri && !(dbgf & 4) && !s->rs[RS_ZWRITEENABLE] &&
-                  s->rs[RS_ZFUNC] == 0x202 && !g_eqtol_off;
+                  s->rs[RS_ZFUNC] == 0x202 && hle_quirk(HLE_QUIRK_EQ_DEPTH_STEP) && !g_eqtol_off;
     if (eq_tol) {
         zslope = bias ? zslope : 0.0f;
         zofs = (bias ? zofs : 0.0f) - 1.0f;
