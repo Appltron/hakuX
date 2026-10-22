@@ -141,7 +141,7 @@ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
 
     apu_or(&d->regs[NV_PAPU_ISTS],
               NV_PAPU_ISTS_FEVINTSTS | NV_PAPU_ISTS_FENINTSTS);
-    d->set_irq = true;
+    apu_st(&d->set_irq, true);
 }
 
 static void voice_reset_filters(MCPXAPUState *d, uint16_t v)
@@ -904,7 +904,7 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
             d->regs[NV_PAPU_FECTL] &= ~NV_PAPU_FECTL_FETRAPREASON;
             d->regs[NV_PAPU_FECTL] |= NV_PAPU_FECTL_FETRAPREASON_REQUESTED;
             DPRINTF("idle voice %d\n", argument);
-            d->set_irq = true;
+            apu_st(&d->set_irq, true);
         } else {
             DPRINTF("ignoring idle voice %d without FETFORCE1 request\n",
                     argument);

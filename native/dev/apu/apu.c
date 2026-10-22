@@ -472,7 +472,7 @@ void mcpx_apu_reset(MCPXAPUState *d)
            sizeof(d->gp.dsp->core.pram_opcache));
     memset(d->ep.dsp->core.pram_opcache, 0,
            sizeof(d->ep.dsp->core.pram_opcache));
-    d->set_irq = false;
+    apu_st(&d->set_irq, false);
     d->snapshot_just_loaded = false;
     d->next_frame_time_us = 0;
     pthread_cond_signal(&d->cond);
@@ -505,7 +505,7 @@ void mcpx_apu_post_load(MCPXAPUState *d)
      * guest has settled. */
     apu_and(&d->regs[NV_PAPU_ISTS],
             ~(NV_PAPU_ISTS_FEVINTSTS | NV_PAPU_ISTS_FENINTSTS));
-    d->set_irq = false;
+    apu_st(&d->set_irq, false);
     d->snapshot_just_loaded = true;
     update_irq(d);
 }
@@ -522,10 +522,12 @@ static void *mcpx_apu_frame_thread(void *arg)
         if (xcntmode == NV_PAPU_SECTL_XCNTMODE_OFF ||
             (fectl & NV_PAPU_FECTL_FEMETHMODE_TRAPPED) ||
             (fectl & NV_PAPU_FECTL_FEMETHMODE_HALTED)) {
-            d->set_irq = true;
+            apu_st(&d->set_irq, true);
         }
 
-        if (d->set_irq) {
+        /* taken and cleared at once: one the guest thread raises meanwhile
+         * stays for the next frame (a plain clear after update_irq lost it) */
+        if (apu_xchg(&d->set_irq, false)) {
             if (d->snapshot_just_loaded) {
                 /* Swallow exactly the FIRST post-restore IRQ assert: a voice
                  * that was at completion when the snapshot was taken re-emits
@@ -536,11 +538,9 @@ static void *mcpx_apu_frame_thread(void *arg)
                  * the notification is delayed — never lost. */
                 apu_and(&d->regs[NV_PAPU_ISTS],
                         ~(NV_PAPU_ISTS_FEVINTSTS | NV_PAPU_ISTS_FENINTSTS));
-                d->set_irq = false;
                 d->snapshot_just_loaded = false;
             } else {
                 update_irq(d);
-                d->set_irq = false;
             }
         }
 
@@ -630,7 +630,7 @@ void nc_dev_apu_init(NcVm *vm)
 
     mcpx_apu_dsp_init(d);
 
-    d->set_irq = false;
+    apu_st(&d->set_irq, false);
     d->exiting = false;
 
     pthread_mutex_init(&d->lock, NULL);
