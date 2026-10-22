@@ -181,9 +181,10 @@ static struct {
      * attributes), reused while neither changed and the submission it was
      * tagged for is still the one being gathered */
     uint64_t cgen;                      /* bumped as consts or cur change */
-    uint64_t blk_gen, blk_value;
+    uint64_t ffgen;                     /* bumped as a register ff_consts reads changes */
+    uint64_t blk_gen, blk_ffgen, blk_value;
     uint32_t blk_off;
-    bool blk_ok;
+    bool blk_ok, blk_ff;
     uint64_t blk_reused;
     uint64_t vb_place, vb_copied;       /* vertex ranges read in place, copied */
     uint64_t seq_draws;                 /* DRAW_ARRAYS of one run in order, drawn without indices */
@@ -248,9 +249,34 @@ const char *hle_pbd_phase(void)
 
 static void vsh_forget(void);
 
+/* The method words ff_consts reads, a bit each (method >> 2): a change to
+ * one bumps ffgen, and a fixed-function draw reuses the last block while
+ * none moved (emit). */
+static uint64_t g_ff_regs[0x2000 / 4 / 64];
+
+static void ff_regs_init(void)
+{
+    static const uint32_t ranges[][2] = {   /* [first, end) */
+        { 0x03A8, 0x03B8 },     /* emission, scene ambient's alpha */
+        { 0x043C, 0x0440 },     /* point size */
+        { 0x0480, 0x07C0 },     /* modelview, inverse, composite, texture matrices */
+        { 0x0840, 0x0940 },     /* texgen planes */
+        { 0x09D0, 0x0A60 },     /* fog plane, specular, ambient, viewport offset, point, eye */
+        { 0x1000, 0x1400 },     /* lights */
+        { 0x1E28, 0x1E40 },     /* back specular */
+    };
+    memset(g_ff_regs, 0, sizeof(g_ff_regs));
+    for (unsigned i = 0; i < ARRAY_SIZE(ranges); i++) {
+        for (uint32_t m = ranges[i][0]; m < ranges[i][1]; m += 4) {
+            g_ff_regs[m >> 8] |= 1ull << ((m >> 2) & 63);
+        }
+    }
+}
+
 bool hle_pbd_start(void)
 {
     memset(&g_pd, 0, sizeof(g_pd));
+    ff_regs_init();
     vsh_forget();                           /* program memory starts empty */
     g_pd.next_id = 1;
     g_pd.idx = g_new(uint32_t, MAX_INDICES);
@@ -2405,10 +2431,13 @@ static void emit(HleCmdDraw *d)
     const bool ff = (R(NV097_SET_TRANSFORM_EXECUTION_MODE) & 3) != 2;
     uint8_t *cb;
     uint32_t c_off;
-    /* a program draw whose constants and current attributes are the last
-     * one's, in the same submission (its block lives until that completes):
-     * that block. Crimson Sea's 2300 draws a frame copied 3.3 KB each. */
-    if (!ff && g_pd.blk_ok && g_pd.blk_gen == g_pd.cgen && g_pd.blk_value == hle_fe_last_value()) {
+    /* a draw whose constants and current attributes are the last one's, in
+     * the same submission (its block lives until that completes): that
+     * block. Crimson Sea's 2300 draws a frame copied 3.3 KB each; a
+     * fixed-function draw's block (ff_consts) holds while none of the
+     * registers it is made of changed (ffgen). */
+    if (g_pd.blk_ok && g_pd.blk_ff == ff && g_pd.blk_gen == g_pd.cgen &&
+        (!ff || g_pd.blk_ffgen == g_pd.ffgen) && g_pd.blk_value == hle_fe_last_value()) {
         c_off = g_pd.blk_off;
         g_pd.blk_reused++;
     } else {
@@ -2423,7 +2452,9 @@ static void emit(HleCmdDraw *d)
             memcpy(cb, g_pd.consts, sizeof(g_pd.consts));
         }
         memcpy(cb + sizeof(g_pd.consts), g_pd.cur, sizeof(g_pd.cur));
-        g_pd.blk_ok = !ff;
+        g_pd.blk_ok = true;
+        g_pd.blk_ff = ff;
+        g_pd.blk_ffgen = g_pd.ffgen;
         g_pd.blk_off = c_off;
         g_pd.blk_gen = g_pd.cgen;
         g_pd.blk_value = hle_fe_last_value();   /* after arena(): it may have kicked */
@@ -2911,6 +2942,9 @@ void hle_pbd_method(uint32_t m, uint32_t v)
     if (g_pd.in_draw && g_pd.ndm < 12) {     /* debug: what an empty draw held */
         g_pd.dm[g_pd.ndm++] = m << 16 | (v & 0xFFFF);
     }
+    if (g_pd.r[m >> 2] != v && (g_ff_regs[m >> 8] >> ((m >> 2) & 63) & 1)) {
+        g_pd.ffgen++;                       /* (D3D sends matrices again unchanged) */
+    }
     g_pd.r[m >> 2] = v;
     if (vertex_data(m, v)) {
         return;
@@ -3195,6 +3229,7 @@ bool hle_pbd_state_set(const HlePbdState *s, const float *imm, const uint32_t *i
     }
     g_pd.rt_dirty = true;                   /* the targets bound again from the methods */
     g_pd.cgen++;
+    g_pd.ffgen++;
     g_pd.st_sent = false;
     hle_pbd_restored();
     return true;
