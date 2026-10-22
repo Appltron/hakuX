@@ -52,7 +52,7 @@ static void test_program(void)
     HT_CHECK(strstr(buf, "mulz(oPos.xyzz, c[58].xyzz)") != NULL);   /* R12 reads oPos */
     HT_CHECK(strstr(buf, "oFog.x = i.w;") != NULL);     /* the top masked component */
     HT_CHECK(strstr(buf, "vFog = oFog.x;") != NULL);
-    HT_CHECK(strstr(buf, "A0 = int(floor(m.x));") != NULL);
+    HT_CHECK(strstr(buf, "A0 = int(floor(m.x + 1.0 / 1024.0));") != NULL);
     HT_CHECK(strstr(buf, "c[clamp(A0 + 121, 0, 191)].zwww") != NULL);
     HT_CHECK(strstr(buf, "-c[clamp(A0 + 121, 0, 191)].xyyy") != NULL);
     HT_CHECK(strstr(buf, "oD1.xyzw = ") != NULL);

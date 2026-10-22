@@ -149,7 +149,13 @@ static void out_write(Buf *b, const Nv2aVshOutput *o, const char *val, bool *fog
         }
         break;
     case NV2ART_ADDRESS:
-        put(b, "    A0 = int(floor(%s.x));\n", val);
+        /* ARL floors, but an index the program computes as a whole number
+         * (a bone's, from a byte attribute times 765: i / 255 * 765) can land
+         * a rounding error below it here where the NV2A lands on it: floored,
+         * the vertex took the bone's previous matrix row, and Azurik's model
+         * threw a few of its vertices into the ground. A bias far above fp32's
+         * error at these magnitudes, far below an intended fraction's. */
+        put(b, "    A0 = int(floor(%s.x + 1.0 / 1024.0));\n", val);
         break;
     default:                            /* CONTEXT writes: state programs only */
         break;
