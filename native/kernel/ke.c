@@ -526,6 +526,12 @@ void nc_ke_wake(NcKernel *k, NcThread *t, uint32_t status)
 
 static uint32_t handle_object(NcKernel *k, uint32_t handle)
 {
+    /* NtCurrentThread (-2): a thread is signalled only once it ends, so a wait
+     * on itself is an (alertable) sleep; a Kakuto Chojin thread sleeps so,
+     * and failing at once it spun and starved the main thread at boot */
+    if (handle == 0xFFFFFFFEu) {
+        return k->current ? k->current->ethread : 0;
+    }
     enum NcObType type;
     const uint32_t obj = nc_ob_lookup(k, handle, &type);
     /* A file is waited on through its Event (FILE_OBJECT +0x38): Bink's reads
