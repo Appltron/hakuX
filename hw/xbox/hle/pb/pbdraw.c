@@ -1408,8 +1408,8 @@ static uint64_t fnv64(const void *p, size_t n)
 
 /* The last slots hashed, per source (a program, the fixed-function key):
  * a draw's program is the same as the last one's almost always, and a
- * memcmp of its slots is far cheaper than fnv64's byte-serial multiply
- * chain (Crimson Sea hashed ~2300 programs a frame, ~4% of the decoder). */
+ * memcmp of its slots is cheaper than hashing them (Crimson Sea hashed
+ * ~2300 programs a frame, ~4% of the decoder, with fnv64). */
 typedef struct VshHash {
     uint32_t n;
     bool ok;
@@ -1465,7 +1465,7 @@ static uint64_t send_vsh(const void *slots, uint32_t n, VshHash *vc)
     if (vc->ok && vc->n == n && !memcmp(vc->slots, slots, 16 * n)) {
         h = vc->h;
     } else {
-        h = fnv64(slots, 16 * n);
+        h = XXH3_64bits(slots, 16 * n);     /* fnv64's byte chain: ~2% of the decoder in Halo 2 */
         vc->ok = n <= HLE_VSH_MAX_SLOTS;
         if (vc->ok) {
             vc->n = n;
@@ -1766,12 +1766,7 @@ void hle_pbd_blit(uint32_t sbase, uint32_t sp, uint32_t dbase, uint32_t dp, uint
 
 static uint32_t hash32(const void *p, size_t n)
 {
-    const uint8_t *b = p;
-    uint32_t h = 2166136261u;
-    for (size_t i = 0; i < n; i++) {
-        h = (h ^ b[i]) * 16777619u;
-    }
-    return h;
+    return (uint32_t)XXH3_64bits(p, n);
 }
 
 /* skipped draws by reason (debug: the log line) */
