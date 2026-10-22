@@ -609,6 +609,7 @@ typedef struct DiscJob {
     uint32_t va, n;
     uint32_t iosb, event, apc, apc_ctx;
     NcThread *thread;
+    uint32_t thread_id;      /* its id then: the slot may hold another thread by the end */
     bool ok;
     int err;
     char path[64]; /* for the log */
@@ -697,7 +698,8 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, ui
         }
     }
     DiscJob j = {.disc = k->disc, .file = nf->disc, .fd = -1, .off = off, .va = a[5], .n = n, .iosb = a[4],
-                 .event = event, .apc = a[2], .apc_ctx = a[3], .thread = k->current};
+                 .event = event, .apc = a[2], .apc_ctx = a[3], .thread = k->current,
+                 .thread_id = k->current ? k->current->id : 0};
     snprintf(j.path, sizeof(j.path), "%s", nf->path);
     j.seg = malloc(sizeof(*j.seg) * ((n + NC_PAGE - 1) / NC_PAGE + 1));
     if (!j.seg) {
@@ -780,7 +782,8 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
     if (j->event) {
         nc_ke_set_event(k, j->event);
     }
-    if (j->apc && j->thread && j->thread->state != NC_T_TERMINATED) {
+    if (j->apc && j->thread && j->thread->id == j->thread_id && j->thread->state != NC_T_FREE &&
+        j->thread->state != NC_T_TERMINATED) {
         const NcApc apc = {.normal = j->apc, .ctx = j->apc_ctx, .a1 = j->iosb, .a2 = 0};
         nc_apc_queue(k, j->thread, &apc);
     }
