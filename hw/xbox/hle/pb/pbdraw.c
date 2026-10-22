@@ -2869,10 +2869,7 @@ static void draw_arrays(void)
             return;
         }
     }
-    /* indices, rebased and converted */
-    for (uint32_t i = 0; i < n; i++) {
-        g_pd.idx16[i] = (uint16_t)(g_pd.idx[i] - lo);
-    }
+    /* indices, rebased (and quads and line loops converted) */
     uint32_t cnt = hle_draw_prim_count(pt, n);
     uint8_t *ib;
     uint32_t ib_off = cnt ? arena_idx(2 * cnt + 4, &ib) : HLE_ARENA_FULL;
@@ -2880,7 +2877,17 @@ static void draw_arrays(void)
         skip(SK_DRAW_ARRAYS_ARENA2);
         return;
     }
-    hle_draw_prim_indices(pt, g_pd.idx16, n, 0, (uint16_t *)ib);
+    if (pt == NV2A_PRIM_QUADS || pt == NV2A_PRIM_LINE_LOOP) {
+        for (uint32_t i = 0; i < n; i++) {
+            g_pd.idx16[i] = (uint16_t)(g_pd.idx[i] - lo);
+        }
+        hle_draw_prim_indices(pt, g_pd.idx16, n, 0, (uint16_t *)ib);
+    } else {
+        uint16_t *o = (uint16_t *)ib;
+        for (uint32_t i = 0; i < n; i++) {
+            o[i] = (uint16_t)(g_pd.idx[i] - lo);
+        }
+    }
     d.prim = hle_draw_prim_topology(pt);
     d.count = cnt;
     d.ib_off = ib_off;
