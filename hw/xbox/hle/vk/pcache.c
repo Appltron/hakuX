@@ -203,14 +203,11 @@ uint32_t *hle_spirv_get(HleShaderStage stage, const char *src, size_t *nwords)
         return spv;
     }
     size_t len = strlen(src);
-    {   /* glslang one compile at a time: the render thread, the pipeline
-         * workers and the prebuild call this (a miss is the first sight of a
-         * shader, rare once the disk cache has it) */
-        static pthread_mutex_t glslang_mu = PTHREAD_MUTEX_INITIALIZER;
-        pthread_mutex_lock(&glslang_mu);
-        spv = hle_glsl_compile(stage, src, nwords);
-        pthread_mutex_unlock(&glslang_mu);
-    }
+    /* any thread: the render thread, the pipeline workers, the prebuild.
+     * glslang compiles in parallel (16.x: a pool allocator per thread, its
+     * built-in tables made under its own lock), as the other callers of
+     * hle_glsl_compile always did */
+    spv = hle_glsl_compile(stage, src, nwords);
     hle_atomic_inc(&g_pc.spv_misses);
     if (spv && path) {
         SpvHeader h = { SPV_MAGIC, (uint32_t)len, check, (uint32_t)*nwords, 0 };
