@@ -91,7 +91,8 @@ writes `mod.txt`; the XBE is
   tasks that drew (the D3D draws set the slot's bit in DRAWN, 0x10CF0).
 - The code sits in the header page (sizeof_headers 0xC68 -> 0x1000):
   variables at 0x10CF0 (DRAWN), 0x10CF4 (PARITY, 0 on logic frames),
-  0x10CF8 (LASTTICK); code at 0x10D00-0x10E8F. Free: 0x10E90-0x10FFF.
+  0x10CF8 (LASTTICK), 0x10E90 (PENDING); code at 0x10D00-0x10F0C. Free:
+  0x10F10-0x10FFF.
 - Tasks that run every frame without drawing (C_ALWAYS, by entry): the
   select screen's model loader (0x12F490, fed by 0x12F460; skipped, its
   fighters were drawn every other tick) and the fight's render setup
@@ -101,8 +102,14 @@ writes `mod.txt`; the XBE is
   0xD9364 and 0xDAF32) and the render setup's 0x850730 (0x5C46C) move on
   logic frames only, so a fighter drawn twice in one tick takes the
   game's repeat path (0x5B729).
-- Known: the select screen's "A Select / B Back" legend is drawn on logic
-  frames only (it flickers at 60 Hz). Not traced yet.
+- 2D lists (text, icons): tasks append items (0xB0590), the 2D task (slot
+  15, entry 0x6D0B0) draws them (0xB0600) and resets them (0xAE300) at its
+  frame's end. The select screen's task (slot 1, 0x13B800) doesn't draw,
+  so it was skipped on the frames in between and its "A Select / B Back"
+  legend flickered (fixed 2026-10-22): the reset now waits for the next
+  logic frame's start (C_LOGIC, PENDING 0x10E90) and the frames in between
+  drop their appends, drawing the logic frame's 2D again. Found with the
+  force mask (below): slot 1 alone made it steady.
 - Finding a task by experiment: a cave that also runs the slots set in a
   guest word (`bt [0x10CFC], slot`), then `setprop debug.hakux.memscan
   poke=10CFC:<mask>,<salt>` on the running game. One build, any number of
@@ -157,7 +164,7 @@ writes `mod.txt`; the XBE is
      saved ones back, so the in-between frame draws the tick exactly.
      The buffers (~17 KB) come from `MmAllocateContiguousMemory` (kernel
      thunk 0x3C155C, ordinal 165) on first use, the pointer kept in the
-     header page. About 500 bytes of code space remain there.
+     header page. About 240 bytes of code space remain there.
    - To look for afterwards: the seams and the hair roots. The CPU builds
      them from the halfway palette on the logic frame, and the in-between
      frame reuses them while drawing the exact palette. If that shows, run
