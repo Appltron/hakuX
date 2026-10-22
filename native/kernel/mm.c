@@ -315,10 +315,31 @@ static uint64_t NtFreeVirtualMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
         return 0xC00000A0u; /* STATUS_MEMORY_NOT_ALLOCATED */
     }
     if (a[2] & MEM_RELEASE) {
-        base = r->base;
-        size = r->size;
+        /* Size 0 frees the whole reservation, from its base only; a size frees
+         * those pages of one reservation, trimming or splitting it (Blood Wake
+         * keeps the first page of a 1.9 MiB one and releases the rest). */
+        const uint32_t r_end = r->base + r->size;
+        const uint32_t end = size ? nc_align_up(base + size, NC_PAGE) : r_end;
+        base &= ~(NC_PAGE - 1);
+        if (!size && base != r->base) {
+            return 0xC000009Fu; /* STATUS_FREE_VM_NOT_AT_BASE */
+        }
+        if (end > r_end) {
+            return 0xC000001Au; /* STATUS_UNABLE_TO_FREE_VM */
+        }
+        if (base > r->base && end < r_end && !add_region(end, r_end - end, r->protect, false)) {
+            return NC_STATUS_NO_MEMORY;
+        }
+        size = end - base;
         decommit(k, base, size);
-        *r = g_regions[--g_nregions];
+        if (base > r->base) {
+            r->size = base - r->base;
+        } else if (end < r_end) {
+            r->base = end;
+            r->size = r_end - end;
+        } else {
+            *r = g_regions[--g_nregions];
+        }
     } else if (a[2] & MEM_DECOMMIT) {
         uint32_t end = size ? nc_align_up(base + size, NC_PAGE) : r->base + r->size;
         base &= ~(NC_PAGE - 1);
