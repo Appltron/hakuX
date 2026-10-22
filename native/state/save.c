@@ -127,14 +127,26 @@ static void identity(NcStateInfo *in)
 
 /* ------------------------------------------------------------------ save */
 
+/* A save request: pending until the guest CPU takes it (taking while it
+ * writes the state), done with its result. */
 static struct {
     pthread_mutex_t mu;
-    pthread_cond_t cv;
-    bool pending, done;
+    pthread_cond_t cv;          /* CLOCK_MONOTONIC (init_req) */
+    bool pending, taking, done;
     char path[512];
     const char *result;
     char why[256];
-} g_req = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
+} g_req = {PTHREAD_MUTEX_INITIALIZER};
+static pthread_once_t g_req_once = PTHREAD_ONCE_INIT;
+
+static void init_req(void)
+{
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&g_req.cv, &attr);
+    pthread_condattr_destroy(&attr);
+}
 
 static const char *capture(NcKernel *k, const NcFrame *f, bool idle)
 {
@@ -175,15 +187,17 @@ static const char *capture(NcKernel *k, const NcFrame *f, bool idle)
 void nc_state_cpu_work(NcKernel *k, const NcFrame *f, bool idle)
 {
     pthread_mutex_lock(&g_req.mu);
-    const bool pending = g_req.pending;
+    const bool take = g_req.pending;
+    g_req.pending = false;
+    g_req.taking = take;                /* the requester waits for it now, however long */
     pthread_mutex_unlock(&g_req.mu);
-    if (!pending) {
+    if (!take) {
         return;
     }
     const char *r = capture(k, f, idle);
     pthread_mutex_lock(&g_req.mu);
     g_req.result = r;
-    g_req.pending = false;
+    g_req.taking = false;
     g_req.done = true;
     pthread_cond_broadcast(&g_req.cv);
     pthread_mutex_unlock(&g_req.mu);
@@ -197,6 +211,7 @@ const char *nc_state_save(const char *path)
     if (!hle_pb_active()) {
         return "savestates need push-buffer mode";
     }
+    pthread_once(&g_req_once, init_req);    /* the guest CPU waits on it only for a request */
     const uint64_t t0 = mono_ns();
     const bool was_paused = nc_paused();
     /* the frame before the next flip: the decoder stops at its stall, the
@@ -216,22 +231,26 @@ const char *nc_state_save(const char *path)
         pthread_mutex_lock(&g_req.mu);
         snprintf(g_req.path, sizeof(g_req.path), "%s", path);
         g_req.pending = true;
+        g_req.taking = false;
         g_req.done = false;
         g_req.result = NULL;
         pthread_mutex_unlock(&g_req.mu);
         nc_pause_set(true);
         nc_pause_kick();
         struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
+        clock_gettime(CLOCK_MONOTONIC, &ts);
         ts.tv_sec += 15;
+        /* 15 s for the guest CPU to take the request; once it has, the
+         * state is being written and the game resumes only after it (the
+         * devices would change what it writes) */
         pthread_mutex_lock(&g_req.mu);
-        while (!g_req.done) {
-            if (pthread_cond_timedwait(&g_req.cv, &g_req.mu, &ts) != 0) {
-                break;
-            }
+        int rc = 0;
+        while (!g_req.done && (rc == 0 || g_req.taking)) {
+            rc = g_req.taking ? pthread_cond_wait(&g_req.cv, &g_req.mu)
+                              : pthread_cond_timedwait(&g_req.cv, &g_req.mu, &ts);
         }
         result = g_req.done ? g_req.result : "the game did not stop";
-        g_req.pending = false;
+        g_req.pending = false;          /* not taken: withdrawn */
         pthread_mutex_unlock(&g_req.mu);
     }
     hle_pb_unpark();
