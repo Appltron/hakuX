@@ -31,6 +31,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -240,6 +241,126 @@ static bool write_all(int fd, const void *p, size_t n)
 
 #define CHUNK (1u << 20)
 
+/* A file gzipped on PZ_THREADS threads, PZ_PIECE bytes each, as pigz does:
+ * each piece raw deflate primed with the 32 KiB before it and ended on a
+ * byte boundary (a sync flush, the last on the final block), the pieces one
+ * deflate stream in one gzip member (CRCs combined): any gunzip reads it.
+ * On one thread Halo 2's 720 MiB of new cache took 9.2 s of a 9.6 s save. */
+#define PZ_THREADS 4
+#define PZ_PIECE (4u << 20)
+#define PZ_DICT 32768u
+
+typedef struct PzPiece {
+    const uint8_t *in, *dict;
+    size_t len, dict_len;
+    bool last;
+    uint8_t *out;
+    size_t out_len, out_cap;
+    uLong crc;
+    bool ok;
+    pthread_t th;
+    bool started;
+} PzPiece;
+
+static void *pz_piece(void *arg)
+{
+    PzPiece *p = arg;
+    z_stream s;
+    memset(&s, 0, sizeof(s));
+    p->ok = false;
+    if (deflateInit2(&s, 1, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        return NULL;
+    }
+    const size_t need = deflateBound(&s, p->len) + 16;
+    if (need > p->out_cap) {
+        free(p->out);
+        p->out = malloc(need);
+        p->out_cap = p->out ? need : 0;
+    }
+    if (p->out && (!p->dict_len || deflateSetDictionary(&s, p->dict, (uInt)p->dict_len) == Z_OK)) {
+        s.next_in = (Bytef *)p->in;
+        s.avail_in = (uInt)p->len;
+        s.next_out = p->out;
+        s.avail_out = (uInt)p->out_cap;
+        const int r = deflate(&s, p->last ? Z_FINISH : Z_SYNC_FLUSH);
+        p->ok = (p->last ? r == Z_STREAM_END : r == Z_OK) && s.avail_in == 0;
+        p->out_len = p->out_cap - s.avail_out;
+    }
+    deflateEnd(&s);
+    p->crc = crc32(0, p->in, (uInt)p->len);
+    return NULL;
+}
+
+/* src (size bytes) to the gzip file out, hashed meanwhile (XXH3-128 into st) */
+static bool pz_file(int in, uint64_t size, int out, XXH3_state_t *st)
+{
+    static const uint8_t head[10] = {0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 4, 3};
+    uint8_t *buf = malloc(PZ_DICT + (size_t)PZ_THREADS * PZ_PIECE);
+    PzPiece pc[PZ_THREADS];
+    memset(pc, 0, sizeof(pc));
+    bool ok = buf && write_all(out, head, sizeof(head));
+    uLong crc = crc32(0, NULL, 0);
+    uint64_t done = 0;
+    size_t dict = 0;                            /* the last round's tail, at buf */
+    while (ok) {
+        /* a round: up to PZ_THREADS pieces after the dictionary bytes */
+        uint8_t *data = buf + PZ_DICT;
+        const uint64_t left = size - done, round = (uint64_t)PZ_THREADS * PZ_PIECE;
+        size_t have = 0, want = (size_t)(left < round ? left : round);
+        while (ok && have < want) {
+            const ssize_t r = read(in, data + have, want - have);
+            if (r < 0 && errno == EINTR) {
+                continue;
+            }
+            ok = r > 0;
+            have += r > 0 ? (size_t)r : 0;
+        }
+        if (!ok) {
+            break;
+        }
+        XXH3_128bits_update(st, data, have);
+        const bool final = done + have == size;
+        unsigned n = 0;
+        for (size_t at = 0; at < have || (!n && final); at += PZ_PIECE, n++) {
+            PzPiece *p = &pc[n];
+            p->in = data + at;
+            p->len = have - at < PZ_PIECE ? have - at : PZ_PIECE;
+            p->dict_len = at ? PZ_DICT : dict;
+            p->dict = p->in - p->dict_len;
+            p->last = final && at + p->len == have;
+            p->started = n && pthread_create(&p->th, NULL, pz_piece, p) == 0;
+        }
+        for (unsigned i = 0; i < n; i++) {
+            if (!i || !pc[i].started) {
+                pz_piece(&pc[i]);
+            }
+        }
+        for (unsigned i = 0; i < n; i++) {
+            if (pc[i].started) {
+                pthread_join(pc[i].th, NULL);
+            }
+            ok = ok && pc[i].ok && write_all(out, pc[i].out, pc[i].out_len);
+            crc = crc32_combine(crc, pc[i].crc, (z_off_t)pc[i].len);
+        }
+        done += have;
+        if (final) {
+            break;
+        }
+        dict = have < PZ_DICT ? have : PZ_DICT;
+        memmove(buf + PZ_DICT - dict, data + have - dict, dict);
+    }
+    if (ok) {
+        const uint8_t tail[8] = {(uint8_t)crc, (uint8_t)(crc >> 8), (uint8_t)(crc >> 16), (uint8_t)(crc >> 24),
+                                 (uint8_t)size, (uint8_t)(size >> 8), (uint8_t)(size >> 16), (uint8_t)(size >> 24)};
+        ok = write_all(out, tail, sizeof(tail));
+    }
+    for (unsigned i = 0; i < PZ_THREADS; i++) {
+        free(pc[i].out);
+    }
+    free(buf);
+    return ok;
+}
+
 /* src hashed, and its bytes stored as a gzip blob unless that content is
  * there; *stored, *packed: bytes new to the store, as read and as written. */
 static bool store_file(const char *src, const char *bdir, uint8_t hash[16], uint64_t *stored, uint64_t *packed)
@@ -248,27 +369,11 @@ static bool store_file(const char *src, const char *bdir, uint8_t hash[16], uint
     snprintf(tmp, sizeof(tmp), "%s/.tmp", bdir);
     const int in = open(src, O_RDONLY | O_CLOEXEC);
     const int out = in >= 0 ? open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600) : -1;
-    gzFile gz = out >= 0 ? gzdopen(out, "wb1") : NULL;     /* closes out */
-    if (out >= 0 && !gz) {
-        close(out);
-    }
-    uint8_t *buf = malloc(CHUNK);
+    struct stat isb;
     XXH3_state_t *st = XXH3_createState();
-    bool ok = in >= 0 && gz && gzbuffer(gz, 256u << 10) == 0 && buf && st && XXH3_128bits_reset(st) == XXH_OK;
-    uint64_t n = 0;
-    while (ok) {
-        const ssize_t r = read(in, buf, CHUNK);
-        if (r < 0 && errno == EINTR) {
-            continue;
-        }
-        if (r <= 0) {
-            ok = r == 0;
-            break;
-        }
-        XXH3_128bits_update(st, buf, (size_t)r);
-        ok = gzwrite(gz, buf, (unsigned)r) == (int)r;
-        n += (uint64_t)r;
-    }
+    bool ok = in >= 0 && out >= 0 && fstat(in, &isb) == 0 && st && XXH3_128bits_reset(st) == XXH_OK &&
+              pz_file(in, (uint64_t)isb.st_size, out, st);
+    const uint64_t n = ok ? (uint64_t)isb.st_size : 0;
     if (ok) {
         XXH128_canonical_t c;
         XXH128_canonicalFromHash(&c, XXH3_128bits_digest(st));
@@ -277,10 +382,9 @@ static bool store_file(const char *src, const char *bdir, uint8_t hash[16], uint
     if (in >= 0) {
         close(in);
     }
-    if (gz) {
-        ok = gzclose(gz) == Z_OK && ok;
+    if (out >= 0) {
+        ok = close(out) == 0 && ok;
     }
-    free(buf);
     if (st) {
         XXH3_freeState(st);
     }
