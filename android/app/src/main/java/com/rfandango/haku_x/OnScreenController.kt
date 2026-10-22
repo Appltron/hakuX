@@ -7,10 +7,13 @@ import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.PointF
 import android.graphics.RectF
+import android.graphics.RenderNode
+import android.os.Build
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import androidx.annotation.RequiresApi
 import com.rfandango.haku_x.overlay.ControlId
 import com.rfandango.haku_x.overlay.ControlKind
 import com.rfandango.haku_x.overlay.ControlPainter
@@ -19,6 +22,8 @@ import com.rfandango.haku_x.overlay.OverlayLayout
 import com.rfandango.haku_x.overlay.OverlayStore
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -169,6 +174,7 @@ class OnScreenController @JvmOverloads constructor(
     if (editing) {
       drawEditBackdrop(canvas)
     }
+    val cached = !editing && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && canvas.isHardwareAccelerated
     for (s in l.controls.values) {
       if (!editing && off(s)) {
         continue
@@ -176,6 +182,10 @@ class OnScreenController @JvmOverloads constructor(
       // Each control at its own opacity; editing, a hidden one stays faint
       // where it is, so it can be selected and shown again.
       val opacity = if (s.visible) s.opacity else 0.25f
+      if (cached) {
+        drawCached(canvas, s, opacity)
+        continue
+      }
       val b = s.radius * ControlPainter.reach(s.id.kind) * 1.3f
       canvas.saveLayerAlpha(s.cx - b, s.cy - b, s.cx + b, s.cy + b, (opacity * 255).roundToInt())
       drawControl(canvas, s)
@@ -198,6 +208,64 @@ class OnScreenController @JvmOverloads constructor(
   }
 
   private val hint by lazy { context.getString(R.string.overlay_editor_hint) }
+
+  /*
+   * Playing: each control in its own display list and GPU layer, recorded
+   * again only when it looks different (its state, its place), its opacity
+   * applied as the layer is composited. Drawn whole at every touch event,
+   * each through an offscreen layer with its gradients made anew, the
+   * controls took the Galaxy Tab S9's render thread ~80% of a core while a
+   * stick was held.
+   */
+  private data class Look(
+    val cx: Float, val cy: Float, val r: Float,
+    val pressed: Boolean, val kx: Float, val ky: Float, val dpad: Int,
+  )
+
+  private val nodes = HashMap<ControlId, RenderNode>()
+  private val looks = HashMap<ControlId, Look>()
+
+  private fun look(s: ControlSpec): Look = when (s.id.kind) {
+    ControlKind.STICK -> {
+      val i = stickIndex(s.id)
+      Look(s.cx, s.cy, s.radius, stickPointer[i] != -1, stickPos[i].x, stickPos[i].y, 0)
+    }
+    ControlKind.DPAD -> Look(s.cx, s.cy, s.radius, dpadBits != 0, 0f, 0f, dpadBits)
+    ControlKind.MENU -> Look(s.cx, s.cy, s.radius, menuPressed, 0f, 0f, 0)
+    else -> Look(s.cx, s.cy, s.radius, s.id in held, 0f, 0f, 0)
+  }
+
+  @RequiresApi(Build.VERSION_CODES.Q)
+  private fun drawCached(canvas: Canvas, s: ControlSpec, opacity: Float) {
+    val node = nodes.getOrPut(s.id) { RenderNode(s.id.name).apply { setUseCompositingLayer(true, null) } }
+    val look = look(s)
+    if (looks[s.id] != look || !node.hasDisplayList()) {
+      looks[s.id] = look
+      val b = s.radius * ControlPainter.reach(s.id.kind) * 1.3f
+      val left = floor(s.cx - b).toInt()
+      val top = floor(s.cy - b).toInt()
+      node.setPosition(left, top, ceil(s.cx + b).toInt(), ceil(s.cy + b).toInt())
+      val c = node.beginRecording()
+      c.translate(-left.toFloat(), -top.toFloat())
+      drawControl(c, s)
+      node.endRecording()
+    }
+    node.setAlpha(opacity)
+    canvas.drawRenderNode(node)
+  }
+
+  /* What the controls show while playing: a touch that changes none of it draws nothing. */
+  private fun shown(): Int {
+    var h = held.keys.hashCode()
+    h = 31 * h + dpadBits
+    h = 31 * h + if (menuPressed) 1 else 0
+    for (i in 0..1) {
+      h = 31 * h + if (stickPointer[i] != -1) 1 else 0
+      h = 31 * h + stickPos[i].x.toRawBits()
+      h = 31 * h + stickPos[i].y.toRawBits()
+    }
+    return h
+  }
 
   private fun drawControl(canvas: Canvas, s: ControlSpec) {
     when (s.id.kind) {
@@ -277,10 +345,14 @@ class OnScreenController @JvmOverloads constructor(
     if (layout == null) return false
     if (editing) {
       editTouch(event)
+      invalidate()
     } else {
+      val before = shown()
       playTouch(event)
+      if (shown() != before) {
+        invalidate()
+      }
     }
-    invalidate()
     return true
   }
 
@@ -416,6 +488,11 @@ class OnScreenController @JvmOverloads constructor(
 
   override fun onDetachedFromWindow() {
     resetAllInputs()
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      nodes.values.forEach { it.discardDisplayList() }
+    }
+    nodes.clear()
+    looks.clear()
     super.onDetachedFromWindow()
   }
 
