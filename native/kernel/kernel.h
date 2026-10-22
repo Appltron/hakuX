@@ -502,6 +502,9 @@ void nc_io_poll(NcKernel *k);
 
 /* What a kernel thunk-table entry for ordinal resolves to, or 0. */
 uint32_t nc_kernel_resolve(const NcKernel *k, unsigned ordinal);
+/* Whether ordinal is a function export this kernel has (a call to one it
+ * hasn't stops the guest). */
+bool nc_kernel_implemented(const NcKernel *k, unsigned ordinal);
 
 /* From inside a kernel function: the call returns by first running the guest
  * routine(args...), then returning to its caller with the routine's EAX. */

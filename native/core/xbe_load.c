@@ -125,13 +125,21 @@ bool nc_xbe_load(NcVm *vm, const NcDisc *disc, const char *path, const NcKernel 
         out->thunks++;
     }
 
-    char imports[1024] = "";
-    size_t n = 0;
+    char imports[1024] = "", missing[1024] = "";
+    size_t n = 0, nm = 0;
+    unsigned nmissing = 0;
     for (uint32_t t = x->kernel_thunk; nc_vm_rd32(vm, t) && n < sizeof(imports) - 8; t += 4) {
         uint32_t target = nc_vm_rd32(vm, t);
         for (unsigned o = 1; o < NC_KORDINAL_MAX; o++) {
             if (nc_kernel_resolve(k, o) == target) {
                 n += (size_t)snprintf(imports + n, sizeof(imports) - n, "%s%u", n ? "," : "", o);
+                const NcKExport *e = nc_kernel_export(o);
+                if (e->abi != NC_KABI_DATA && !nc_kernel_implemented(k, o)) {
+                    nmissing++;
+                    if (nm < sizeof(missing) - 40) {
+                        nm += (size_t)snprintf(missing + nm, sizeof(missing) - nm, "%s%s", nm ? ", " : "", e->name);
+                    }
+                }
                 break;
             }
         }
@@ -143,5 +151,10 @@ bool nc_xbe_load(NcVm *vm, const NcDisc *disc, const char *path, const NcKernel 
            x->title_id, base, span >> 10, backed >> 10, loaded, x->nsections, x->entry, out->thunks,
            out->tls_dir);
     nc_log("hakuX-native-imports", "title %08x %s", x->title_id, imports);
+    if (nmissing) {
+        /* told now, not at the call (that stops the game) */
+        nc_log("hakuX-native-imports", "title %08x imports %u kernel functions not implemented here: %s",
+               x->title_id, nmissing, missing);
+    }
     return true;
 }

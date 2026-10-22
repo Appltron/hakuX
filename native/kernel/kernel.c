@@ -60,6 +60,12 @@ uint32_t nc_kernel_resolve(const NcKernel *k, unsigned ordinal)
     return e->abi == NC_KABI_DATA ? k->data_va[ordinal] : k->tramp_va[ordinal];
 }
 
+bool nc_kernel_implemented(const NcKernel *k, unsigned ordinal)
+{
+    const NcKExport *e = nc_kernel_export(ordinal);
+    return e && e->abi != NC_KABI_DATA && k->impl[ordinal];
+}
+
 static const NcKExport *export_named(const char *name)
 {
     for (size_t i = 0; i < sizeof(k_exports) / sizeof(k_exports[0]); i++) {
@@ -183,6 +189,119 @@ static void install_fast_paths(NcKernel *k, uint8_t *km)
         0x64, 0xA1, 0x28, 0x00, 0x00, 0x00,       /* mov eax, fs:[0x28]         */
         0xC3,                                     /* ret                        */
     };
+    /* The Interlocked family (fastcall) and the memory routines: whole in
+     * guest code, as the Xbox kernel's are (Insignia's setup stopped at its
+     * first InterlockedExchange). */
+    static const uint8_t inc32[] = {
+        0xB8, 0x01, 0x00, 0x00, 0x00,             /* mov eax, 1                 */
+        0xF0, 0x0F, 0xC1, 0x01,                   /* lock xadd [ecx], eax       */
+        0x40,                                     /* inc eax                    */
+        0xC3,                                     /* ret                        */
+    };
+    static const uint8_t dec32[] = {
+        0xB8, 0xFF, 0xFF, 0xFF, 0xFF,             /* mov eax, -1                */
+        0xF0, 0x0F, 0xC1, 0x01,                   /* lock xadd [ecx], eax       */
+        0x48,                                     /* dec eax                    */
+        0xC3,                                     /* ret                        */
+    };
+    static const uint8_t xchg32[] = {
+        0x89, 0xD0,                               /* mov eax, edx               */
+        0x87, 0x01,                               /* xchg [ecx], eax            */
+        0xC3,                                     /* ret                        */
+    };
+    static const uint8_t xadd32[] = {
+        0x89, 0xD0,                               /* mov eax, edx               */
+        0xF0, 0x0F, 0xC1, 0x01,                   /* lock xadd [ecx], eax       */
+        0xC3,                                     /* ret                        */
+    };
+    static const uint8_t cmpxchg32[] = {
+        0x8B, 0x44, 0x24, 0x04,                   /* mov eax, [esp+4]           */
+        0xF0, 0x0F, 0xB1, 0x11,                   /* lock cmpxchg [ecx], edx    */
+        0xC2, 0x04, 0x00,                         /* ret 4                      */
+    };
+    static const uint8_t zero_mem[] = {
+        0x57,                                     /* push edi                   */
+        0x8B, 0x7C, 0x24, 0x08,                   /* mov edi, [esp+8]           */
+        0x8B, 0x4C, 0x24, 0x0C,                   /* mov ecx, [esp+12]          */
+        0x31, 0xC0,                               /* xor eax, eax               */
+        0x89, 0xCA,                               /* mov edx, ecx               */
+        0xC1, 0xE9, 0x02,                         /* shr ecx, 2                 */
+        0xF3, 0xAB,                               /* rep stosd                  */
+        0x89, 0xD1,                               /* mov ecx, edx               */
+        0x83, 0xE1, 0x03,                         /* and ecx, 3                 */
+        0xF3, 0xAA,                               /* rep stosb                  */
+        0x5F,                                     /* pop edi                    */
+        0xC2, 0x08, 0x00,                         /* ret 8                      */
+    };
+    static const uint8_t fill_mem[] = {
+        0x57,                                     /* push edi                   */
+        0x8B, 0x7C, 0x24, 0x08,                   /* mov edi, [esp+8]           */
+        0x8B, 0x4C, 0x24, 0x0C,                   /* mov ecx, [esp+12]          */
+        0x0F, 0xB6, 0x44, 0x24, 0x10,             /* movzx eax, byte [esp+16]   */
+        0x69, 0xC0, 0x01, 0x01, 0x01, 0x01,       /* imul eax, eax, 0x01010101  */
+        0x89, 0xCA,                               /* mov edx, ecx               */
+        0xC1, 0xE9, 0x02,                         /* shr ecx, 2                 */
+        0xF3, 0xAB,                               /* rep stosd                  */
+        0x89, 0xD1,                               /* mov ecx, edx               */
+        0x83, 0xE1, 0x03,                         /* and ecx, 3                 */
+        0xF3, 0xAA,                               /* rep stosb                  */
+        0x5F,                                     /* pop edi                    */
+        0xC2, 0x0C, 0x00,                         /* ret 12                     */
+    };
+    static const uint8_t fill_ulong[] = {
+        0x57,                                     /* push edi                   */
+        0x8B, 0x7C, 0x24, 0x08,                   /* mov edi, [esp+8]           */
+        0x8B, 0x4C, 0x24, 0x0C,                   /* mov ecx, [esp+12]          */
+        0x8B, 0x44, 0x24, 0x10,                   /* mov eax, [esp+16]          */
+        0xC1, 0xE9, 0x02,                         /* shr ecx, 2                 */
+        0xF3, 0xAB,                               /* rep stosd                  */
+        0x5F,                                     /* pop edi                    */
+        0xC2, 0x0C, 0x00,                         /* ret 12                     */
+    };
+    static const uint8_t move_mem[] = {
+        0x56,                                     /* push esi                   */
+        0x57,                                     /* push edi                   */
+        0x8B, 0x7C, 0x24, 0x0C,                   /* mov edi, [esp+12]          */
+        0x8B, 0x74, 0x24, 0x10,                   /* mov esi, [esp+16]          */
+        0x8B, 0x4C, 0x24, 0x14,                   /* mov ecx, [esp+20]          */
+        0x39, 0xF7,                               /* cmp edi, esi               */
+        0x76, 0x15,                               /* jbe forward                */
+        0x8D, 0x04, 0x0E,                         /* lea eax, [esi+ecx]         */
+        0x39, 0xC7,                               /* cmp edi, eax               */
+        0x73, 0x0E,                               /* jae forward                */
+        0x8D, 0x74, 0x0E, 0xFF,                   /* lea esi, [esi+ecx-1]       */
+        0x8D, 0x7C, 0x0F, 0xFF,                   /* lea edi, [edi+ecx-1]       */
+        0xFD,                                     /* std (overlapping, upward)  */
+        0xF3, 0xA4,                               /* rep movsb                  */
+        0xFC,                                     /* cld                        */
+        0xEB, 0x0E,                               /* jmp done                   */
+        0x89, 0xCA,                               /* forward: mov edx, ecx      */
+        0xC1, 0xE9, 0x02,                         /* shr ecx, 2                 */
+        0xF3, 0xA5,                               /* rep movsd                  */
+        0x89, 0xD1,                               /* mov ecx, edx               */
+        0x83, 0xE1, 0x03,                         /* and ecx, 3                 */
+        0xF3, 0xA4,                               /* rep movsb                  */
+        0x5F,                                     /* done: pop edi              */
+        0x5E,                                     /* pop esi                    */
+        0xC2, 0x0C, 0x00,                         /* ret 12                     */
+    };
+    static const uint8_t cmp_mem[] = {
+        0x56,                                     /* push esi                   */
+        0x57,                                     /* push edi                   */
+        0x8B, 0x74, 0x24, 0x0C,                   /* mov esi, [esp+12]          */
+        0x8B, 0x7C, 0x24, 0x10,                   /* mov edi, [esp+16]          */
+        0x8B, 0x4C, 0x24, 0x14,                   /* mov ecx, [esp+20]          */
+        0x89, 0xC8,                               /* mov eax, ecx               */
+        0x85, 0xC9,                               /* test ecx, ecx              */
+        0x74, 0x07,                               /* jz done                    */
+        0xF3, 0xA6,                               /* repe cmpsb                 */
+        0x74, 0x03,                               /* je done (all alike)        */
+        0x29, 0xC8,                               /* sub eax, ecx               */
+        0x48,                                     /* dec eax (before the one unlike) */
+        0x5F,                                     /* done: pop edi              */
+        0x5E,                                     /* pop esi                    */
+        0xC2, 0x0C, 0x00,                         /* ret 12                     */
+    };
     static const struct {
         const char *name;
         const uint8_t *code;
@@ -196,7 +315,17 @@ static void install_fast_paths(NcKernel *k, uint8_t *km)
                 {"KeRaiseIrqlToDpcLevel", raise_dpc, sizeof(raise_dpc)},
                 {"KeRaiseIrqlToSynchLevel", raise_synch, sizeof(raise_synch)},
                 {"KeGetCurrentIrql", get_irql, sizeof(get_irql)},
-                {"KeGetCurrentThread", get_thread, sizeof(get_thread)}};
+                {"KeGetCurrentThread", get_thread, sizeof(get_thread)},
+                {"InterlockedIncrement", inc32, sizeof(inc32)},
+                {"InterlockedDecrement", dec32, sizeof(dec32)},
+                {"InterlockedExchange", xchg32, sizeof(xchg32)},
+                {"InterlockedExchangeAdd", xadd32, sizeof(xadd32)},
+                {"InterlockedCompareExchange", cmpxchg32, sizeof(cmpxchg32)},
+                {"RtlZeroMemory", zero_mem, sizeof(zero_mem)},
+                {"RtlFillMemory", fill_mem, sizeof(fill_mem)},
+                {"RtlFillMemoryUlong", fill_ulong, sizeof(fill_ulong)},
+                {"RtlMoveMemory", move_mem, sizeof(move_mem)},
+                {"RtlCompareMemory", cmp_mem, sizeof(cmp_mem)}};
     k->code_next = NC_KERNEL_VA + K_FAST;
     if (getenv("NC_NO_FAST")) { /* dev switch: every call enters the kernel */
         return;

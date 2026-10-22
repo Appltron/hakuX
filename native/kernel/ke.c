@@ -1003,6 +1003,57 @@ static uint64_t KeGetCurrentIrql(NcKernel *k, NcFrame *f, const uint32_t *a)
     return *irql(k);
 }
 
+/* KeGetCurrentThread(): the KPCR's current thread (guest code, but for NC_NO_FAST) */
+static uint64_t KeGetCurrentThread(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    return nc_vm_rd32(k->vm, k->kpcr_va + 0x28);
+}
+
+/* ---------------------------------------------------------- interlocked */
+
+/* The Interlocked family (fastcall: ECX, EDX, then the stack) runs as guest
+ * code (kernel.c's install_fast_paths); these are the same in the kernel,
+ * for NC_NO_FAST. One guest CPU, and the kernel runs it: nothing to lock. */
+static uint64_t InterlockedIncrement(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    const uint32_t v = nc_vm_rd32(k->vm, a[0]) + 1;
+    nc_vm_wr32(k->vm, a[0], v);
+    return v;
+}
+
+static uint64_t InterlockedDecrement(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    const uint32_t v = nc_vm_rd32(k->vm, a[0]) - 1;
+    nc_vm_wr32(k->vm, a[0], v);
+    return v;
+}
+
+/* InterlockedExchange(Target, Value) -> the old value */
+static uint64_t InterlockedExchange(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    const uint32_t old = nc_vm_rd32(k->vm, a[0]);
+    nc_vm_wr32(k->vm, a[0], a[1]);
+    return old;
+}
+
+/* InterlockedExchangeAdd(Addend, Value) -> the old value */
+static uint64_t InterlockedExchangeAdd(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    const uint32_t old = nc_vm_rd32(k->vm, a[0]);
+    nc_vm_wr32(k->vm, a[0], old + a[1]);
+    return old;
+}
+
+/* InterlockedCompareExchange(Destination, ExChange, Comparand) -> the old value */
+static uint64_t InterlockedCompareExchange(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    const uint32_t old = nc_vm_rd32(k->vm, a[0]);
+    if (old == a[2]) {
+        nc_vm_wr32(k->vm, a[0], a[1]);
+    }
+    return old;
+}
+
 /* ---------------------------------------------------------------- time */
 
 /* KeQuerySystemTime(CurrentTime) */
@@ -1151,6 +1202,12 @@ void nc_ke_register(NcKernel *k)
     nc_kernel_impl(k, "KeRaiseIrqlToDpcLevel", KeRaiseIrqlToDpcLevel);
     nc_kernel_impl(k, "KeRaiseIrqlToSynchLevel", KeRaiseIrqlToSynchLevel);
     nc_kernel_impl(k, "KeGetCurrentIrql", KeGetCurrentIrql);
+    nc_kernel_impl(k, "KeGetCurrentThread", KeGetCurrentThread);
+    nc_kernel_impl(k, "InterlockedIncrement", InterlockedIncrement);
+    nc_kernel_impl(k, "InterlockedDecrement", InterlockedDecrement);
+    nc_kernel_impl(k, "InterlockedExchange", InterlockedExchange);
+    nc_kernel_impl(k, "InterlockedExchangeAdd", InterlockedExchangeAdd);
+    nc_kernel_impl(k, "InterlockedCompareExchange", InterlockedCompareExchange);
 
     nc_kernel_impl(k, "KeQuerySystemTime", KeQuerySystemTime);
     nc_kernel_impl(k, "NtSetSystemTime", NtSetSystemTime);

@@ -2,8 +2,10 @@
 
 Reads the "== <image>" and "hakuX-native-imports: title <id> <ordinals>"
 lines that tools/native/census.sh prints and writes a Markdown report: per
-title, how many kernel exports it imports; the union over a chosen set of
-titles; and that union grouped by name prefix (subsystem).
+title, how many kernel exports it imports and how many of those functions
+this kernel doesn't implement (nc_kernel_impl in native/); the union over a
+chosen set of titles, grouped by name prefix (subsystem); and the functions
+imported but not implemented, with the titles that import them.
 
 Usage: python imports.py census.txt [--set "Project Gotham,Fable,Otogi,Dead or Alive"]
 """
@@ -26,6 +28,16 @@ def load_names():
             if m:
                 names[int(m.group(1))] = (m.group(2), m.group(3))
     return names
+
+
+def load_impl():
+    done = set()
+    for d, _, files in os.walk(os.path.join(ROOT, "native")):
+        for f in files:
+            if f.endswith(".c"):
+                with open(os.path.join(d, f), encoding="utf-8", errors="replace") as fh:
+                    done |= set(re.findall(r'nc_kernel_impl\(\w+, "(\w+)"', fh.read()))
+    return done
 
 
 def parse(path):
@@ -53,13 +65,23 @@ def main():
     ap.add_argument("--set", default="Project Gotham,Fable,Otogi,Dead or Alive")
     args = ap.parse_args()
     names = load_names()
+    done = load_impl()
     titles = parse(args.census)
     picks = [p.strip().lower() for p in args.set.split(",") if p.strip()]
 
-    out = ["| Title | Title ID | Kernel imports |", "|---|---|---|"]
+    def missing(o):
+        name, abi = names.get(o, ("?%d" % o, "?"))
+        return abi != "NC_KABI_DATA" and name not in done
+
+    out = ["| Title | Title ID | Kernel imports | Not implemented |", "|---|---|---|---|"]
     chosen = set()
+    users = collections.defaultdict(list)
     for image, tid, ords in titles:
-        out.append("| %s | %s | %d |" % (image.replace(".xiso.iso", "").replace(".iso", ""), tid, len(ords)))
+        short = image.replace(".xiso.iso", "").replace(".iso", "")
+        gaps = [o for o in ords if missing(o)]
+        for o in gaps:
+            users[o].append(short)
+        out.append("| %s | %s | %d | %d |" % (short, tid, len(ords), len(gaps)))
         if any(p in image.lower() for p in picks):
             chosen |= ords
     every = set().union(*(o for _, _, o in titles)) if titles else set()
@@ -73,6 +95,10 @@ def main():
     out += ["| Prefix | Count | Exports |", "|---|---|---|"]
     for g in sorted(groups, key=lambda k: -len(groups[k])):
         out.append("| %s | %d | %s |" % (g, len(groups[g]), ", ".join(groups[g])))
+    out += ["", "Imported, not implemented (a call stops the title): **%d**." % len(users), "",
+            "| Export | Titles | Which |", "|---|---|---|"]
+    for o in sorted(users, key=lambda o: (-len(users[o]), names[o][0])):
+        out.append("| %s (%d) | %d | %s |" % (names[o][0], o, len(users[o]), ", ".join(sorted(users[o]))))
     sys.stdout.write("\n".join(out) + "\n")
 
 

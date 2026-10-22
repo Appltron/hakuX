@@ -107,6 +107,50 @@ static uint64_t RtlCompareMemoryUlong(NcKernel *k, NcFrame *f, const uint32_t *a
     return n;
 }
 
+/* The memory routines run as guest code (kernel.c's install_fast_paths);
+ * these are the same in the kernel, for NC_NO_FAST. */
+
+/* RtlCompareMemory(Source1, Source2, Length) -> the bytes alike from the start */
+static uint64_t RtlCompareMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    const uint8_t *p = nc_vm_host(k->vm, a[0]), *q = nc_vm_host(k->vm, a[1]);
+    uint32_t n = 0;
+    while (n < a[2] && p[n] == q[n]) {
+        n++;
+    }
+    return n;
+}
+
+/* RtlZeroMemory(Destination, Length) */
+static uint64_t RtlZeroMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    memset(nc_vm_host(k->vm, a[0]), 0, a[1]);
+    return 0;
+}
+
+/* RtlFillMemory(Destination, Length, Fill) */
+static uint64_t RtlFillMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    memset(nc_vm_host(k->vm, a[0]), (uint8_t)a[2], a[1]);
+    return 0;
+}
+
+/* RtlFillMemoryUlong(Destination, Length, Pattern): Length / 4 words */
+static uint64_t RtlFillMemoryUlong(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    for (uint32_t n = 0; n + 4 <= a[1]; n += 4) {
+        nc_vm_wr32(k->vm, a[0] + n, a[2]);
+    }
+    return 0;
+}
+
+/* RtlMoveMemory(Destination, Source, Length): the ranges may overlap */
+static uint64_t RtlMoveMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    memmove(nc_vm_host(k->vm, a[0]), nc_vm_host(k->vm, a[1]), a[2]);
+    return 0;
+}
+
 /* RtlLowerChar(Character) / RtlUpperChar(Character): ASCII case only */
 static uint64_t RtlLowerChar(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
@@ -343,6 +387,11 @@ void nc_rtl_register(NcKernel *k)
     nc_kernel_impl(k, "RtlCompareString", RtlCompareString);
     nc_kernel_impl(k, "RtlEqualString", RtlEqualString);
     nc_kernel_impl(k, "RtlCompareMemoryUlong", RtlCompareMemoryUlong);
+    nc_kernel_impl(k, "RtlCompareMemory", RtlCompareMemory);
+    nc_kernel_impl(k, "RtlZeroMemory", RtlZeroMemory);
+    nc_kernel_impl(k, "RtlFillMemory", RtlFillMemory);
+    nc_kernel_impl(k, "RtlFillMemoryUlong", RtlFillMemoryUlong);
+    nc_kernel_impl(k, "RtlMoveMemory", RtlMoveMemory);
     nc_kernel_impl(k, "RtlLowerChar", RtlLowerChar);
     nc_kernel_impl(k, "RtlUpperChar", RtlUpperChar);
     nc_kernel_impl(k, "RtlUpcaseUnicodeChar", RtlUpcaseUnicodeChar);
