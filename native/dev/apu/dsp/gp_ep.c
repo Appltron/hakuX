@@ -64,9 +64,10 @@ static void scatter_gather_rw(MCPXAPUState *d, uint64_t sge_base,
             bytes_to_copy = len;
         }
 
-        assert(paddr + bytes_to_copy < d->ram_size);
-
-        if (dir) {
+        /* hakuX: the page's address is the guest table's; a piece past RAM
+         * is skipped (a read leaves those bytes as they were) */
+        const bool in_ram = APU_CHECK(paddr + bytes_to_copy <= d->ram_size);
+        if (in_ram && dir) {
             memcpy(&d->ram_ptr[paddr], ptr, bytes_to_copy);
             hle_host_mem_set_dirty(paddr, bytes_to_copy);
 #if defined(__aarch64__)
@@ -84,7 +85,7 @@ static void scatter_gather_rw(MCPXAPUState *d, uint64_t sge_base,
              * and re-checks the polled value. */
             __asm__ __volatile__("sev" ::: "memory");
 #endif
-        } else {
+        } else if (in_ram) {
             memcpy(ptr, &d->ram_ptr[paddr], bytes_to_copy);
         }
 
@@ -121,6 +122,11 @@ static uint32_t circular_scatter_gather_rw(MCPXAPUState *d, uint64_t sge_base,
                                            uint32_t base, uint32_t end,
                                            uint32_t cur, size_t len, bool dir)
 {
+    /* hakuX: the FIFO's registers are the guest's; with cur outside
+     * [base, end) nothing could be copied (end == cur: forever) */
+    if (!APU_CHECK(base <= cur && cur < end)) {
+        return cur;
+    }
     while (len > 0) {
         unsigned int bytes_to_copy = end - cur;
 
@@ -197,8 +203,10 @@ static bool ep_sink_samples(MCPXAPUState *d, uint8_t *ptr, size_t len)
         return false;
     } else if ((d->monitor.point == MCPX_APU_DEBUG_MON_EP) ||
         (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP)) {
-        assert(len == sizeof(d->monitor.frame_buf));
-        memcpy(d->monitor.frame_buf, ptr, len);
+        /* hakuX: len is the DMA's, from the guest's DSP code */
+        if (APU_CHECK(len == sizeof(d->monitor.frame_buf))) {
+            memcpy(d->monitor.frame_buf, ptr, len);
+        }
     }
 
     return true;
@@ -237,7 +245,9 @@ static void ep_fifo_rw(void *opaque, uint8_t *ptr, unsigned int index,
         bool did_sink = ep_sink_samples(d, ptr, len);
         if (did_sink) {
             /* Since we are sinking, push silence out */
-            assert(len <= sizeof(ep_silence));
+            if (!APU_CHECK(len <= sizeof(ep_silence))) {
+                return;
+            }
             ptr = (uint8_t*)ep_silence;
         }
     }
@@ -303,7 +313,10 @@ uint64_t mcpx_apu_gp_read(void *opaque, uint32_t addr, unsigned int size)
         break;
     }
     default:
-        r = d->gp.regs[addr];
+        /* an access at the window's end can run past the array */
+        if (addr < ARRAY_SIZE(d->gp.regs)) {
+            r = d->gp.regs[addr];
+        }
         break;
     }
     DPRINTF("mcpx apu GP: read [0x%" PRIx64 "] -> 0x%lx\n", addr, r);
@@ -357,7 +370,9 @@ void mcpx_apu_gp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
         d->gp.regs[NV_PAPU_GPRST] = val;
         break;
     default:
-        d->gp.regs[addr] = val;
+        if (addr < ARRAY_SIZE(d->gp.regs)) {
+            d->gp.regs[addr] = val;
+        }
         break;
     }
 
@@ -393,7 +408,9 @@ uint64_t mcpx_apu_ep_read(void *opaque, uint32_t addr, unsigned int size)
         break;
     }
     default:
-        r = d->ep.regs[addr];
+        if (addr < ARRAY_SIZE(d->ep.regs)) {
+            r = d->ep.regs[addr];
+        }
         break;
     }
     DPRINTF("mcpx apu EP: read [0x%" PRIx64 "] -> 0x%lx\n", addr, r);
@@ -437,7 +454,9 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
         d->ep_frame_div = 0; /* FIXME: Still unsure about frame sync */
         break;
     default:
-        d->ep.regs[addr] = val;
+        if (addr < ARRAY_SIZE(d->ep.regs)) {
+            d->ep.regs[addr] = val;
+        }
         break;
     }
 

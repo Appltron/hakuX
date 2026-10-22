@@ -218,4 +218,21 @@ extern ApuConfig g_apu_config;
 #include "native/core/irq.h"   /* nc_irq_set, nc_paused, nc_pause_register */
 #include "native/core/nc.h"    /* nc_log */
 
+/* A value from the guest (a register, a method's argument, its tables, its
+ * DSP code) that the device indexes host memory with. xemu asserted these
+ * and refused builds without assertions; the core is built with NDEBUG, so
+ * they are checked here: false drops the access, logged once per site. */
+#define APU_CHECK(cond)                                                       \
+    __extension__({                                                           \
+        const bool apu_ok_ = (cond);                                          \
+        if (unlikely(!apu_ok_)) {                                             \
+            static bool apu_said_;                                            \
+            if (!__atomic_exchange_n(&apu_said_, true, __ATOMIC_RELAXED)) {   \
+                nc_log("hakuX-apu", "%s: a guest value fails %s; dropped",    \
+                       __func__, #cond);                                      \
+            }                                                                 \
+        }                                                                     \
+        apu_ok_;                                                              \
+    })
+
 #endif

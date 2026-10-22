@@ -27,8 +27,13 @@ typedef void (*emu_func_t)(dsp_core_t* dsp);
 
 static void emu_undefined(dsp_core_t* dsp)
 {
+    /* hakuX: the PC stays, so a frame meets it again and again: logged once */
+    static bool said;
     dsp->cur_inst_len = 0;
-    printf("Dsp: 0x%04x: 0x%06x Illegal instruction\n",dsp->pc, dsp->cur_inst);
+    if (!__atomic_exchange_n(&said, true, __ATOMIC_RELAXED)) {
+        nc_log("hakuX-apu", "dsp: 0x%04x: 0x%06x illegal instruction (logged once)",
+               dsp->pc, dsp->cur_inst);
+    }
     /* Add some artificial CPU cycles to avoid being stuck in an infinite loop */
     dsp->instr_cycle += 100;
     if (dsp->exception_debugging) {

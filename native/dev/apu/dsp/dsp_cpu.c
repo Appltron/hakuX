@@ -410,6 +410,10 @@ void dsp56k_reset_cpu(dsp_core_t* dsp)
     dsp->disasm_prev_inst_pc = 0xFFFFFFFF;
 }
 
+/* A word no opcode matches: undefined (no template, no emu_func), run as
+ * emu_undefined like the table's entries without one. */
+static const OpcodeEntry undefined_opcode = { NULL, "undefined", NULL, NULL, NULL };
+
 static const OpcodeEntry *lookup_opcode_slow(uint32_t op) {
     for (int i = 0; i < ARRAY_SIZE(nonparallel_opcodes); i++) {
         if ((op & nonparallel_matches[i][0]) == nonparallel_matches[i][1]) {
@@ -419,9 +423,7 @@ static const OpcodeEntry *lookup_opcode_slow(uint32_t op) {
         }
     }
 
-    fprintf(stderr, "op = %08x\n", op);
-    assert(false);
-    return NULL;
+    return &undefined_opcode;
 }
 
 static const OpcodeEntry *lookup_opcode(uint32_t op) {
@@ -620,10 +622,15 @@ void dsp56k_execute_instruction(dsp_core_t* dsp)
     }
 
     if (dsp->cur_inst < 0x100000) {
-        const OpcodeEntry *op = dsp->pram_opcache[dsp->pc];
+        /* the cache covers P memory; a PC past it (the guest program's
+         * jump) reads zeros (read_memory_p), decoded each time */
+        const bool in_pram = likely(dsp->pc < DSP_PRAM_SIZE);
+        const OpcodeEntry *op = in_pram ? dsp->pram_opcache[dsp->pc] : NULL;
         if (unlikely(op == NULL)) {
             op = lookup_opcode(dsp->cur_inst);
-            dsp->pram_opcache[dsp->pc] = op;
+            if (in_pram) {
+                dsp->pram_opcache[dsp->pc] = op;
+            }
         }
         if (likely(op->emu_func != NULL)) {
             op->emu_func(dsp);
@@ -924,10 +931,13 @@ static void dsp_postexecute_interrupts(dsp_core_t* dsp)
  *  Read/Write memory functions
  **********************************/
 
+/* Addresses come from the guest's DSP code: one past a memory reads zero
+ * (in P memory: a NOP) and a write there is dropped (APU_CHECK). */
 static uint32_t read_memory_p(dsp_core_t* dsp, uint32_t address)
 {
-    assert((address & 0xFF000000) == 0);
-    assert(address < DSP_PRAM_SIZE);
+    if (!APU_CHECK(address < DSP_PRAM_SIZE)) {
+        return 0;
+    }
     uint32_t r = apu_rd32(&dsp->pram[address]);
     assert((r & 0xFF000000) == 0);
     return r;
@@ -946,15 +956,16 @@ uint32_t dsp56k_read_memory(dsp_core_t* dsp, int space, uint32_t address)
         } else if (address >= 0xc00 && address < 0xc00+DSP_MIXBUFFER_SIZE) {
             return dsp->mixbuffer[address-0xc00];
         } else {
-            if (address < DSP_XRAM_SIZE) {
+            if (APU_CHECK(address < DSP_XRAM_SIZE)) {
                 return dsp->xram[address];
             } else {
-                fprintf(stderr, "Out of bounds read at %x!\n", address);
                 return 0x00FFFFFF; // FIXME: What does the DSP actually do in this case?
             }
         }
     } else if (space == DSP_SPACE_Y) {
-        assert(address < DSP_YRAM_SIZE);
+        if (!APU_CHECK(address < DSP_YRAM_SIZE)) {
+            return 0;
+        }
         return dsp->yram[address];
     } else if (space == DSP_SPACE_P) {
         return read_memory_p(dsp, address);
@@ -986,17 +997,18 @@ static void write_memory_raw(dsp_core_t* dsp, int space, uint32_t address, uint3
             dsp->mixbuffer[address-DSP_MIXBUFFER_BASE] = value;
         } else if (address >= 0xc00 && address < 0xc00+DSP_MIXBUFFER_SIZE) {
             dsp->mixbuffer[address-0xc00] = value;
-        } else {
-            assert(address < DSP_XRAM_SIZE);
+        } else if (APU_CHECK(address < DSP_XRAM_SIZE)) {
             dsp->xram[address] = value;
         }
     } else if (space == DSP_SPACE_Y) {
-        assert(address < DSP_YRAM_SIZE);
-        dsp->yram[address] = value;
+        if (APU_CHECK(address < DSP_YRAM_SIZE)) {
+            dsp->yram[address] = value;
+        }
     } else if (space == DSP_SPACE_P) {
-        assert(address < DSP_PRAM_SIZE);
-        apu_wr32(&dsp->pram[address], value);
-        dsp->pram_opcache[address] = NULL;
+        if (APU_CHECK(address < DSP_PRAM_SIZE)) {
+            apu_wr32(&dsp->pram[address], value);
+            dsp->pram_opcache[address] = NULL;
+        }
     } else {
         assert(false);
     }

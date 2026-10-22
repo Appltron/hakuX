@@ -218,12 +218,14 @@ void mcpx_apu_vp_refresh_ssl_cache(MCPXAPUState *d, uint32_t new_base)
     refresh_table(&d->vp.ssl_cache, new_base, MCPX_HW_MAX_SSL_PRDS * NV_PSGE_SIZE);
 }
 
+/* The table's pointer covers its MCPX_HW_MAX_VOICES voices; a handle past
+ * them (the guest's: a 16-bit field) goes by guest address, checked. */
 static uint32_t voice_get_mask(MCPXAPUState *d, uint16_t voice_handle,
                                uint64_t offset, uint32_t mask)
 {
     uint32_t raw;
     uint8_t *c = apu_ld_acq(&d->vp.voice_cache);
-    if (likely(c)) {
+    if (likely(c && voice_handle < MCPX_HW_MAX_VOICES)) {
         raw = apu_mem_ld32(c, voice_handle * NV_PAVS_SIZE + offset);
     } else {
         uint64_t voice = d->regs[NV_PAPU_VPVADDR] + voice_handle * NV_PAVS_SIZE;
@@ -236,7 +238,7 @@ static void voice_set_mask(MCPXAPUState *d, uint16_t voice_handle,
                            uint64_t offset, uint32_t mask, uint32_t val)
 {
     uint8_t *c = apu_ld_acq(&d->vp.voice_cache);
-    if (likely(c)) {
+    if (likely(c && voice_handle < MCPX_HW_MAX_VOICES)) {
         uint64_t coff = voice_handle * NV_PAVS_SIZE + offset;
         uint32_t v = apu_mem_ld32(c, coff) & ~mask;
         apu_mem_st32(c, coff,
@@ -260,7 +262,7 @@ static inline uint32_t voice_get_mask_nolock(MCPXAPUState *d, uint8_t *c,
                                              uint64_t offset, uint32_t mask)
 {
     uint32_t raw;
-    if (likely(c)) {
+    if (likely(c && voice_handle < MCPX_HW_MAX_VOICES)) {
         raw = apu_mem_ld32(c, voice_handle * NV_PAVS_SIZE + offset);
     } else {
         uint64_t voice = d->regs[NV_PAPU_VPVADDR] + voice_handle * NV_PAVS_SIZE;
@@ -321,16 +323,12 @@ static inline void voice_set_mask_nolock(MCPXAPUState *d, uint8_t *c,
                                          uint16_t voice_handle, uint64_t offset,
                                          uint32_t mask, uint32_t val)
 {
-    if (likely(c)) {
+    if (likely(c && voice_handle < MCPX_HW_MAX_VOICES)) {
         uint64_t coff = voice_handle * NV_PAVS_SIZE + offset;
         uint32_t v = apu_mem_ld32(c, coff) & ~mask;
         v |= (val << ctz32(mask)) & mask;
-        if (likely(voice_handle < MCPX_HW_MAX_VOICES)) {
-            apu_wr32(c + coff, v);              /* reported with the batch */
-            d->vp.voice_wrote[voice_handle] = 1;
-        } else {
-            apu_mem_st32(c, coff, v);
-        }
+        apu_wr32(c + coff, v);                  /* reported with the batch */
+        d->vp.voice_wrote[voice_handle] = 1;
     } else {
         uint64_t voice = d->regs[NV_PAPU_VPVADDR] + voice_handle * NV_PAVS_SIZE;
         uint32_t v = apu_ram_ld32(voice + offset) & ~mask;
@@ -441,10 +439,13 @@ static bool voice_spin_lock(MCPXAPUState *d, uint16_t v, bool may_retry)
     return true;
 }
 
-/* false: not taken, the guest's write runs again (voice_spin_lock) */
+/* false: not taken, the guest's write runs again (voice_spin_lock); a
+ * handle past the voices is no voice: the write is dropped (done) */
 static bool voice_lock(MCPXAPUState *d, uint16_t v, bool lock, bool may_retry)
 {
-    assert(v < MCPX_HW_MAX_VOICES);
+    if (!APU_CHECK(v < MCPX_HW_MAX_VOICES)) {
+        return true;
+    }
     if (!voice_spin_lock(d, v, may_retry)) {
         return false;
     }
@@ -463,7 +464,9 @@ static bool voice_lock(MCPXAPUState *d, uint16_t v, bool lock, bool may_retry)
 
 static bool is_voice_locked(MCPXAPUState *d, uint16_t v)
 {
-    assert(v < MCPX_HW_MAX_VOICES);
+    if (v >= MCPX_HW_MAX_VOICES) {
+        return false;
+    }
     uint64_t mask = 1LL << (v % 64);
     return (apu_ld(&d->vp.voice_locked[v / 64]) & mask) != 0;
 }
@@ -504,6 +507,9 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
     case NV1BA0_PIO_VOICE_ON: {
         selected_handle = argument & NV1BA0_PIO_VOICE_ON_HANDLE;
         DPRINTF("VOICE %d ON\n", selected_handle);
+        if (!APU_CHECK(selected_handle < MCPX_HW_MAX_VOICES)) {
+            break;
+        }
 
         bool locked = is_voice_locked(d, selected_handle);
         if (!locked && !voice_lock(d, selected_handle, true, true)) {
@@ -595,6 +601,9 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
     }
     case NV1BA0_PIO_VOICE_RELEASE: {
         selected_handle = argument & NV1BA0_PIO_VOICE_ON_HANDLE;
+        if (!APU_CHECK(selected_handle < MCPX_HW_MAX_VOICES)) {
+            break;
+        }
 
         // FIXME: What if already in release? Restart envelope?
         // FIXME: Should release count ascend or descend?
@@ -628,7 +637,9 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
         break;
     }
     case NV1BA0_PIO_VOICE_OFF:
-        voice_off(d, argument & NV1BA0_PIO_VOICE_OFF_HANDLE);
+        if (APU_CHECK((argument & NV1BA0_PIO_VOICE_OFF_HANDLE) < MCPX_HW_MAX_VOICES)) {
+            voice_off(d, argument & NV1BA0_PIO_VOICE_OFF_HANDLE);
+        }
         break;
     case NV1BA0_PIO_VOICE_PAUSE:
         voice_set_mask(d, argument & NV1BA0_PIO_VOICE_PAUSE_HANDLE,
@@ -672,16 +683,16 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
                        0xFFFFFFFF, argument);
         break;
     case NV1BA0_PIO_SET_VOICE_TAR_HRTF: {
-        int handle = GET_MASK(argument, NV1BA0_PIO_SET_VOICE_TAR_HRTF_HANDLE);
-        int current_voice = d->regs[NV_PAPU_FECV];
+        unsigned int handle = GET_MASK(argument, NV1BA0_PIO_SET_VOICE_TAR_HRTF_HANDLE);
+        uint32_t current_voice = d->regs[NV_PAPU_FECV];
         voice_set_mask(d, current_voice, NV_PAVS_VOICE_CFG_HRTF_TARGET,
                        NV_PAVS_VOICE_CFG_HRTF_TARGET_HANDLE, handle);
         if (current_voice < MCPX_HW_MAX_3D_VOICES &&
-            handle != HRTF_NULL_HANDLE) {
+            handle != HRTF_NULL_HANDLE &&
+            APU_CHECK(handle < HRTF_ENTRY_COUNT)) {
             // FIXME: Xbox software seems to reliably set voice HRTF handles
             // after updating filter parameters, however it may be possible to
             // update parameter targets for an active voice.
-            assert(handle < HRTF_ENTRY_COUNT);
             hrtf_filter_set_target_params(&d->vp.filters[current_voice].hrtf,
                                           d->vp.hrtf.entries[handle].hrir,
                                           d->vp.hrtf.entries[handle].itd);
@@ -734,7 +745,9 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
                        NV_PAVS_VOICE_PAR_NEXT_EBO, argument);
         break;
     case NV1BA0_PIO_SET_HRIR ... NV1BA0_PIO_SET_HRIR_X - 1: {
-        assert(d->vp.hrtf.current_entry < HRTF_ENTRY_COUNT);
+        if (!APU_CHECK((unsigned)d->vp.hrtf.current_entry < HRTF_ENTRY_COUNT)) {
+            break;
+        }
         slot = (method - NV1BA0_PIO_SET_HRIR) / 4;
         int8_t left0 = GET_MASK(argument, NV1BA0_PIO_SET_HRIR_LEFT0);
         int8_t right0 = GET_MASK(argument, NV1BA0_PIO_SET_HRIR_RIGHT0);
@@ -749,7 +762,9 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
         break;
     }
     case NV1BA0_PIO_SET_HRIR_X: {
-        assert(d->vp.hrtf.current_entry < HRTF_ENTRY_COUNT);
+        if (!APU_CHECK((unsigned)d->vp.hrtf.current_entry < HRTF_ENTRY_COUNT)) {
+            break;
+        }
         int8_t left30 = GET_MASK(argument, NV1BA0_PIO_SET_HRIR_X_LEFT30);
         int8_t right30 = GET_MASK(argument, NV1BA0_PIO_SET_HRIR_X_RIGHT30);
         int16_t itd = GET_MASK(argument, NV1BA0_PIO_SET_HRIR_X_ITD);
@@ -812,8 +827,10 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
     }
     case NV1BA0_PIO_SET_VOICE_SSL_A: {
         int ssl = 0;
-        int current_voice = d->regs[NV_PAPU_FECV];
-        assert(current_voice < MCPX_HW_MAX_VOICES);
+        uint32_t current_voice = d->regs[NV_PAPU_FECV];
+        if (!APU_CHECK(current_voice < MCPX_HW_MAX_VOICES)) {
+            break;
+        }
         d->vp.ssl[current_voice].base[ssl] =
             GET_MASK(argument, NV1BA0_PIO_SET_VOICE_SSL_A_BASE);
         d->vp.ssl[current_voice].count[ssl] =
@@ -827,8 +844,10 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
     // FIXME: Refactor into above
     case NV1BA0_PIO_SET_VOICE_SSL_B: {
         int ssl = 1;
-        int current_voice = d->regs[NV_PAPU_FECV];
-        assert(current_voice < MCPX_HW_MAX_VOICES);
+        uint32_t current_voice = d->regs[NV_PAPU_FECV];
+        if (!APU_CHECK(current_voice < MCPX_HW_MAX_VOICES)) {
+            break;
+        }
         d->vp.ssl[current_voice].base[ssl] =
             GET_MASK(argument, NV1BA0_PIO_SET_VOICE_SSL_A_BASE);
         d->vp.ssl[current_voice].count[ssl] =
@@ -1302,8 +1321,10 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
 
         uint64_t ssl_offset = page * 8;
         {
+            /* the table's pointer covers its MCPX_HW_MAX_SSL_PRDS entries;
+             * the guest's base can be past them (by guest address, checked) */
             uint8_t *c = apu_ld_acq(&d->vp.ssl_cache);
-            if (likely(c)) {
+            if (likely(c && (uint32_t)page < MCPX_HW_MAX_SSL_PRDS)) {
                 segment_offset = apu_mem_ld32(c, ssl_offset);
                 segment_length = apu_mem_ld32(c, ssl_offset + 4);
             } else {
@@ -1346,6 +1367,12 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
         (container_size_index == NV_PAVS_VOICE_CFG_FMT_CONTAINER_SIZE_ADPCM);
 
     if (adpcm) {
+        /* 36 bytes a channel: a block of more (the guest's samples per
+         * block above its channels) fits neither adpcm_block nor the 65
+         * samples a channel adpcm_decoded holds */
+        if (!APU_CHECK(samples_per_block <= channels)) {
+            return -1;
+        }
         block_size = 36;
         DPRINTF("ADPCM:\n");
     } else {
@@ -2338,6 +2365,11 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
      * voice_work_dispatch / voice_work_schedule use it. */
     uint8_t *c = apu_ld_acq(&d->vp.voice_cache);
 
+    /* The voices queued this frame: one twice (a cycle in the guest's
+     * lists) would take its own lock again and spin forever, and more than
+     * MCPX_HW_MAX_VOICES would overrun the queue. */
+    uint64_t queued[MCPX_HW_MAX_VOICES / 64] = {0};
+
     /* Process all voices, mixing each into the affected MIXBINs */
     for (int list = 0; list < 3; list++) {
         uint64_t top, current, next;
@@ -2355,7 +2387,10 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
                 break;
             }
 
-            uint16_t v = d->regs[current];
+            uint32_t v = d->regs[current];
+            if (!APU_CHECK(v < MCPX_HW_MAX_VOICES)) {
+                break;
+            }
             d->regs[next] = voice_get_mask_nolock(d, c, v,
                                NV_PAVS_VOICE_TAR_PITCH_LINK,
                                NV_PAVS_VOICE_TAR_PITCH_LINK_NEXT_VOICE_HANDLE);
@@ -2376,6 +2411,11 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
                     apu_spin_unlock(&d->vp.fe_spin);
                 }
             } else {
+                const uint64_t bit = 1ull << (v % 64);
+                if (!APU_CHECK(!(queued[v / 64] & bit))) {
+                    break;
+                }
+                queued[v / 64] |= bit;
                 voice_work_enqueue(d, v, list);
             }
             d->regs[current] = d->regs[next];

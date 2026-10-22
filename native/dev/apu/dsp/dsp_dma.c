@@ -110,20 +110,22 @@ static void dsp_dma_run(DSPDMAState *s)
         uint32_t block_addr = 0;
         int block_space = DSP_SPACE_X;
 
-        if (addr < 0x1800) {
-            assert(addr+6 < 0x1800);
+        /* hakuX: the guest's DSP code builds the chain; a descriptor
+         * outside the memories ends it (EOL) */
+        if (addr < 0x1800 && APU_CHECK(addr+6 < 0x1800)) {
             block_space = DSP_SPACE_X;
             block_addr = addr;
-        } else if (addr >= 0x1800 && addr < 0x2000) { //?
-            assert(addr+6 < 0x2000);
+        } else if (addr >= 0x1800 && addr < 0x2000 && APU_CHECK(addr+6 < 0x2000)) { //?
             block_space = DSP_SPACE_Y;
             block_addr = addr - 0x1800;
-        } else if (addr >= 0x2800 && addr < 0x3800) { //?
-            assert(addr+6 < 0x3800);
+        } else if (addr >= 0x2800 && addr < 0x3800 && APU_CHECK(addr+6 < 0x3800)) { //?
             block_space = DSP_SPACE_P;
             block_addr = addr - 0x2800;
         } else {
-            assert(false);
+            (void)APU_CHECK(!"a DMA descriptor in DSP memory");
+            s->next_block |= NODE_POINTER_EOL;
+            s->eol = true;
+            break;
         }
 
         uint32_t next_block = dsp56k_read_memory(s->core, block_space, block_addr);
@@ -173,8 +175,7 @@ static void dsp_dma_run(DSPDMAState *s)
             item_mask = 0x00ffffff;
             break;
         default:
-            fprintf(stderr, "Unknown dsp dma format: 0x%x\n", format);
-            assert(false);
+            (void)APU_CHECK(!"a known DMA format");
             break;
         }
 
@@ -182,31 +183,34 @@ static void dsp_dma_run(DSPDMAState *s)
         uint32_t mem_address = 0;
         int mem_space = DSP_SPACE_X;
 
-        if (dsp_offset < 0x1800) {
-            assert(dsp_offset+count < 0x1800);
+        /* hakuX: a transfer outside the DSP's memories is skipped (this
+         * also bounds the count, the scratch buffer's size) */
+        if (dsp_offset < 0x1800 && APU_CHECK(dsp_offset+count < 0x1800)) {
             mem_space = DSP_SPACE_X;
             mem_address = dsp_offset;
-        } else if (dsp_offset >= 0x1800 && dsp_offset < 0x2000) { //?
-            assert(dsp_offset+count < 0x2000);
+        } else if (dsp_offset >= 0x1800 && dsp_offset < 0x2000 && APU_CHECK(dsp_offset+count < 0x2000)) { //?
             mem_space = DSP_SPACE_Y;
             mem_address = dsp_offset - 0x1800;
-        } else if (dsp_offset >= 0x2800 && dsp_offset < 0x3800) { //?
-            assert(dsp_offset+count < 0x3800);
+        } else if (dsp_offset >= 0x2800 && dsp_offset < 0x3800 && APU_CHECK(dsp_offset+count < 0x3800)) { //?
             mem_space = DSP_SPACE_P;
             mem_address = dsp_offset - 0x2800;
         } else {
-            fprintf(stderr, "Attempt to access %08x\n", dsp_offset);
-            assert(false);
+            (void)APU_CHECK(!"a DMA transfer in DSP memory");
+            continue;
         }
 
         size_t transfer_size = count * item_size;
 
         // FIXME: Remove this intermediate buffer
         static uint8_t *scratch_buf = NULL;
-        static ssize_t scratch_buf_size = -1;
-        if (count * item_size > scratch_buf_size) {
-            scratch_buf_size = count * item_size;
-            scratch_buf = malloc(scratch_buf_size);
+        static size_t scratch_buf_size = 0;
+        if (transfer_size > scratch_buf_size) {
+            uint8_t *grown = realloc(scratch_buf, transfer_size);
+            if (!grown) {
+                continue;
+            }
+            scratch_buf = grown;
+            scratch_buf_size = transfer_size;
         }
 
         if (direction) {
@@ -266,8 +270,7 @@ static void dsp_dma_run(DSPDMAState *s)
                 s->scratch_rw(s->rw_opaque, scratch_buf, scratch_addr, transfer_size, 1);
                 break;
             default:
-                fprintf(stderr, "Unknown DSP DMA buffer: 0x%x\n", buf_id);
-                assert(false);
+                (void)APU_CHECK(!"a known DMA buffer");
                 break;
             }
         } else {
@@ -278,8 +281,7 @@ static void dsp_dma_run(DSPDMAState *s)
             } else if (buf_id == 0xf) {
                 s->scratch_rw(s->rw_opaque, scratch_buf, scratch_addr, transfer_size, 0);
             } else {
-                fprintf(stderr, "Unhandled DSP DMA buffer: 0x%x\n", buf_id);
-                assert(false);
+                (void)APU_CHECK(!"a known DMA buffer");
             }
 
             for (int i = 0; i < count; i++) {
