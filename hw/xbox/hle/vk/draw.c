@@ -2253,9 +2253,12 @@ static void probe_log(uint64_t swap)
     f->n = 0;
 }
 
-/* Before draw c: its query index, or -1 when it is not probed. */
-static int probe_begin(VkCommandBuffer cb, const HleCmdDraw *c, uint32_t vfirst,
-                       uint64_t pipe, uint32_t state)
+static uint32_t rec_state_hash(void);
+
+/* Before draw c: its query index, or -1 when it is not probed. The recorded
+ * state is hashed only for a probed program's draws: hashed for every draw
+ * while any probe was set, it took half the RP5's render thread. */
+static int probe_begin(VkCommandBuffer cb, const HleCmdDraw *c, uint32_t vfirst, uint64_t pipe)
 {
     unsigned prog = 0;
     while (prog < g_probe.nvsh && g_probe.vsh[prog] != c->vsh) {
@@ -2294,7 +2297,7 @@ static int probe_begin(VkCommandBuffer cb, const HleCmdDraw *c, uint32_t vfirst,
     f->d[i].submit = hle_back_submits();
     f->d[i].prog = (uint8_t)prog;
     f->d[i].pipe = (uint32_t)(pipe ^ pipe >> 32);
-    f->d[i].state = state;
+    f->d[i].state = rec_state_hash();
     {   /* the constant file as recorded: c58/c59 and a hash of all 192 */
         const uint8_t *k = g_harena.map + c->consts_off;
         memcpy(f->d[i].vp, k + 58 * 16, sizeof(f->d[i].vp));
@@ -3532,8 +3535,8 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
         if (REC_CHANGED(ibuf, g_harena.buf)) {
             T.vkCmdBindIndexBuffer(cb, g_harena.buf, 0, VK_INDEX_TYPE_UINT16);
         }
-        int q = g_probe.nvsh ? probe_begin(cb, c, vfirst, (uint64_t)(uintptr_t)g_rec.pipe,
-                                           rec_state_hash()) : -1;
+        int q = g_probe.nvsh ? probe_begin(cb, c, vfirst, (uint64_t)(uintptr_t)g_rec.pipe)
+                                : -1;
         if (g_hle_gpucut != 2) {
             T.vkCmdDrawIndexed(cb, g_hle_gpucut == 4 ? MIN(c->count, 3u) : c->count, 1,
                                c->ib_off / 2, (int32_t)vfirst, 0);
@@ -3542,8 +3545,8 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
             T.vkCmdEndQuery(cb, g_probe.pool, (uint32_t)q);
         }
     } else {
-        int q = g_probe.nvsh ? probe_begin(cb, c, vfirst, (uint64_t)(uintptr_t)g_rec.pipe,
-                                           rec_state_hash()) : -1;
+        int q = g_probe.nvsh ? probe_begin(cb, c, vfirst, (uint64_t)(uintptr_t)g_rec.pipe)
+                                : -1;
         if (g_hle_gpucut == 2) {
             /* debug: the state alone */
         } else if (g_hle_gpucut == 4) {
