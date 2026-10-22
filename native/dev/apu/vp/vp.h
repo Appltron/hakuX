@@ -146,6 +146,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
 void mcpx_apu_vp_reset(MCPXAPUState *d);
 void mcpx_apu_vp_refresh_voice_cache(MCPXAPUState *d, uint32_t new_base);
 void mcpx_apu_vp_refresh_ssl_cache(MCPXAPUState *d, uint32_t new_base);
+void mcpx_apu_vp_restore_hrtf(MCPXAPUState *d);
 
 /* PERF_LOG-gated "silent-but-active voice" probe emit. Compiles to an empty
  * function when PERF_LOG=0. Call once per EP frame from se_frame(); the

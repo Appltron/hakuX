@@ -305,7 +305,7 @@ static void throttle(MCPXAPUState *d)
     int64_t start_us = apu_host_us();
     int queued_bytes = apu_out_queued();
 
-    while (!apu_ld(&d->exiting) &&
+    while (!apu_ld(&d->exiting) && !nc_paused() &&
            queued_bytes >= d->monitor.queued_bytes_high) {
         apu_cond_timedwait_ms(&d->cond, &d->lock, EP_FRAME_US / 1000);
         if (apu_ld(&d->exiting)) {
@@ -490,6 +490,7 @@ void mcpx_apu_post_load(MCPXAPUState *d)
      * loaded base registers. */
     mcpx_apu_vp_refresh_voice_cache(d, d->regs[NV_PAPU_VPVADDR]);
     mcpx_apu_vp_refresh_ssl_cache(d, d->regs[NV_PAPU_VPSSLADDR]);
+    mcpx_apu_vp_restore_hrtf(d);
 
     /* Snapshot restore re-notify guard.
      *
@@ -517,8 +518,18 @@ static void *mcpx_apu_frame_thread(void *arg)
 {
     MCPXAPUState *d = arg;
 
+    /* Paused (a savestate, the activity): parked between frames, the lock
+     * free for the state to be taken or replaced. Running on, it wrote guest
+     * RAM after a save had taken RAM and before it took the APU. */
+    nc_pause_register("apu");
     pthread_mutex_lock(&d->lock);
     while (!apu_ld(&d->exiting)) {
+        if (nc_paused()) {
+            pthread_mutex_unlock(&d->lock);
+            nc_pause_wait();
+            pthread_mutex_lock(&d->lock);
+            continue;
+        }
         int xcntmode = GET_MASK(apu_ld(&d->regs[NV_PAPU_SECTL]),
                                 NV_PAPU_SECTL_XCNTMODE);
         uint32_t fectl = apu_ld(&d->regs[NV_PAPU_FECTL]);
@@ -553,10 +564,15 @@ static void *mcpx_apu_frame_thread(void *arg)
         if (xcntmode == NV_PAPU_SECTL_XCNTMODE_OFF ||
             (fectl & NV_PAPU_FECTL_FEMETHMODE_TRAPPED) ||
             (fectl & NV_PAPU_FECTL_FEMETHMODE_HALTED)) {
+            nc_pause_idle(true);                /* stopped until the guest acts */
             pthread_cond_wait(&d->cond, &d->lock);
+            nc_pause_idle(false);
             continue;
         }
         throttle(d);
+        if (nc_paused()) {
+            continue;                           /* the throttle let go for the pause: no frame */
+        }
         se_frame(d);
     }
     pthread_mutex_unlock(&d->lock);

@@ -6,7 +6,8 @@
  * (1 bytes, 2 structs, 3 a pointed-to struct), size and count, and its data
  * (a struct's: its own description's fields, nested). A load matches fields
  * by name, so a field this core no longer has is skipped, and refuses a
- * state whose field changed or that misses one. The tables below are the
+ * state whose field changed or that misses one (but an optional one, added
+ * later: older states don't have it). The tables below are the
  * xemu descriptions' fields in their order; states saved over them load
  * here.
  */
@@ -33,9 +34,11 @@ struct ApuField {
     uint8_t kind;
     uint32_t offset, size, num;
     const ApuDesc *sub;
+    bool opt;                   /* added later: a state without it loads, the field left as it is */
 };
 
 #define DATA(s, m) {#m, F_DATA, offsetof(s, m), sizeof(((s *)0)->m), 1, NULL}
+#define OPT_DATA(s, m) {#m, F_DATA, offsetof(s, m), sizeof(((s *)0)->m), 1, NULL, true}
 #define STRUCT(s, m, n, t, desc) {#m, F_STRUCT, offsetof(s, m), sizeof(t), (n), &(desc)}
 #define PTR(s, m, t, desc) {#m, F_PTR, offsetof(s, m), sizeof(t), 1, &(desc)}
 #define END {NULL, F_END, 0, 0, 0, NULL}
@@ -120,6 +123,10 @@ static const ApuField k_apu_fields[] = {
     DATA(MCPXAPUState, vp.hrtf_headroom),
     DATA(MCPXAPUState, vp.submix_headroom),
     DATA(MCPXAPUState, vp.voice_locked),
+    /* the HRTF entries the 3D voices' filters take: without them a voice
+     * the title didn't commit again was silent after a load
+     * (mcpx_apu_vp_restore_hrtf) */
+    OPT_DATA(MCPXAPUState, vp.hrtf),
     END,
 };
 static const ApuDesc k_apu = {"mcpx-apu", k_apu_fields};
@@ -190,7 +197,7 @@ static bool get(NcRd *r, const ApuDesc *desc, void *base, const char *path)
     bool ok = true;
     unsigned have = 0, want = 0;
     for (const ApuField *f = desc->fields; f->kind != F_END; f++) {
-        want++;
+        want += !f->opt;
     }
     const uint32_t n = nc_rd_u32(r);
     for (uint32_t i = 0; ok && i < n && !r->fail; i++) {
@@ -215,7 +222,7 @@ static bool get(NcRd *r, const ApuDesc *desc, void *base, const char *path)
             ok = false;
             break;
         }
-        have++;
+        have += !f->opt;
         uint8_t *p = (uint8_t *)base + f->offset;
         if (kind == F_DATA) {
             ok = nc_rd_get(r, p, size);

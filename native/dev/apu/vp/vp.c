@@ -2542,3 +2542,33 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
     refresh_table(&d->vp.voice_cache, 0, 0);
     refresh_table(&d->vp.ssl_cache, 0, 0);
 }
+
+/* After a savestate (the voice table's pointer set): each 3D voice's HRTF
+ * filter aimed again at the entry its voice names, as SET_VOICE_TAR_HRTF
+ * did (the entries come with the APU's state, the handles with RAM): a 3D
+ * voice whose parameters the title doesn't commit again was silent. */
+void mcpx_apu_vp_restore_hrtf(MCPXAPUState *d)
+{
+    if (!d->regs[NV_PAPU_VPVADDR]) {
+        return;
+    }
+    unsigned set = 0, entries = 0;
+    for (uint16_t v = 0; v < MCPX_HW_MAX_3D_VOICES; v++) {
+        unsigned handle = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_HRTF_TARGET,
+                                         NV_PAVS_VOICE_CFG_HRTF_TARGET_HANDLE);
+        if (handle != HRTF_NULL_HANDLE && handle < HRTF_ENTRY_COUNT) {
+            hrtf_filter_set_target_params(&d->vp.filters[v].hrtf, d->vp.hrtf.entries[handle].hrir,
+                                          d->vp.hrtf.entries[handle].itd);
+            set++;
+        }
+    }
+    for (unsigned e = 0; e < HRTF_ENTRY_COUNT; e++) {
+        bool any = d->vp.hrtf.entries[e].itd != 0.0f;
+        for (unsigned k = 0; k < HRTF_NUM_TAPS && !any; k++) {
+            any = d->vp.hrtf.entries[e].hrir[0][k] != 0.0f || d->vp.hrtf.entries[e].hrir[1][k] != 0.0f;
+        }
+        entries += any;
+    }
+    nc_log("hakuX-native-state", "apu: %u 3D voices' HRTF filters set again (%u entries hold coefficients)", set,
+           entries);
+}
