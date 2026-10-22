@@ -1410,7 +1410,7 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
     if (!nf) {
         return NC_STATUS_INVALID_HANDLE;
     }
-    uint8_t *o = nc_vm_host(k->vm, a[2]);
+    uint8_t o[0x38];                    /* the largest class's; the caller's buffer once it fits */
     uint64_t t[4], size;
     uint32_t attrs, len;
     file_facts(nf, t, &size, &attrs);
@@ -1466,6 +1466,7 @@ static uint64_t NtQueryInformationFile(NcKernel *k, NcFrame *f, const uint32_t *
     if (a[3] < len) {
         return STATUS_BUFFER_TOO_SMALL;
     }
+    memcpy(nc_vm_host(k->vm, a[2]), o, len);
     io_status(k, a[1], NC_STATUS_SUCCESS, len);
     return NC_STATUS_SUCCESS;
 }
