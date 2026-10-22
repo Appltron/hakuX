@@ -238,8 +238,25 @@ static bool flip_done(void)
     return surf_get(SURF_READ) != surf_get(SURF_WRITE);
 }
 
+/* The Kelvin methods kelvin() acts on (its cases, by method / 4): every
+ * other one is only its two register shadows' (hle_kelvin_method,
+ * hle_pbd_method) and takes no look through the switch. */
+static const bool k_kelvin_acts[2048] = {
+    [NV097_SET_FLIP_READ / 4 ... NV097_FLIP_STALL / 4] = true,
+    [NV097_SET_CONTEXT_DMA_SEMAPHORE / 4] = true,
+    [NV097_SET_CONTEXT_DMA_REPORT / 4] = true,
+    [NV097_GET_REPORT / 4] = true,
+    [NV097_SET_SEMAPHORE_OFFSET / 4] = true,
+    [NV097_BACK_END_WRITE_SEMAPHORE_RELEASE / 4] = true,
+    [NV097_SET_ZSTENCIL_CLEAR_VALUE / 4] = true,
+    [NV097_SET_COLOR_CLEAR_VALUE / 4] = true,
+};
+
 static int kelvin(uint32_t m, uint32_t v)
 {
+    if (!k_kelvin_acts[(m >> 2) & 0x7FF]) {
+        return HLE_PB_GO;
+    }
     if (m >= NV097_SET_FLIP_READ && m <= NV097_FLIP_STALL) {
         static unsigned s_logged;
         if (s_logged++ < 24) {

@@ -105,13 +105,32 @@ uint32_t hle_kelvin_depth_xfmt(bool z24, bool zfloat, bool swz)
 
 /* ---- methods ---------------------------------------------------------------------- */
 
+/* state_method && !state_unread by register (a bit each), made at the first
+ * method (the decoder's thread): the two were ~15 comparisons at every
+ * change of a register. */
+static uint32_t g_state_read[KV_REGS / 32];
+static bool g_state_read_ready;
+
+static void state_read_init(void)
+{
+    for (uint32_t i = 0; i < KV_REGS; i++) {
+        if (state_method(4 * i) && !state_unread(4 * i)) {
+            g_state_read[i >> 5] |= 1u << (i & 31);
+        }
+    }
+    g_state_read_ready = true;
+}
+
 void hle_kelvin_method(uint32_t m, uint32_t v)
 {
     if (m >= 4 * KV_REGS) {
         return;
     }
+    if (__builtin_expect(!g_state_read_ready, 0)) {
+        state_read_init();
+    }
     uint32_t i = m >> 2;
-    if ((g_kv.r[i] != v || !W(m)) && state_method(m) && !state_unread(m)) {
+    if ((g_kv.r[i] != v || !W(m)) && (g_state_read[i >> 5] >> (i & 31) & 1)) {
         g_kv.sgen++;                    /* a first write counts: hle_kelvin_state reads W() */
     }
     g_kv.r[i] = v;
