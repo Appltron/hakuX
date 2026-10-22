@@ -573,12 +573,14 @@ static void stats_tick(NcKernel *k)
         for (unsigned i = 0; i < nd && od < (int)sizeof(ds) - 24; i++) {
             od += snprintf(ds + od, sizeof(ds) - (size_t)od, " %05x000:%u", dp[i], dn[i]);
         }
+        const uint64_t ncr = __atomic_load_n(&g_nc_faults_callret, __ATOMIC_RELAXED),
+                       ndi = __atomic_load_n(&g_nc_faults_dirty, __ATOMIC_RELAXED),
+                       nmm = __atomic_load_n(&g_nc_faults_mmio, __ATOMIC_RELAXED);
         nc_log("hakuX-native-stats", "host faults per s: call-return %.0f dirty pages %.0f (pages%s) mmio %.0f "
-               "(eips%s)", (double)(g_nc_faults_callret - cr) / s, (double)(g_nc_faults_dirty - di) / s, ds,
-               (double)(g_nc_faults_mmio - mm) / s, ms);
-        cr = g_nc_faults_callret;
-        di = g_nc_faults_dirty;
-        mm = g_nc_faults_mmio;
+               "(eips%s)", (double)(ncr - cr) / s, (double)(ndi - di) / s, ds, (double)(nmm - mm) / s, ms);
+        cr = ncr;
+        di = ndi;
+        mm = nmm;
     }
     commits_seen = k->vm_commits;
     decommits_seen = k->vm_decommits;

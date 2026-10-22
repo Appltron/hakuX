@@ -201,6 +201,7 @@ static bool fault_report(NcCore *c, uintptr_t pc, uint64_t va, const char *what)
     return false;
 }
 
+/* bumped from the fault handlers of any thread (atomically), read by the stats */
 uint64_t g_nc_faults_callret, g_nc_faults_dirty, g_nc_faults_mmio;
 
 static struct {
@@ -209,7 +210,7 @@ static struct {
 
 static void mmio_fault_sample(uint32_t eip)
 {
-    if (g_nc_faults_mmio & 63) {
+    if (__atomic_load_n(&g_nc_faults_mmio, __ATOMIC_RELAXED) & 63) {
         return;
     }
     unsigned k = 0;
@@ -270,7 +271,7 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
     }
     const uintptr_t pc = ((ucontext_t *)ucontext)->uc_mcontext.pc;
     if (nc_cpu_callret_fault(c->cpu, (uintptr_t)info->si_addr, ucontext)) {
-        g_nc_faults_callret++;
+        __atomic_fetch_add(&g_nc_faults_callret, 1, __ATOMIC_RELAXED);
         return true;
     }
     {   /* NC_WATCHPA: a guest store to the watched RAM, with its EIP */
@@ -301,11 +302,11 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
         }
     }
     if (nc_hle_dirty_fault(info)) {
-        g_nc_faults_dirty++;
+        __atomic_fetch_add(&g_nc_faults_dirty, 1, __ATOMIC_RELAXED);
         return true;
     }
     if (nc_mmio_fault(&c->vm, info, ucontext)) {
-        g_nc_faults_mmio++;
+        __atomic_fetch_add(&g_nc_faults_mmio, 1, __ATOMIC_RELAXED);
         mmio_fault_sample(nc_cpu_guest_eip_at(c->cpu, pc));
         /* From translated code: that instruction is hooked from now on. */
         nc_x86mmio_note(nc_cpu_guest_eip_at(c->cpu, pc));
