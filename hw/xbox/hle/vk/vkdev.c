@@ -4,14 +4,69 @@
 #include "hw/xbox/hle/base.h"
 
 #include "hw/xbox/hle/hle.h"
+#include "hw/xbox/hle/host.h"
 #include "hw/xbox/hle/vk/vkdev.h"
+#include "hw/xbox/hle/vk/back.h"
 #include "hw/xbox/hle/vk/batch.h"
 #include "hw/xbox/hle/vk/quirks.h"
 
 HleVk g_hvk;
 static HleMutex g_queue_lock;
 static bool g_ready;
+static bool g_lost;                     /* hle_vk_lose */
 static int64_t g_lock_wait_ns;          /* hle_vk_queue_wait_ns */
+
+const char *hle_vk_result_text(VkResult r)
+{
+    switch (r) {
+    case VK_SUCCESS: return "VK_SUCCESS";
+    case VK_TIMEOUT: return "VK_TIMEOUT";
+    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+    case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+    case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
+    case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
+    default: {
+        static __thread char s[24];
+        snprintf(s, sizeof(s), "VkResult %d", (int)r);
+        return s;
+    }
+    }
+}
+
+void hle_vk_lose(VkResult r, const char *what)
+{
+    if (__atomic_exchange_n(&g_lost, true, __ATOMIC_ACQ_REL)) {
+        return;
+    }
+    char why[160];
+    snprintf(why, sizeof(why), "stopped responding (%s in %s)", hle_vk_result_text(r), what);
+    hle_log("hakuX-hle-back", "FATAL: the GPU %s: nothing more is drawn", why);
+    hle_tl_lose();
+    hle_host_gpu_lost(why);
+}
+
+bool hle_vk_lost(void)
+{
+    return __atomic_load_n(&g_lost, __ATOMIC_ACQUIRE);
+}
+
+bool hle_vk_check(VkResult r, const char *what)
+{
+    if (r == VK_SUCCESS) {
+        return true;
+    }
+    if (r == VK_ERROR_DEVICE_LOST) {
+        hle_vk_lose(r, what);
+        return false;
+    }
+    static unsigned s_said;
+    if (__atomic_fetch_add(&s_said, 1, __ATOMIC_RELAXED) < 16) {
+        hle_log("hakuX-hle-back", "vk: %s: %s", what, hle_vk_result_text(r));
+    }
+    return false;
+}
 
 void hle_vk_queue_lock(void)
 {

@@ -60,6 +60,19 @@ extern HleVk g_hvk;
 int hle_vk_init(void);
 /* The back end is up (hle_back_start done): other threads may use g_hvk. */
 bool hle_vk_ready(void);
+
+/* The device can't go on (VK_ERROR_DEVICE_LOST: a driver fault; or a
+ * submit that failed, whose timeline value would never signal): every wait
+ * on the GPU returns (hle_tl_lose), the back end and the presenter stop,
+ * and the host hears why (hle_host_gpu_lost). Once; later calls do nothing. */
+void hle_vk_lose(VkResult r, const char *what);
+/* hle_vk_lose was called: nothing more goes to the device. */
+bool hle_vk_lost(void);
+/* r == VK_SUCCESS; else false, the first few logged, and a lost device
+ * reported (hle_vk_lose). */
+bool hle_vk_check(VkResult r, const char *what);
+/* r's name ("VK_ERROR_DEVICE_LOST"), or its number. */
+const char *hle_vk_result_text(VkResult r);
 void hle_vk_set_ready(void);
 /* g_hvk.queue's external synchronization: the render thread, the window's
  * presenter and a capture submit to it, and vkDeviceWaitIdle needs it too. */

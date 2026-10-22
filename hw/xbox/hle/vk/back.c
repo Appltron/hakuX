@@ -751,8 +751,8 @@ static void submit(uint64_t value)
     hle_hitch_leave(pa);
     hle_prof_end(HLE_PROF_SUBMIT, ts);
     if (r != VK_SUCCESS) {
-        hle_log("hakuX-hle-back", "FATAL: vkQueueSubmit2 %d at value %llu", r,
-                (unsigned long long)value);
+        /* value would never signal: every wait for it would hang */
+        hle_vk_lose(r, "vkQueueSubmit2");
     }
     if (has_cb) {
         f->value = value;
@@ -790,7 +790,7 @@ static void flush_idle(void)
         hle_hitch_leave(pa);
         hle_prof_end(HLE_PROF_SUBMIT, ts);
         if (r != VK_SUCCESS) {
-            hle_log("hakuX-hle-back", "FATAL: flush submit %d", r);
+            hle_vk_lose(r, "vkQueueSubmit2 (flush)");
         }
         f->value = 0;                   /* queue idle below: nothing to wait for */
         g_back.cur = (g_back.cur + 1) % HLE_FRAMES;
@@ -799,9 +799,10 @@ static void flush_idle(void)
     }
     uint32_t pa = hle_hitch_enter(HLE_ACT_GPU);
     hle_vk_queue_lock();
-    T.vkQueueWaitIdle(g_hvk.queue);
+    const VkResult r = T.vkQueueWaitIdle(g_hvk.queue);
     hle_vk_queue_unlock();
     hle_hitch_leave(pa);
+    hle_vk_check(r, "vkQueueWaitIdle");
 }
 
 uint32_t g_hle_rscale = 1;
@@ -1725,12 +1726,13 @@ static void cmd_swap(const HleCmdSwap *c)
  * barrier before a draw reading its target; its cost, the pixels may go
  * wrong) and debug.hakux.gpucut (frag: next to no fragments, draw: the
  * state without the draws, pass: the passes alone; what is left is the GPU's
- * cost without them) */
+ * cost without them); a new debug.hakux.gpulose takes the lost-device path
+ * (hle_vk_lose) as a driver fault would: the game stops, the app says so */
 static void back_props_poll(uint64_t swap)
 {
 #ifdef __ANDROID__
     static int64_t next_poll;
-    static HleProp log_prop;
+    static HleProp log_prop, lose_prop;
     if ((int64_t)swap < next_poll) {
         return;
     }
@@ -1743,6 +1745,9 @@ static void back_props_poll(uint64_t swap)
     }
     if (hle_prop_new(&log_prop, "debug.hakux.vislog", v)) {
         g_vis_dbg.nlog = atoi(v);
+    }
+    if (hle_prop_new(&lose_prop, "debug.hakux.gpulose", v)) {
+        hle_vk_lose(VK_ERROR_DEVICE_LOST, "debug.hakux.gpulose");
     }
     v[0] = 0;
     __system_property_get("debug.hakux.dryhold", v);
@@ -2394,6 +2399,12 @@ static void *render_thread(void *opaque)
         const HleCmdHdr *h;
         int64_t t0 = hle_prof_begin();
         while ((h = hle_ring_peek(r)) != NULL) {
+            if (unlikely(hle_vk_lost())) {
+                /* nothing goes to a lost device: the ring drains (the
+                 * front end's waits on the timeline all return) */
+                hle_ring_consume(r);
+                continue;
+            }
             dispatch(h);
             hle_ring_consume(r);
             g_back.st.cmds++;
@@ -2419,7 +2430,9 @@ static void *render_thread(void *opaque)
             hle_now_ns() - g_pend.since < g_pend_ns) {
             continue;                   /* debug: held until it ages (WFE waits above) */
         }
-        pend_flush();                   /* the ring ran dry: submit what waits */
+        if (!hle_vk_lost()) {
+            pend_flush();               /* the ring ran dry: submit what waits */
+        }
         if (hle_ring_peek(r)) {
             continue;
         }

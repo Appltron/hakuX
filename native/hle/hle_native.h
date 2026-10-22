@@ -22,8 +22,9 @@ void nc_hle_boot(NcKernel *k, NcVm *vm, NcCpu *cpu, const NcCpuContext *boot);
  * NULL. */
 const char *nc_hle_fatal(void);
 /* Whose that is: the Vulkan driver's (it lacks what the HLE GPU needs) or
- * the title's (the HLE GPU does not support it). */
-enum { NC_FATAL_NONE, NC_FATAL_DRIVER, NC_FATAL_TITLE, NC_FATAL_STATE };
+ * the title's (the HLE GPU does not support it). NC_FATAL_GPU_LOST: the
+ * driver lost the device while the game ran (hle_host_gpu_lost). */
+enum { NC_FATAL_NONE, NC_FATAL_DRIVER, NC_FATAL_TITLE, NC_FATAL_STATE, NC_FATAL_GPU_LOST };
 /* Why the game can't go on: the core's own reasons (a savestate that
  * couldn't load: NC_FATAL_STATE). */
 void nc_hle_set_fatal(int kind, const char *why);

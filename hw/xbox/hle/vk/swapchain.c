@@ -453,12 +453,19 @@ static bool init(void)
  * may still be used by. */
 static void idle(void)
 {
+    if (hle_vk_lost()) {
+        return;                         /* nothing runs on it any more */
+    }
     VkSemaphoreWaitInfo wi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
                                .pSemaphores = &g_ps.tl, .pValues = &g_ps.submitted };
-    T.vkWaitSemaphores(g_hvk.dev, &wi, 2000000000ull);
+    VkResult r = T.vkWaitSemaphores(g_hvk.dev, &wi, 2000000000ull);
+    if (r != VK_TIMEOUT) {
+        hle_vk_check(r, "vkWaitSemaphores (present)");
+    }
     hle_vk_queue_lock();
-    T.vkQueueWaitIdle(g_hvk.queue);
+    r = T.vkQueueWaitIdle(g_hvk.queue);
     hle_vk_queue_unlock();
+    hle_vk_check(r, "vkQueueWaitIdle (present)");
 }
 
 static void drop_images(void)
@@ -603,7 +610,11 @@ static bool wait_value(uint64_t v)
 {
     VkSemaphoreWaitInfo wi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
                                .pSemaphores = &g_ps.tl, .pValues = &v };
-    return T.vkWaitSemaphores(g_hvk.dev, &wi, 1000000000ull) == VK_SUCCESS;
+    const VkResult r = T.vkWaitSemaphores(g_hvk.dev, &wi, 1000000000ull);
+    if (r == VK_ERROR_DEVICE_LOST) {
+        hle_vk_lose(r, "vkWaitSemaphores (present)");
+    }
+    return r == VK_SUCCESS;
 }
 
 static int64_t g_submit_ns, g_present_ns;  /* the presenter's calls (statistics) */
@@ -616,7 +627,7 @@ static void lose_window(void)
 
 bool hle_present_begin(struct ANativeWindow *win, uint32_t *w, uint32_t *h)
 {
-    if (g_ps.failed || !hle_vk_ready()) {
+    if (g_ps.failed || !hle_vk_ready() || hle_vk_lost()) {
         return false;
     }
     if (!g_ps.inited) {
@@ -666,6 +677,9 @@ bool hle_present_begin(struct ANativeWindow *win, uint32_t *w, uint32_t *h)
         return false;
     }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+        if (r != VK_TIMEOUT && r != VK_NOT_READY) {
+            hle_vk_check(r, "vkAcquireNextImageKHR");
+        }
         return false;                   /* timed out: the next refresh tries again */
     }
     if (r == VK_SUBOPTIMAL_KHR && g_ps.follows) {
@@ -929,7 +943,7 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average)
         g_ps.submitted = value;
         f->value = value;
     } else {
-        hle_log("hakuX-hle-back", "present: vkQueueSubmit2 %d", r);
+        hle_vk_check(r, "vkQueueSubmit2 (present)");
     }
     if (g_ps.using) {
         g_ps.using = false;
@@ -948,6 +962,8 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average)
         g_ps.stale = true;
     } else if (pr == VK_ERROR_SURFACE_LOST_KHR) {
         lose_window();
+    } else if (pr == VK_ERROR_DEVICE_LOST) {
+        hle_vk_lose(pr, "vkQueuePresentKHR");
     }
     g_ps.cur = (g_ps.cur + 1) % PS_FRAMES;
     static int64_t s_t0;

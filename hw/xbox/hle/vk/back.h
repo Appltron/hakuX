@@ -21,6 +21,9 @@ void hle_back_urgent(void);
 uint64_t hle_tl_completed(void);
 uint64_t hle_tl_submitted(void);
 void hle_tl_wait(uint64_t value);
+/* The device lost (hle_vk_lose): every value counts as reached, so no
+ * thread waits on the GPU any more. */
+void hle_tl_lose(void);
 /* len bytes the GPU copies into the arena at arena_off go to guest memory at
  * pa once it reaches value, before any thread sees the value (a readback
  * without zero-copy guest RAM). False if too many wait (nothing queued). */

@@ -335,20 +335,35 @@ static bool make_image(HleVkTex *t, const TexFmt *tf, VkImageUsageFlags usage)
         t->img = VK_NULL_HANDLE;
         return false;
     }
-    T.vkBindImageMemory(g_hvk.dev, t->img, t->mem, 0);
     VkImageViewCreateInfo vci = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = t->img,
         .viewType = t->vol ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D,
         .format = tf->fmt, .components = tf->sw,
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, t->levels, 0, 1 } };
-    T.vkCreateImageView(g_hvk.dev, &vci, NULL, &t->view);
+    t->view = VK_NULL_HANDLE;
     t->cube_view = VK_NULL_HANDLE;
-    if (cube) {
+    bool view = false;
+    bool ok = hle_vk_check(T.vkBindImageMemory(g_hvk.dev, t->img, t->mem, 0), "vkBindImageMemory (texture)") &&
+              (view = hle_vk_check(T.vkCreateImageView(g_hvk.dev, &vci, NULL, &t->view),
+                                   "vkCreateImageView (texture)"));
+    if (ok && cube) {
         vci.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
         vci.subresourceRange.layerCount = 6;
-        T.vkCreateImageView(g_hvk.dev, &vci, NULL, &t->cube_view);
+        ok = hle_vk_check(T.vkCreateImageView(g_hvk.dev, &vci, NULL, &t->cube_view), "vkCreateImageView (cube)");
     }
-    return true;
+    if (!ok) {
+        /* no image rather than one without views (a null view bound) */
+        if (view) {
+            T.vkDestroyImageView(g_hvk.dev, t->view, NULL);
+        }
+        t->view = VK_NULL_HANDLE;
+        T.vkDestroyImage(g_hvk.dev, t->img, NULL);
+        T.vkFreeMemory(g_hvk.dev, t->mem, NULL);
+        t->img = VK_NULL_HANDLE;
+        t->mem = VK_NULL_HANDLE;
+        t->cube_view = VK_NULL_HANDLE;
+    }
+    return ok;
 }
 
 static void pipe_async_init(void);

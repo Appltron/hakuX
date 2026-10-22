@@ -38,8 +38,9 @@ static void retire_view(VkImageView v)
         }
     }
     hle_vk_queue_lock();
-    T.vkDeviceWaitIdle(g_hvk.dev);              /* full: rare, and safe */
+    const VkResult r = T.vkDeviceWaitIdle(g_hvk.dev);   /* full: rare, and safe */
     hle_vk_queue_unlock();
+    hle_vk_check(r, "vkDeviceWaitIdle (views)");
     T.vkDestroyImageView(g_hvk.dev, v, NULL);
 }
 
@@ -398,12 +399,20 @@ bool hle_surf_ensure(HleVkSurf *s)
         s->img = VK_NULL_HANDLE;
         return false;
     }
-    T.vkBindImageMemory(g_hvk.dev, s->img, s->mem, 0);
     VkImageViewCreateInfo vci = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = s->img,
         .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = s->fmt,
         .subresourceRange = { s->aspect, 0, 1, 0, 1 } };
-    T.vkCreateImageView(g_hvk.dev, &vci, NULL, &s->view);   /* level 0, face 0 */
+    if (!hle_vk_check(T.vkBindImageMemory(g_hvk.dev, s->img, s->mem, 0), "vkBindImageMemory (surface)") ||
+        !hle_vk_check(T.vkCreateImageView(g_hvk.dev, &vci, NULL, &s->view),   /* level 0, face 0 */
+                      "vkCreateImageView (surface)")) {
+        T.vkDestroyImage(g_hvk.dev, s->img, NULL);
+        T.vkFreeMemory(g_hvk.dev, s->mem, NULL);
+        s->img = VK_NULL_HANDLE;
+        s->mem = VK_NULL_HANDLE;
+        s->view = VK_NULL_HANDLE;
+        return false;
+    }
     s->view_gen = ++g_view_gen;
     s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     s->dirty = 0;
@@ -546,8 +555,9 @@ VkImage hle_surf_down(VkCommandBuffer cb, HleVkSurf *o, VkImageLayout layout,
 void hle_surf_destroy_all(void)
 {
     hle_vk_queue_lock();
-    T.vkDeviceWaitIdle(g_hvk.dev);              /* caller already flushed (flush_idle) */
+    const VkResult r = T.vkDeviceWaitIdle(g_hvk.dev);   /* caller already flushed (flush_idle) */
     hle_vk_queue_unlock();
+    hle_vk_check(r, "vkDeviceWaitIdle (surfaces)");
     for (unsigned i = 0; i < HLE_MAX_DOWN; i++) {
         if (g_down[i].img) {
             T.vkDestroyImage(g_hvk.dev, g_down[i].img, NULL);

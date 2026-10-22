@@ -103,8 +103,9 @@ int hle_disp_init(uint32_t w, uint32_t h)
     /* the presenter's reads of the old images submitted (use), then done */
     hle_mutex_lock(&g_disp.use);
     hle_vk_queue_lock();
-    T.vkDeviceWaitIdle(g_hvk.dev);
+    const VkResult r = T.vkDeviceWaitIdle(g_hvk.dev);
     hle_vk_queue_unlock();
+    hle_vk_check(r, "vkDeviceWaitIdle (display)");
     hle_mutex_lock(&g_disp.lock);
     for (int i = 0; i < HLE_DISP_SLOTS; i++) {
         slot_free_vk(&g_disp.s[i]);
@@ -383,7 +384,7 @@ uint8_t *hle_disp_read_front(uint32_t *w, uint32_t *h)
         VkResult r2 = T.vkQueueSubmit(g_hvk.queue, 1, &si, fence);
         hle_vk_queue_unlock();
         void *p = NULL;
-        if (r2 == VK_SUCCESS && T.vkWaitForFences(g_hvk.dev, 1, &fence, VK_TRUE, 2000000000ull) == VK_SUCCESS &&
+        if (hle_vk_check(r2, "vkQueueSubmit (capture)") && T.vkWaitForFences(g_hvk.dev, 1, &fence, VK_TRUE, 2000000000ull) == VK_SUCCESS &&
             T.vkMapMemory(g_hvk.dev, mem, 0, size, 0, &p) == VK_SUCCESS) {
             out = g_malloc(size);
             memcpy(out, p, size);

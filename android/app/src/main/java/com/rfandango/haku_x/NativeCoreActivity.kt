@@ -99,6 +99,7 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
             when (kind) {
               FATAL_DRIVER -> R.string.native_fatal_title
               FATAL_STATE -> R.string.state_load_failed_title
+              FATAL_GPU_LOST -> R.string.native_gpu_lost_title
               else -> R.string.native_incompatible_title
             }
           )
@@ -106,6 +107,7 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
             when {
               driver -> getString(R.string.native_fatal_gpu, why)
               kind == FATAL_STATE -> why
+              kind == FATAL_GPU_LOST -> getString(R.string.native_gpu_lost, why)
               else -> getString(R.string.native_incompatible)
             }
           )
@@ -972,13 +974,15 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     @JvmStatic
     external fun nativeGetFatal(): String?
 
-    /** Whose fault that is: FATAL_DRIVER (1), the game (2), or 0. */
+    /** Whose fault that is: FATAL_DRIVER (1), the game (2), a savestate (3),
+     * the driver losing the GPU while the game ran (4), or 0. */
     @JvmStatic
     external fun nativeGetFatalKind(): Int
 
     /** nativeGetFatalKind (native/hle/hle_native.h NC_FATAL_*). */
     private const val FATAL_DRIVER = 1
     private const val FATAL_STATE = 3
+    private const val FATAL_GPU_LOST = 4
 
     /** The core stopped to boot another of the title's XBEs. */
     @JvmStatic

@@ -156,6 +156,12 @@ void *hle_host_vk_loader(void)
     return (void *)gipa;
 }
 
+/* The app tells the user and goes back to the library (nc_hle_fatal). */
+void hle_host_gpu_lost(const char *why)
+{
+    nc_hle_set_fatal(NC_FATAL_GPU_LOST, why);
+}
+
 /* Disc reads aren't counted here. */
 bool hle_host_disc_stats(uint64_t *ops, uint64_t *bytes, uint64_t *ns)
 {

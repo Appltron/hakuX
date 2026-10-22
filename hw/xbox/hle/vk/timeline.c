@@ -141,7 +141,7 @@ static void *watch_thread(void *opaque)
             continue;
         }
         if (r != VK_SUCCESS) {
-            hle_log("hakuX-hle-back", "FATAL: vkWaitSemaphores %d (device lost?)", r);
+            hle_vk_lose(r, "vkWaitSemaphores (timeline)");
             return NULL;
         }
         uint64_t v = 0;
@@ -194,6 +194,15 @@ uint64_t hle_tl_submitted(void)
     return hle_atomic_read(&g_tl.submitted);
 }
 
+/* Every value reached: completed goes to the end of time (it only moves
+ * forward), so the waits above and hle_tl_completed's readers stop waiting;
+ * the readbacks queued land (with what they have). */
+void hle_tl_lose(void)
+{
+    publish(UINT64_MAX);
+    hle_event_set(&g_tl.ev);
+}
+
 void hle_tl_wait(uint64_t value)
 {
     if (hle_tl_completed() >= value) {
@@ -204,7 +213,10 @@ void hle_tl_wait(uint64_t value)
         VkSemaphoreWaitInfo wi = {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
             .semaphoreCount = 1, .pSemaphores = &g_tl.sem, .pValues = &value };
-        T.vkWaitSemaphores(g_hvk.dev, &wi, 100 * 1000 * 1000ull);
+        const VkResult r = T.vkWaitSemaphores(g_hvk.dev, &wi, 100 * 1000 * 1000ull);
+        if (r != VK_SUCCESS && r != VK_TIMEOUT) {
+            hle_vk_lose(r, "vkWaitSemaphores");    /* completed: all (hle_tl_lose) */
+        }
         uint64_t v = 0;
         T.vkGetSemaphoreCounterValue(g_hvk.dev, g_tl.sem, &v);
         publish(v);

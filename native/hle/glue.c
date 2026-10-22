@@ -48,10 +48,16 @@ void nc_hle_pipeline_progress(uint32_t *done, uint32_t *total)
 static char g_fatal[384];  /* why the title can't run here (nc_hle_fatal) */
 static int g_fatal_kind;   /* NC_FATAL_* (nc_hle_fatal_kind) */
 
+/* The activity polls nc_hle_fatal from its own thread while this is set
+ * (a lost GPU device: the render thread's): the text goes first, its first
+ * byte last. */
 void nc_hle_set_fatal(int kind, const char *why)
 {
+    char s[sizeof(g_fatal)];
+    snprintf(s, sizeof(s), "%s", why && why[0] ? why : "?");
     g_fatal_kind = kind;
-    snprintf(g_fatal, sizeof(g_fatal), "%s", why);
+    memcpy(g_fatal + 1, s + 1, sizeof(g_fatal) - 1);
+    __atomic_store_n(&g_fatal[0], s[0], __ATOMIC_RELEASE);
 }
 
 static void smp_setup(void);
@@ -121,12 +127,12 @@ void nc_hle_boot(NcKernel *k, NcVm *vm, NcCpu *cpu, const NcCpuContext *boot)
 
 const char *nc_hle_fatal(void)
 {
-    return g_fatal[0] ? g_fatal : NULL;
+    return __atomic_load_n(&g_fatal[0], __ATOMIC_ACQUIRE) ? g_fatal : NULL;
 }
 
 int nc_hle_fatal_kind(void)
 {
-    return g_fatal[0] ? g_fatal_kind : NC_FATAL_NONE;
+    return __atomic_load_n(&g_fatal[0], __ATOMIC_ACQUIRE) ? g_fatal_kind : NC_FATAL_NONE;
 }
 
 bool nc_hle_pb_active(void)

@@ -298,7 +298,8 @@ EXPORT JNIEXPORT jstring JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_n
 }
 
 /* Whose fault that is: 1 the GPU driver's, 2 the game's (the HLE GPU does
- * not support it), 0 none (native/hle/hle_native.h NC_FATAL_*). */
+ * not support it), 3 a savestate's, 4 the GPU driver lost the device while
+ * the game ran, 0 none (native/hle/hle_native.h NC_FATAL_*). */
 int nc_hle_fatal_kind(void);
 
 EXPORT JNIEXPORT jint JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeGetFatalKind(JNIEnv *env,

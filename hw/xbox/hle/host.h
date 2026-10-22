@@ -112,6 +112,9 @@ void hle_host_gpu_trace_dump(const char *why, uint32_t mark);
 /* Push-buffer mode: channel 0's DMA_PUT writes kick the HLE (hle_pb_kick),
  * and the FIFO's status follows the GET it reports. */
 void hle_host_pb_mode(bool on);
+/* The GPU device is lost (vk/vkdev.c hle_vk_lose): nothing more is drawn,
+ * so the game can't go on; why says what failed. Any thread, once. */
+void hle_host_gpu_lost(const char *why);
 
 /* ---- configuration ------------------------------------------------------- */
 
