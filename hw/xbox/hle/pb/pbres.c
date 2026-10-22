@@ -327,12 +327,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
                                          fi->bpp / 8);
                 }
             } else if (p8) {
-                g_autofree uint8_t *idx = g_malloc((size_t)w * h);
-                hle_xg_unswizzle_rect(s, sw, sh, &img, idx, w, 0, 0, 1);
-                uint32_t *o32 = (uint32_t *)(dst + pos);
-                for (uint32_t i = 0; i < w * h; i++) {
-                    o32[i] = pal[idx[i]];
-                }
+                hle_xg_unswizzle_rect_p8(s, sw, sh, &img, pal, dst + pos, row, 0, 0);
             } else if (fi->flags & HLE_FI_SWZ) {
                 hle_xg_unswizzle_rect(s, sw, sh, &img, dst + pos, row, 0, 0, fi->bpp / 8);
             } else if (fi->flags & HLE_FI_DXT) {

@@ -28,6 +28,11 @@ void hle_xg_swizzle_rect(const uint8_t *src, uint32_t pitch, const HleXgRect *r,
 void hle_xg_unswizzle_rect(const uint8_t *src, uint32_t w, uint32_t h,
                            const HleXgRect *r, uint8_t *dst, uint32_t pitch,
                            uint32_t px, uint32_t py, uint32_t bpp);
+/* The same for P8 (1 byte a texel), each index looked up in pal: dst holds
+ * 4-byte texels. */
+void hle_xg_unswizzle_rect_p8(const uint8_t *src, uint32_t w, uint32_t h,
+                              const HleXgRect *r, const uint32_t *pal, uint8_t *dst,
+                              uint32_t pitch, uint32_t px, uint32_t py);
 void hle_xg_swizzle_box(const uint8_t *src, uint32_t row_pitch, uint32_t slice_pitch,
                         const HleXgBox *b, uint8_t *dst, uint32_t w, uint32_t h,
                         uint32_t d, uint32_t px, uint32_t py, uint32_t pz,

@@ -1,6 +1,7 @@
 /*
  * hakuX HLE GPU — NV2A swizzle (own implementation of the standard
- * interleaved-bit layout; scalar mask-increment loop + NEON 4x4 blocks).
+ * interleaved-bit layout; scalar mask-increment loop + 4x4 blocks, NEON for
+ * 1, 2 and 4 bytes a texel).
  */
 #include "hw/xbox/hle/tex/xg_swizzle.h"
 
@@ -145,13 +146,79 @@ static void unswz_neon(const uint8_t *src, const HleXgRect *r, uint8_t *dst,
         sy = next_in(sy, myh);
     }
 }
+
+/* 2 bytes/texel: a block's words (2 texels each) are rows 0, 1, 0, 1, then
+ * 2, 3, 2, 3: the even ones rows 0 and 2, the odd ones rows 1 and 3. */
+static void unswz_neon2(const uint8_t *src, const HleXgRect *r, uint8_t *dst,
+                        uint32_t pitch, uint32_t mx, uint32_t my,
+                        uint32_t px, uint32_t py)
+{
+    uint32_t mxh = mx & ~0x5u, myh = my & ~0xAu;
+    uint32_t sy = deposit(my, r->y);
+    for (uint32_t j = 0; j < r->h; j += 4) {
+        uint8_t *d0 = dst + (size_t)(py + j) * pitch + (size_t)px * 2;
+        uint8_t *d1 = d0 + pitch;
+        uint8_t *d2 = d1 + pitch;
+        uint8_t *d3 = d2 + pitch;
+        uint32_t sx = deposit(mx, r->x);
+        for (uint32_t i = 0; i < r->w; i += 4) {
+            const uint8_t *s = src + (size_t)(sx | sy) * 2;
+            uint32x4_t a = vreinterpretq_u32_u8(vld1q_u8(s));
+            uint32x4_t b = vreinterpretq_u32_u8(vld1q_u8(s + 16));
+            uint8x16_t e = vreinterpretq_u8_u32(vuzp1q_u32(a, b));
+            uint8x16_t o = vreinterpretq_u8_u32(vuzp2q_u32(a, b));
+            vst1_u8(d0 + (size_t)i * 2, vget_low_u8(e));
+            vst1_u8(d1 + (size_t)i * 2, vget_low_u8(o));
+            vst1_u8(d2 + (size_t)i * 2, vget_high_u8(e));
+            vst1_u8(d3 + (size_t)i * 2, vget_high_u8(o));
+            sx = next_in(sx, mxh);
+        }
+        sy = next_in(sy, myh);
+    }
+}
+
+/* 1 byte/texel: the same with halfwords (2 texels each) in one register. */
+static void unswz_neon1(const uint8_t *src, const HleXgRect *r, uint8_t *dst,
+                        uint32_t pitch, uint32_t mx, uint32_t my,
+                        uint32_t px, uint32_t py)
+{
+    uint32_t mxh = mx & ~0x5u, myh = my & ~0xAu;
+    uint32_t sy = deposit(my, r->y);
+    for (uint32_t j = 0; j < r->h; j += 4) {
+        uint8_t *d0 = dst + (size_t)(py + j) * pitch + px;
+        uint8_t *d1 = d0 + pitch;
+        uint8_t *d2 = d1 + pitch;
+        uint8_t *d3 = d2 + pitch;
+        uint32_t sx = deposit(mx, r->x);
+        for (uint32_t i = 0; i < r->w; i += 4) {
+            uint16x8_t q = vreinterpretq_u16_u8(vld1q_u8(src + (sx | sy)));
+            uint32x4_t e = vreinterpretq_u32_u16(vuzp1q_u16(q, q));
+            uint32x4_t o = vreinterpretq_u32_u16(vuzp2q_u16(q, q));
+            uint32_t r0 = vgetq_lane_u32(e, 0), r1 = vgetq_lane_u32(o, 0);
+            uint32_t r2 = vgetq_lane_u32(e, 1), r3 = vgetq_lane_u32(o, 1);
+            memcpy(d0 + i, &r0, 4);
+            memcpy(d1 + i, &r1, 4);
+            memcpy(d2 + i, &r2, 4);
+            memcpy(d3 + i, &r3, 4);
+            sx = next_in(sx, mxh);
+        }
+        sy = next_in(sy, myh);
+    }
+}
 #endif
+
+/* Whole 4x4 blocks: each one's 16 texels are contiguous in the swizzled
+ * texture (both sides at least 4, the rect and point 4-aligned). */
+static bool blocks_ok(uint32_t mx, uint32_t my, const HleXgRect *r, uint32_t px, uint32_t py)
+{
+    return (mx & 0xFu) == 0x5u && (my & 0xFu) == 0xAu &&
+           !((r->x | r->y | r->w | r->h | px | py) & 3u);
+}
 
 static bool neon_ok(uint32_t mx, uint32_t my, const HleXgRect *r, uint32_t px,
                     uint32_t py, uint32_t bpp)
 {
-    return bpp == 4 && (mx & 0xFu) == 0x5u && (my & 0xFu) == 0xAu &&
-           !((r->x | r->y | r->w | r->h | px | py) & 3u);
+    return bpp == 4 && blocks_ok(mx, my, r, px, py);
 }
 
 void hle_xg_swizzle_rect(const uint8_t *src, uint32_t pitch, const HleXgRect *r,
@@ -191,8 +258,9 @@ void hle_xg_unswizzle_rect(const uint8_t *src, uint32_t w, uint32_t h,
     uint32_t mx, my, mz;
     masks(w, h, 1, &mx, &my, &mz);
 #if defined(__aarch64__)
-    if (neon_ok(mx, my, rr, px, py, bpp)) {
-        unswz_neon(src, rr, dst, pitch, mx, my, px, py);
+    if (blocks_ok(mx, my, rr, px, py) && (bpp == 4 || bpp == 2 || bpp == 1)) {
+        (bpp == 4 ? unswz_neon : bpp == 2 ? unswz_neon2 : unswz_neon1)(src, rr, dst, pitch, mx, my,
+                                                                       px, py);
         return;
     }
 #endif
@@ -202,6 +270,58 @@ void hle_xg_unswizzle_rect(const uint8_t *src, uint32_t w, uint32_t h,
         uint32_t sx = deposit(mx, rr->x);
         for (uint32_t i = 0; i < rr->w; i++) {
             copy_texel(d + (size_t)i * bpp, src + (size_t)(sx | sy) * bpp, bpp);
+            sx = next_in(sx, mx);
+        }
+        sy = next_in(sy, my);
+    }
+}
+
+void hle_xg_unswizzle_rect_p8(const uint8_t *src, uint32_t w, uint32_t h,
+                              const HleXgRect *r, const uint32_t *pal, uint8_t *dst,
+                              uint32_t pitch, uint32_t px, uint32_t py)
+{
+    HleXgRect all = { 0, 0, w, h };
+    const HleXgRect *rr = r ? r : &all;
+    uint32_t mx, my, mz;
+    masks(w, h, 1, &mx, &my, &mz);
+    if (blocks_ok(mx, my, rr, px, py)) {
+        /* each texel of a block, in row order: its index's place in the block */
+        static const uint8_t k_at[16] = { 0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15 };
+        uint32_t mxh = mx & ~0x5u, myh = my & ~0xAu;
+        uint32_t sy = deposit(my, rr->y);
+        for (uint32_t j = 0; j < rr->h; j += 4) {
+            uint8_t *d = dst + (size_t)(py + j) * pitch + (size_t)px * 4;
+            uint32_t sx = deposit(mx, rr->x);
+            for (uint32_t i = 0; i < rr->w; i += 4) {
+                const uint8_t *s = src + (sx | sy);
+                for (unsigned y = 0; y < 4; y++) {
+                    /* a row's 16 bytes in one store (the arena is write-combined) */
+                    const uint8_t *at = k_at + y * 4;
+                    uint8_t *o = d + (size_t)y * pitch + (size_t)i * 4;
+#if defined(__aarch64__)
+                    uint32x4_t v = vld1q_dup_u32(&pal[s[at[0]]]);
+                    v = vld1q_lane_u32(&pal[s[at[1]]], v, 1);
+                    v = vld1q_lane_u32(&pal[s[at[2]]], v, 2);
+                    v = vld1q_lane_u32(&pal[s[at[3]]], v, 3);
+                    vst1q_u8(o, vreinterpretq_u8_u32(v));
+#else
+                    uint32_t v[4] = { pal[s[at[0]]], pal[s[at[1]]], pal[s[at[2]]], pal[s[at[3]]] };
+                    memcpy(o, v, 16);
+#endif
+                }
+                sx = next_in(sx, mxh);
+            }
+            sy = next_in(sy, myh);
+        }
+        return;
+    }
+    uint32_t sy = deposit(my, rr->y);
+    for (uint32_t j = 0; j < rr->h; j++) {
+        uint8_t *d = dst + (size_t)(py + j) * pitch + (size_t)px * 4;
+        uint32_t sx = deposit(mx, rr->x);
+        for (uint32_t i = 0; i < rr->w; i++) {
+            uint32_t v = pal[src[sx | sy]];
+            memcpy(d + (size_t)i * 4, &v, 4);
             sx = next_in(sx, mx);
         }
         sy = next_in(sy, my);

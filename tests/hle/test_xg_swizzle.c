@@ -52,6 +52,61 @@ static void test_rects(void)
     check_rect(64, 64, 4, &r4, 8, 12);              /* aligned sub-rect */
 }
 
+/* The fast unswizzle (NEON blocks on arm64) and the P8 one against texels
+ * placed one by one, into a destination wider than the rect. */
+static uint8_t big_fast[1 << 17], big_ref[1 << 17];
+
+static void check_unswizzle(uint32_t w, uint32_t h, uint32_t bpp, const HleXgRect *r,
+                            uint32_t px, uint32_t py)
+{
+    HleXgRect all = { 0, 0, w, h };
+    const HleXgRect *rr = r ? r : &all;
+    uint32_t pitch = (px + rr->w) * bpp + 12, n = pitch * (py + rr->h);
+    fill(src, (size_t)w * h * bpp, w * 7 + h * 3 + bpp);
+    memset(big_fast, 0x5A, n);
+    memset(big_ref, 0x5A, n);
+    hle_xg_unswizzle_rect(src, w, h, r, big_fast, pitch, px, py, bpp);
+    for (uint32_t j = 0; j < rr->h; j++) {
+        for (uint32_t i = 0; i < rr->w; i++) {
+            uint32_t o = hle_xg_swizzle_offset(w, h, 1, rr->x + i, rr->y + j, 0);
+            memcpy(big_ref + (size_t)(py + j) * pitch + (size_t)(px + i) * bpp, src + (size_t)o * bpp, bpp);
+        }
+    }
+    HT_CHECK(memcmp(big_fast, big_ref, n) == 0);
+
+    static uint32_t pal[256];
+    fill((uint8_t *)pal, sizeof(pal), w + h);
+    pitch = (px + rr->w) * 4 + 12;
+    n = pitch * (py + rr->h);
+    memset(big_fast, 0x5A, n);
+    memset(big_ref, 0x5A, n);
+    hle_xg_unswizzle_rect_p8(src, w, h, r, pal, big_fast, pitch, px, py);
+    for (uint32_t j = 0; j < rr->h; j++) {
+        for (uint32_t i = 0; i < rr->w; i++) {
+            uint32_t o = hle_xg_swizzle_offset(w, h, 1, rr->x + i, rr->y + j, 0);
+            memcpy(big_ref + (size_t)(py + j) * pitch + (size_t)(px + i) * 4, &pal[src[o]], 4);
+        }
+    }
+    HT_CHECK(memcmp(big_fast, big_ref, n) == 0);
+}
+
+static void test_unswizzle(void)
+{
+    static const uint32_t k_wh[][2] = { { 4, 4 }, { 8, 8 }, { 16, 8 }, { 8, 16 }, { 64, 64 },
+                                        { 256, 4 }, { 4, 256 }, { 2, 2 }, { 1, 8 }, { 8, 1 },
+                                        { 2, 16 }, { 32, 2 } };
+    for (uint32_t bpp = 1; bpp <= 4; bpp *= 2) {
+        for (unsigned i = 0; i < sizeof(k_wh) / sizeof(k_wh[0]); i++) {
+            check_unswizzle(k_wh[i][0], k_wh[i][1], bpp, NULL, 0, 0);
+            check_unswizzle(k_wh[i][0], k_wh[i][1], bpp, NULL, 4, 8);
+        }
+        HleXgRect a = { 4, 8, 8, 4 }, u = { 1, 2, 3, 5 }, b = { 2, 2, 60, 60 };
+        check_unswizzle(16, 16, bpp, &a, 4, 8);         /* blocks */
+        check_unswizzle(16, 16, bpp, &u, 2, 1);         /* texel by texel */
+        check_unswizzle(64, 64, bpp, &b, 0, 0);         /* a bordered level's image */
+    }
+}
+
 static void test_box(void)
 {
     uint32_t w = 16, h = 8, d = 4, bpp = 4;
@@ -70,6 +125,7 @@ int main(void)
 {
     HT_RUN(test_offsets);
     HT_RUN(test_rects);
+    HT_RUN(test_unswizzle);
     HT_RUN(test_box);
     HT_DONE();
 }
