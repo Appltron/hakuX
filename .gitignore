@@ -19,11 +19,10 @@ logcat_*.txt
 hs_err_pid*.log
 replay_pid*.log
 *.aab
-*.txt
-# the mods' and cheats' text files (mods/README.md) are sources
-!mods/**/*.txt
-# savestate section schemas (tools/native/statelock.py): part of the version lock
-!native/state/schema/*.txt
+# text dumps at the top (reports, symbol lists); deeper ones are sources
+# (CMakeLists.txt, licenses, the mods' and cheats' files, state schemas)
+/*.txt
+/out/
 
 # Profiling output captures (simpleperf runs, any depth)
 profile-out/
