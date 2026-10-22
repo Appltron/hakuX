@@ -116,7 +116,10 @@ typedef struct NcFile {
                        0x40000000u /* GENERIC_WRITE */ | 0x10000000u /* GENERIC_ALL */ |       \
                        0x02000000u /* MAXIMUM_ALLOWED */)
 
-#define MAX_FILES 1024
+/* Open files at once: the handle table's size. Fatal Frame opens most of its
+ * disc's 1821 files as it boots and keeps them open; at 1024 the rest failed
+ * (insufficient resources), and the load waited for one forever. */
+#define MAX_FILES NC_MAX_HANDLES
 #define MAX_LINKS 64
 /* FILE_OBJECT as the Xbox lays it out: Type +0, FsContext +8, Lock (a
  * KEVENT) +0x28, Event (a KEVENT, NC_FO_EVENT) +0x38; past its 0x48 bytes,
