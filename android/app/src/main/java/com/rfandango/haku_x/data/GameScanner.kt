@@ -3,7 +3,7 @@ package com.rfandango.haku_x.data
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
-import androidx.documentfile.provider.DocumentFile
+import android.provider.DocumentsContract.Document
 import java.util.ArrayDeque
 import java.util.Locale
 
@@ -43,39 +43,63 @@ object GameScanner {
       uri.toString()
     }
 
-  /** Blocking (SAF listing): call off the main thread. */
+  private val CHILD_COLUMNS = arrayOf(
+    Document.COLUMN_DOCUMENT_ID,
+    Document.COLUMN_DISPLAY_NAME,
+    Document.COLUMN_MIME_TYPE,
+    Document.COLUMN_SIZE,
+  )
+
+  /**
+   * Blocking (SAF listing): call off the main thread. One query a folder for
+   * its children's IDs, names, types and sizes (DocumentFile asked the
+   * provider again for each child's name, type, type and size: 38 games
+   * took the Odin 270 ms). The URIs are DocumentFile's.
+   */
   fun scan(context: Context, folder: Uri): List<Game> {
-    val root = DocumentFile.fromTreeUri(context, folder) ?: return emptyList()
-    val stack = ArrayDeque<Pair<DocumentFile, String>>()
-    stack.add(root to "")
+    val rootId = try {
+      if (DocumentsContract.isDocumentUri(context, folder)) {
+        DocumentsContract.getDocumentId(folder)
+      } else {
+        DocumentsContract.getTreeDocumentId(folder)
+      }
+    } catch (_: IllegalArgumentException) {
+      return emptyList()
+    }
+    val stack = ArrayDeque<Pair<String, String>>()
+    stack.add(rootId to "")
 
     val games = ArrayList<Game>()
     while (stack.isNotEmpty()) {
-      val (node, prefix) = stack.removeLast()
-      val files = try {
-        node.listFiles()
-      } catch (_: Exception) {
-        emptyArray()
-      }
-      for (child in files) {
-        val name = child.name ?: continue
-        if (child.isDirectory) {
-          // Converted dumps wait in their own folder, out of the library.
-          if (!name.equals(XisoConverter.ORIGINALS_FOLDER, ignoreCase = true)) {
-            stack.add(child to "$prefix$name/")
+      val (id, prefix) = stack.removeLast()
+      try {
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(folder, id)
+        context.contentResolver.query(children, CHILD_COLUMNS, null, null, null)?.use { c ->
+          while (c.moveToNext()) {
+            val childId = c.getString(0) ?: continue
+            val name = c.getString(1) ?: continue
+            val mime = c.getString(2)
+            if (mime == Document.MIME_TYPE_DIR) {
+              // Converted dumps wait in their own folder, out of the library.
+              if (!name.equals(XisoConverter.ORIGINALS_FOLDER, ignoreCase = true)) {
+                stack.add(childId to "$prefix$name/")
+              }
+              continue
+            }
+            if (mime.isNullOrEmpty() || !isSupported(name)) {
+              continue
+            }
+            games += Game(
+              title = toTitle(name),
+              uri = DocumentsContract.buildDocumentUriUsingTree(folder, childId),
+              relativePath = prefix + name,
+              sizeBytes = if (c.isNull(3)) 0L else c.getLong(3),
+              folder = folder,
+            )
           }
-          continue
         }
-        if (!child.isFile || !isSupported(name)) {
-          continue
-        }
-        games += Game(
-          title = toTitle(name),
-          uri = child.uri,
-          relativePath = prefix + name,
-          sizeBytes = child.length(),
-          folder = folder,
-        )
+      } catch (_: Exception) {
+        // a folder that can't be listed now (its card out) is left out
       }
     }
 

@@ -4,6 +4,7 @@ import android.app.Application
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.SystemClock
+import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
@@ -144,7 +145,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         return@launch
       }
       _state.update { it.copy(folderReady = true) }
+      val t0 = SystemClock.elapsedRealtime()
       val games = withContext(Dispatchers.IO) { GameScanner.scan(app, ready) }
+      Log.i("hakuX-library", "scan: ${games.size} games in ${ready.size} folders, ${SystemClock.elapsedRealtime() - t0} ms")
       val info = withContext(Dispatchers.IO) {
         games.mapNotNull { g -> discInfo.cached(g)?.let { g.uri to it } }.toMap(HashMap())
       }
