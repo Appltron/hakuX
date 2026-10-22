@@ -2096,8 +2096,17 @@ static void scsi_pass_through(NcKernel *k, uint32_t sptd, uint32_t len)
     }
 }
 
+/* A cache drive's format (XMountUtilityDrive) locks and dismounts its
+ * partition: there's no volume state here to hold or drop. */
+#define FSCTL_LOCK_VOLUME     0x00090018u
+#define FSCTL_UNLOCK_VOLUME   0x0009001Cu
+#define FSCTL_DISMOUNT_VOLUME 0x00090020u
+
 /* NtFsControlFile / NtDeviceIoControlFile(FileHandle, Event, ApcRoutine, ApcContext,
- *   IoStatusBlock, ControlCode, InputBuffer, InputBufferLength, OutputBuffer, OutputBufferLength) */
+ *   IoStatusBlock, ControlCode, InputBuffer, InputBufferLength, OutputBuffer, OutputBufferLength).
+ * A code not known here fails as the kernel's own does (zeros and success let a
+ * title carry on with them); each told once. 38 titles' first 20 s sent only
+ * the ones handled. */
 static uint64_t NtControlFile(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     NcFile *nf = file_of(k, a[0]);
@@ -2107,8 +2116,18 @@ static uint64_t NtControlFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         info = disk_ioctl(nf, a[5], a[8] ? nc_vm_host(k->vm, a[8]) : NULL, a[8] ? a[9] : 0, &status);
     } else if (a[5] == IOCTL_SCSI_PASS_THROUGH_DIRECT) {
         scsi_pass_through(k, a[6], a[7]);
-    } else if (a[8] && a[9]) {
-        memset(nc_vm_host(k->vm, a[8]), 0, a[9]);
+    } else if (a[5] != FSCTL_LOCK_VOLUME && a[5] != FSCTL_UNLOCK_VOLUME && a[5] != FSCTL_DISMOUNT_VOLUME) {
+        static uint32_t told[16];
+        unsigned i = 0;
+        while (i < 16 && told[i] && told[i] != a[5]) {
+            i++;
+        }
+        if (i < 16 && !told[i]) {
+            told[i] = a[5];
+            nc_log("hakuX-native-io", "control %08x on %s: not known here (invalid device request)", a[5],
+                   nf ? nf->path : "?");
+        }
+        status = STATUS_INVALID_DEVICE_REQUEST;
     }
     io_status(k, a[4], status, info);
     complete(k, a);
