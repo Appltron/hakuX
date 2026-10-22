@@ -960,6 +960,9 @@ static bool g_eqtol_off, g_zeq_off;
 /* debug.hakux.snap=trunc: vertex positions truncated to 1/16 pixel each, as
  * before the constant subpixel shift (ff.h HLE_SUBPIXEL_GLSL), for A/B */
 static bool g_snap_trunc;
+/* New at each hle_draw_psframe_poll that reads the properties (every 3
+ * swaps): the draw path reads its own (skipvsh, vtok, psdbg) at its next draw */
+static unsigned g_prop_gen;
 unsigned g_hle_zeq;
 
 unsigned hle_draw_zeq(const HleCmdDraw *c, uint32_t ds_id)
@@ -2336,6 +2339,7 @@ void hle_draw_psframe_poll(uint64_t swap)
         return;
     }
     next_poll = swap + 3;   /* every 3 swaps: odd, so re-arming reaches either frame parity */
+    g_prop_gen++;           /* and the draws' own properties at their next draw */
     char v[PROP_VALUE_MAX] = "";
     __system_property_get("debug.hakux.norec", v);
     if ((unsigned)atoi(v) != g_norec) {
@@ -2722,18 +2726,21 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
         static uint64_t skip[8];
         static int64_t skip_n[8], skip_at[8];
         static int nskip = -1;
-        static unsigned poll;
+        static unsigned polled;
         static char last[PROP_VALUE_MAX];
         const char *e = NULL;
-        char v[PROP_VALUE_MAX] = "";
+        char v[PROP_VALUE_MAX];
         if (nskip < 0) {
             e = getenv("HAKUX_HLE_SKIPVSH");
         }
-        if ((poll++ & 511) == 0 && __system_property_get("debug.hakux.skipvsh", v) > 0 &&
-            strcmp(v, last)) {
-            snprintf(last, sizeof(last), "%s", v);
-            e = v;
-            hle_log("hakuX-hle-pipe", "skipvsh: %s", v);
+        if (polled != g_prop_gen) {
+            polled = g_prop_gen;
+            v[0] = 0;
+            if (__system_property_get("debug.hakux.skipvsh", v) > 0 && strcmp(v, last)) {
+                snprintf(last, sizeof(last), "%s", v);
+                e = v;
+                hle_log("hakuX-hle-pipe", "skipvsh: %s", v);
+            }
         }
         if (e || nskip < 0) {
             nskip = 0;
@@ -2763,9 +2770,10 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
     {   /* debug: the property debug.hakux.vtok=<hash> logs that program's
          * tokens at its next draw */
         static uint64_t want;
-        static unsigned vpoll;
-        if ((vpoll++ & 511) == 0) {
+        static unsigned polled;
+        if (polled != g_prop_gen) {
             static char last[PROP_VALUE_MAX];
+            polled = g_prop_gen;
             char v[PROP_VALUE_MAX] = "";
             if (__system_property_get("debug.hakux.vtok", v) > 0 && strcmp(v, last)) {
                 snprintf(last, sizeof(last), "%s", v);
@@ -2914,10 +2922,10 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
              * debug view live; with pixhist.sh, a stage's value at a pixel. Polled
              * by program draws seen, not drawn: a view whose pipelines cannot be
              * made drops every draw, and must still be switched off. */
-            static uint64_t seen, poll;
-            if (++seen >= poll) {
+            static unsigned polled;
+            if (polled != g_prop_gen) {
                 char v[PROP_VALUE_MAX] = "";
-                poll = seen + 2000;
+                polled = g_prop_gen;
                 if (__system_property_get("debug.hakux.psdbg", v) > 0) {
                     psdbg = atoi(v);
                 }
