@@ -1,34 +1,64 @@
-# Handoff: hle-native, 2026-10-20
+# Handoff: v1.0.0-prepare, 2026-10-22
 
-Repository `D:\code\xemu-android-native`, branch `hle-native`. Read
-`CLAUDE.md` (device etiquette, build steps; local-only, in
-`D:\code\xemu-android`) and `tools/hle/README.md` (tools and debug knobs)
-first.
+Repository `D:\code\xemu-android-native`, branch `v1.0.0-prepare` (master
+is the release line). Read `CLAUDE.md` (device etiquette, build steps;
+local-only, in `D:\code\xemu-android`) and `tools/hle/README.md` (tools and
+debug knobs; local-only) first.
 
 ## State of the branch
 
-- Mods and cheats per game: `a40a1ef99d` (library long-press "Mods &
-  cheats", repo `mods/<TITLEID>.<VERSION>/`, `mods/README.md`),
-  `52e9bcc5e5` (`refresh:` vblank rate, patches past the headers, patches
-  over savestates, `debug.hakux.memscan`).
-- `88adaf77d5`: a store into vertices a later pass reads waits for the
-  decoder (DOA2 z-fight, below).
-- `2ad0b1a222`: the MCPX APU runs on the native core's own services in
-  `native/dev/apu` (no QEMU layer). `2c67b760c3`: NEON HRTF, batched
-  voice-table dirty reports, two voice workers by default.
-- Nothing else is uncommitted (the repository's pre-existing file-mode and
-  line-ending noise aside, e.g. `native/dev/apu/*`: never stage it).
-- `dbdb55cbdf`: vertex positions all move by D3D's 1/32 rounding bias
-  instead of each being truncated to 1/16 pixel. Decals flickered against
-  the surface under them while the camera moved: Burnout 3's road stains and
-  manhole covers, DOA2's eaves shadows (both confirmed fixed by the user;
-  `debug.hakux.snap=trunc` for A/B). It replaced the shelved
-  `debug.hakux.leqtol` stash, which is dropped (was be0d6a7194).
-- DOA2's glow trails: an antialiased 2x2 view of the back buffer's memory
-  (its glow pass) became an object of its own, never cleared; it is now the
-  back buffer (`pbdraw.c` `linear_size`).
+- `v1.0.0-prepare` is v0.3.1, then the new core squashed into one commit
+  (`405b7063a9` "new core"), then the core review's fixes, one commit per
+  fix.
+- The review: the Claude Doc "hakuX new core — technical debt and
+  performance review" (https://claude.ai/artifact/S47Pw9aYhRbgdbpcnK4bYi).
+  It has 65 findings (P1-P37 performance, D1-D30 debt and risk) and a
+  37-item plan in Now / Next / Later tables with a Status column. Its
+  Progress table lists every fix's commit and how it was checked on a
+  device. Read it before taking the next item; its Status column is the
+  source of truth.
+- Done: items 1 to 8 (APU index checks, AAudio recovery, GPU device loss,
+  decoder quick wins, kernel time and IRQL fast paths, pad input, the
+  Turnip EQUAL-depth quirk, the safety fixes). P4 (narrower barriers) was
+  measured with no gain on Turnip and dropped.
+- In progress: item 9 (tools tracked, `.gitattributes`, docs, stale perf
+  maps). Next: item 10 (appCategory game, backup rules), then the Next
+  table.
+- Not committed, on purpose: the DOA3 120 fps mod (`mods/4D53002D.1/`,
+  `tools/mods/doa3_*`). It does not work properly; never commit it.
+- Savestates restore the guest's kernel area, its guest-code fast paths
+  included (the IRQL exports, item 5): a change to them shows only on a
+  fresh boot or in a state saved with the new build.
 
-## In progress: DOA2 120 fps mod (`mods/54430006.6/120fps`)
+## Devices
+
+The Odin 3 (`adb -s 3458d5f`, Turnip, 120 Hz) is the main test device; the
+RP5 (`adb -s 61705c55`, Turnip, 60 Hz) only when the user isn't playing on
+it. Write `.device.lock` (session, time, device, purpose) while using one,
+remove it after, and reset what was set (`setprop debug.hakux.state ''`,
+`debug.hakux.quirks ''`). The Galaxy Tab S9 is for 120 Hz checks of the
+DOA2 mod (below).
+
+## Build and check
+
+- Build: `cmake --build build/native/core --target hakuxcore`, then
+  `bash tools/native/app-libs.sh` (the libraries into `jniLibs`; without it
+  Gradle packs the old core), then `android/gradlew assembleDebug`. First
+  configure: `android/README.md`.
+- Savestates from adb: `setprop debug.hakux.state save:<slot>` or
+  `load:<slot>` (a new value each time). Use a slot the user doesn't have.
+- GPU time: `setprop debug.hakux.perf <new value>` logs `hakuX-hle-prof:
+  gpu=` once a second for `debug.hakux.perfsec` seconds (10 by default).
+  For A/B in one session, flip a quirk live with `debug.hakux.quirks`
+  (`+name` / `-name`): separate launches of the same slot drift.
+- CPU: `simpleperf record --app com.rfandango.haku_x.debug -e cpu-clock -f
+  4000 --duration 10`, reported with `--symfs` holding the unstripped
+  `build/native/core/libhakuxcore.so` of the installed build.
+- Savestate layout: a change to a saved struct needs its `.def` entry
+  (`NC_F`, or `NC_SKIP` for what isn't saved), then
+  `python tools/native/statelock.py --sizes`; the build checks it.
+
+## Paused: DOA2 120 fps mod (`mods/54430006.6/120fps`)
 
 Paused on 2026-10-20 for another task. The user's request: a 120 fps mod
 for Dead or Alive 2 Ultimate (`54430006.6`, `doa2.xbe`), made as a mod
@@ -144,21 +174,3 @@ the log ~40 s later), `HAKUX_HLE_PROBE` with `debug.hakux.probe <new>` to
 re-arm, `debug.hakux.vpeek va:256` (at most 256 words), `tools/hle/re/`
 `cgraph.py` (call graph and trees) and `callargs.py` (a function's call
 sites with their pushed arguments).
-
-## Done: Dead or Alive 2 portrait z-fighting (`88adaf77d5`)
-
-- The flicker was the fishnet under the collar (and the hair): two
-  identical translucent passes, the second LEQUAL over the first, from
-  vertices the title re-skins on the CPU (NOOVERWRITE lock) while the
-  decoder was most of a frame behind. A guest store into vertices a later
-  pass reads now waits for the decoder (`catch-up:` line;
-  `HAKUX_HLE_PB_CATCHUP=0` for A/B). Details in the commit and the README's
-  "Pixels that flash" recipe.
-- Not run on other titles: PBD titles that draw CPU-rewritten vertices
-  twice a frame now make the guest wait for the decoder; watch their fps.
-
-## Not yet run on the native APU
-
-Titles at risk, to run when the user asks: Fable (movies), Halo / PGR2
-(DirectSound waits), Burnout 3. Forza is verified (savestate slot 3 on the
-RP5 is the race start, used for no-input CPU benches).
