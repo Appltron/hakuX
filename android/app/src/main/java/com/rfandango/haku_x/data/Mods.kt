@@ -3,7 +3,7 @@ package com.rfandango.haku_x.data
 import android.content.Context
 import android.content.res.AssetManager
 import android.util.Log
-import androidx.core.content.edit
+import org.json.JSONObject
 import java.io.File
 import java.util.Locale
 
@@ -169,17 +169,50 @@ object ModCatalog {
   }
 }
 
-/** One disc's choices (per_game_mods): its mods on or off, its cheats on or off, by name. */
+/**
+ * One disc's choices: its mods on or off, its cheats on or off, by name. In
+ * one JSON file ("<game>/mod/<id>" or "<game>/cheat/<name>" -> true) both
+ * processes read afresh and write whole, renamed into place, as Controllers:
+ * the game's menu toggles cheats in its own process, and shared preferences
+ * served the Mods screen its cached copy, whose next toggle wrote the
+ * game's changes away.
+ */
 class ModChoices(context: Context, private val game: String) {
-  private val sp = context.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+  private val file = File(context.filesDir, FILE)
+  private val app = context.applicationContext
 
-  fun mod(id: String) = sp.getBoolean("$game/mod/$id", false)
-  fun setMod(id: String, on: Boolean) = sp.edit { putBoolean("$game/mod/$id", on) }
-  fun cheat(name: String) = sp.getBoolean("$game/cheat/$name", false)
-  fun setCheat(name: String, on: Boolean) = sp.edit { putBoolean("$game/cheat/$name", on) }
+  fun mod(id: String) = read().optBoolean("$game/mod/$id", false)
+  fun setMod(id: String, on: Boolean) = write("$game/mod/$id", on)
+  fun cheat(name: String) = read().optBoolean("$game/cheat/$name", false)
+  fun setCheat(name: String, on: Boolean) = write("$game/cheat/$name", on)
+
+  private fun read(): JSONObject = synchronized(LOCK) {
+    if (!file.exists()) {
+      // the choices the shared preferences (per_game_mods) held before; the file is left as it was
+      val old = app.getSharedPreferences(NAME, Context.MODE_PRIVATE).all
+      return JSONObject().apply { for ((k, v) in old) if (v is Boolean) put(k, v) }
+    }
+    try {
+      JSONObject(file.readText())
+    } catch (_: Exception) {
+      JSONObject()
+    }
+  }
+
+  private fun write(key: String, on: Boolean) {
+    synchronized(LOCK) {
+      val o = read()
+      if (on) o.put(key, true) else o.remove(key)
+      val tmp = File(file.parentFile, "$FILE.${android.os.Process.myPid()}.tmp")
+      tmp.writeText(o.toString())
+      tmp.renameTo(file)
+    }
+  }
 
   companion object {
     const val NAME = "per_game_mods"
+    private const val FILE = "mod_choices.json"
+    private val LOCK = Any()
   }
 }
 
