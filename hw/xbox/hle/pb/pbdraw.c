@@ -2978,6 +2978,33 @@ void hle_pbd_run(uint32_t m, bool noninc, const uint32_t *w, uint32_t n)
     }
 }
 
+/* The methods hle_pbd_method does more for than keep (by method / 4): vertex
+ * data, program and constants and their load points, the viewport, the
+ * draws, the targets and clears, the swap. The rest (most of a frame's state)
+ * is stored and done with, past none of the ranges and switches below. */
+static const bool k_pbd_acts[2048] = {
+    [NV097_SET_VERTEX3F / 4 ... (NV097_SET_VERTEX4F + 12) / 4] = true,
+    [NV097_SET_VERTEX_DATA2F_M / 4 ... (NV097_SET_VERTEX_DATA4F_M + 16 * ATTRS - 4) / 4] = true,
+    [NV097_SET_TRANSFORM_PROGRAM / 4 ... (NV097_SET_TRANSFORM_PROGRAM + 0x7C) / 4] = true,
+    [NV097_SET_TRANSFORM_CONSTANT / 4 ... (NV097_SET_TRANSFORM_CONSTANT + 0x7C) / 4] = true,
+    [NV097_SET_VIEWPORT_OFFSET / 4 ... (NV097_SET_VIEWPORT_OFFSET + 12) / 4] = true,
+    [NV097_SET_VIEWPORT_SCALE / 4 ... (NV097_SET_VIEWPORT_SCALE + 12) / 4] = true,
+    [NV097_SET_TRANSFORM_PROGRAM_LOAD / 4] = true,
+    [NV097_SET_TRANSFORM_CONSTANT_LOAD / 4] = true,
+    [NV097_SET_ZPASS_PIXEL_COUNT_ENABLE / 4] = true,
+    [NV097_SET_BEGIN_END / 4] = true,
+    [NV097_ARRAY_ELEMENT16 / 4] = true,
+    [NV097_ARRAY_ELEMENT32 / 4] = true,
+    [NV097_DRAW_ARRAYS / 4] = true,
+    [NV097_INLINE_ARRAY / 4] = true,
+    [NV097_SET_WINDOW_CLIP_HORIZONTAL / 4 ... (NV097_SET_WINDOW_CLIP_HORIZONTAL + 0x3C) / 4] = true,
+    [NV097_SET_SURFACE_CLIP_HORIZONTAL / 4 ... NV097_SET_SURFACE_ZETA_OFFSET / 4] = true,
+    [NV097_SET_CONTROL0 / 4] = true,
+    [NV097_SET_WINDOW_CLIP_TYPE / 4] = true,
+    [NV097_CLEAR_SURFACE / 4] = true,
+    [NV097_FLIP_INCREMENT_WRITE / 4] = true,
+};
+
 void hle_pbd_method(uint32_t m, uint32_t v)
 {
     if (!g_pd.on || m >= 0x2000) {
@@ -2990,6 +3017,9 @@ void hle_pbd_method(uint32_t m, uint32_t v)
         g_pd.ffgen++;                       /* (D3D sends matrices again unchanged) */
     }
     g_pd.r[m >> 2] = v;
+    if (!k_pbd_acts[m >> 2]) {
+        return;
+    }
     if (vertex_data(m, v)) {
         return;
     }
