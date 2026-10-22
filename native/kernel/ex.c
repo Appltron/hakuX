@@ -398,12 +398,33 @@ static uint64_t ObfDereferenceObject(NcKernel *k, NcFrame *f, const uint32_t *a)
 
 /* ------------------------------------------------------------------- Dbg */
 
+/* The guest's string at va in buf (at most len - 1 bytes), as far as its
+ * pages are mapped: a title's bad pointer ends it rather than faulting the
+ * host. */
+static const char *guest_str(NcKernel *k, uint32_t va, char *buf, size_t len)
+{
+    size_t n = 0;
+    for (; n + 1 < len; n++) {
+        if ((!n || !((va + n) & (NC_PAGE - 1))) && nc_vm_phys(k->vm, va + (uint32_t)n) == UINT32_MAX) {
+            break;
+        }
+        const char c = *(const char *)nc_vm_host(k->vm, va + (uint32_t)n);
+        if (!c) {
+            break;
+        }
+        buf[n] = c;
+    }
+    buf[n] = 0;
+    return buf;
+}
+
 /* DbgPrint(Format, ...): the common printf conversions, arguments from the guest stack. */
 static uint64_t DbgPrint(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     const uint32_t esp = nc_frame_gpr(f, NC_ESP);
     uint32_t argp = esp + 8; /* after the return address and Format */
-    const char *fmt = nc_vm_host(k->vm, a[0]);
+    char fmtbuf[512], arg[256];
+    const char *fmt = guest_str(k, a[0], fmtbuf, sizeof(fmtbuf));
     char out[512];
     size_t n = 0;
     for (const char *p = fmt; *p && n < sizeof(out) - 32; p++) {
@@ -427,7 +448,7 @@ static uint64_t DbgPrint(NcKernel *k, NcFrame *f, const uint32_t *a)
         spec[s] = 0;
         uint32_t v = nc_vm_rd32(k->vm, argp);
         switch (*p) {
-        case 's': n += (size_t)snprintf(out + n, sizeof(out) - n, spec, v ? (const char *)nc_vm_host(k->vm, v) : "(null)"); argp += 4; break;
+        case 's': n += (size_t)snprintf(out + n, sizeof(out) - n, spec, v ? guest_str(k, v, arg, sizeof(arg)) : "(null)"); argp += 4; break;
         case 'c': case 'd': case 'i': case 'u': case 'x': case 'X':
             n += (size_t)snprintf(out + n, sizeof(out) - n, spec, v); argp += 4; break;
         case 'p': n += (size_t)snprintf(out + n, sizeof(out) - n, "%08x", v); argp += 4; break;
@@ -435,6 +456,7 @@ static uint64_t DbgPrint(NcKernel *k, NcFrame *f, const uint32_t *a)
         default: n += (size_t)snprintf(out + n, sizeof(out) - n, "<%s>", spec); argp += 4; break;
         }
     }
+    n = n < sizeof(out) ? n : sizeof(out) - 1;     /* snprintf counts what did not fit */
     while (n && (out[n - 1] == '\n' || out[n - 1] == '\r')) {
         n--;
     }
