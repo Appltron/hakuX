@@ -22,7 +22,18 @@ set(ENABLE_VIXL_SIMULATOR       OFF     CACHE BOOL   "" FORCE)
 set(BUILD_FEX_LINUX_TESTS       OFF     CACHE BOOL   "" FORCE)
 set(ENABLE_ASSERTIONS           OFF     CACHE BOOL   "" FORCE)
 set(TUNE_CPU                    none    CACHE STRING "" FORCE)
-set(TUNE_ARCH                   generic CACHE STRING "" FORCE)
+
+# HAKUX_ARCH: the CPUs the build may assume, for FEX (its TUNE_ARCH) and the
+# core alike, e.g. armv8.2-a+fp16+dotprod+rcpc (the Snapdragon 865 up: the
+# RP5, the Odin 3). Empty: FEX's generic armv8-a+crc, the core's NDK default,
+# which runs anywhere but calls out for every atomic read-modify-write.
+set(HAKUX_ARCH "" CACHE STRING "-march for FEX and the core (empty: generic)")
+if(HAKUX_ARCH)
+  set(TUNE_ARCH "${HAKUX_ARCH}" CACHE STRING "" FORCE)
+  add_compile_options("-march=${HAKUX_ARCH}")
+else()
+  set(TUNE_ARCH generic CACHE STRING "" FORCE)
+endif()
 
 if(NOT TARGET FEXCore)
   add_subdirectory("${HAKUX_FEX_DIR}" "${CMAKE_BINARY_DIR}/fex-build" EXCLUDE_FROM_ALL)
