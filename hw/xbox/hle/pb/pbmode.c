@@ -119,6 +119,14 @@ static struct {
     unsigned misses;
 } g_pb;
 
+/* The report gate on (g_sc_gate, HAKUX_HLE_PB_VISGATE), and the report
+ * scout reading the guest's pushes (g_sc_on): only once the decoder has met
+ * the title's first GET_REPORT. A title that never reports doesn't pay for
+ * it (the pusher's second pass, on the guest's thread: ~8% of it in Halo 2,
+ * which reports); one that does has its first frame of reports ungated
+ * (read as without the gate). */
+static bool g_sc_gate, g_sc_on;
+
 bool hle_pb_active(void)
 {
     return g_pb.on;
@@ -281,7 +289,12 @@ static int kelvin(uint32_t m, uint32_t v)
         /* a visibility test's record: timestamp, the pixels that passed,
          * status 0 (done); D3D waits for the status it set to -1. The back
          * end writes it once the GPU ran the test's draws; with nothing to
-         * count them yet, no pixels passed. */
+         * count them yet, no pixels passed. The title's first arms the
+         * report scout (g_sc_on). */
+        if (g_sc_gate && !__atomic_load_n(&g_sc_on, __ATOMIC_RELAXED)) {
+            __atomic_store_n(&g_sc_on, true, __ATOMIC_RELEASE);
+            hle_log("hakuX-hle-pb", "the title reports: the report scout starts");
+        }
         if (g_pb.report_inst) {
             uint32_t pa = dma_base(g_pb.report_inst) + (v & 0x00FFFFFFu);
             uint8_t *p = hle_pa_ptr(pa, 16);
@@ -985,7 +998,6 @@ static struct {
     uint32_t trap;
     uint64_t past;                      /* the decoder's traps past (g_trel) looked through */
 } g_sc;
-static bool g_sc_on;
 
 static void scout_report(uint32_t v)
 {
@@ -1130,7 +1142,8 @@ static bool decoder_held(void)
 
 void hle_pb_pushed(uint32_t put)
 {
-    if (g_sc_on) {
+    /* armed by the decoder (GET_REPORT): the scout syncs at this PUT */
+    if (__atomic_load_n(&g_sc_on, __ATOMIC_ACQUIRE)) {
         scout_to(put);
     }
 }
@@ -1386,8 +1399,9 @@ void hle_pb_start(void)
     {   /* debug: HAKUX_HLE_PB_VISGATE=0, no report gate (A/B) */
         const char *e = getenv("HAKUX_HLE_PB_VISGATE");
         memset(&g_sc, 0, sizeof(g_sc));
-        g_sc_on = !(e && !strcmp(e, "0"));
-        hle_barrier_set_report_scout(g_sc_on ? scout : NULL, decoder_held);
+        g_sc_gate = !(e && !strcmp(e, "0"));
+        g_sc_on = false;                /* until the first GET_REPORT */
+        hle_barrier_set_report_scout(g_sc_gate ? scout : NULL, decoder_held);
     }
     hle_host_pb_mode(true);
     hle_log("hakuX-hle-pb", "push-buffer mode: the title's D3D runs; its push buffer is decoded");
@@ -1401,7 +1415,8 @@ void hle_pb_stop(void)
     hle_host_pb_mode(false);
     hle_barrier_set_flush(NULL);
     hle_barrier_set_catch_up(NULL);
-    g_sc_on = false;
+    g_sc_gate = false;
+    __atomic_store_n(&g_sc_on, false, __ATOMIC_RELEASE);
     hle_barrier_set_report_scout(NULL, NULL);
     g_pb.stop = true;
     hle_sem_post(&g_pb.kick);
