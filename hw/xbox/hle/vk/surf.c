@@ -14,6 +14,22 @@
 #define HLE_MAX_VIEW_RETIRE 128
 
 static HleVkSurf g_surf[HLE_MAX_VK_SURF];
+
+/* Lookup by id (several per draw): a per-id hint, set only while that
+ * surface is live (unhint takes it away when it is parked or destroyed, so
+ * a hit needs no check), and misses remembered until a surface is created
+ * (g_surf_gen). */
+#define SURF_IDS 8193
+static uint16_t g_surf_hint[SURF_IDS];
+static uint32_t g_surf_miss[SURF_IDS], g_surf_gen = 1;
+
+static void unhint(const HleVkSurf *s)
+{
+    if (s->id < SURF_IDS && g_surf_hint[s->id] == s - g_surf + 1) {
+        g_surf_hint[s->id] = 0;
+    }
+}
+
 static uint32_t g_rec_gen;          /* render thread only */
 static bool g_rec_open;
 static uint64_t g_surf_bugs;
@@ -138,6 +154,7 @@ static VkFormat surf_format(uint32_t xfmt, VkImageAspectFlags *aspect, uint32_t 
 
 static void destroy_now(HleVkSurf *s)
 {
+    unhint(s);
     if (s->img && g_rec_open && s->rec_gen == g_rec_gen) {
         /* Must never happen: the open recording references this image. */
         if (g_surf_bugs++ < 8) {
@@ -184,12 +201,6 @@ static void destroy_now(HleVkSurf *s)
     memset(s, 0, sizeof(*s));
 }
 
-/* Lookup by id (several per draw): a per-id hint, checked on use, and misses
- * remembered until a surface is created (g_surf_gen). */
-#define SURF_IDS 8193
-static uint16_t g_surf_hint[SURF_IDS];
-static uint32_t g_surf_miss[SURF_IDS], g_surf_gen = 1;
-
 static bool surf_live(const HleVkSurf *s, uint32_t id)
 {
     return s->alive && s->id == id && !s->destroy_after;
@@ -202,7 +213,7 @@ HleVkSurf *hle_surf_get(uint32_t id)
     }
     if (id < SURF_IDS) {
         unsigned h = g_surf_hint[id];
-        if (h && surf_live(&g_surf[h - 1], id)) {
+        if (h) {
             return &g_surf[h - 1];
         }
         if (g_surf_miss[id] == g_surf_gen) {
@@ -243,6 +254,7 @@ HleVkSurf *hle_surf_define(const HleSurfDesc *d)
         /* Real redefinition (format or size): the old image may be in the
          * open recording, so park it instead of waiting the device idle. */
         s->destroy_after = HLE_SURF_PARKED;
+        unhint(s);
     }
     for (unsigned i = 0; i < HLE_MAX_VK_SURF; i++) {
         if (!g_surf[i].alive) {
@@ -426,6 +438,7 @@ void hle_surf_destroy_after(uint32_t id, uint64_t value)
     HleVkSurf *s = hle_surf_get(id);
     if (s) {
         s->destroy_after = value ? value : 1;
+        unhint(s);
     }
 }
 

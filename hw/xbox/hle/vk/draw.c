@@ -869,6 +869,12 @@ static unsigned signed_blend(const HleCmdState *s)
     return op == 0xF006 ? 1 : 2;
 }
 
+static bool is_colour_rt(uint32_t rt_id)
+{
+    HleVkSurf *rt = hle_surf_get(rt_id);
+    return rt && (rt->aspect & VK_IMAGE_ASPECT_COLOR_BIT);
+}
+
 /*
  * Fixed-function stages (the key's: from the cascade's first) whose texture
  * is the colour target the draw renders: they read its pixel (fbfetch), as
@@ -881,9 +887,7 @@ static unsigned signed_blend(const HleCmdState *s)
 static unsigned ff_fb_stages(const HleCmdDraw *c, uint32_t rt_id)
 {
     const HleCmdState *s = &g_dr.st;
-    HleVkSurf *rt = hle_surf_get(rt_id);
-    if (!g_hvk.caps.fbfetch || !rt_id || !g_dr.st_valid || s->psh || tex_find(rt_id) ||
-        !rt || !(rt->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
+    if (!g_hvk.caps.fbfetch || !rt_id || !g_dr.st_valid || s->psh) {
         return 0;
     }
     unsigned first = s->rs[RS_POINTSPRITEENABLE] ? HLE_FF_SPRITE_STAGE : 0, m = 0;
@@ -892,24 +896,20 @@ static unsigned ff_fb_stages(const HleCmdDraw *c, uint32_t rt_id)
             m |= 1u << (st - first);
         }
     }
-    return m;
+    return m && !tex_find(rt_id) && is_colour_rt(rt_id) ? m : 0;
 }
 
+/* Several times a draw: the target is looked up only when a stage samples it. */
 unsigned hle_draw_fb_stages(const HleCmdDraw *c, uint32_t rt_id)
 {
     if (!g_hvk.caps.fbfetch || !rt_id || !g_dr.st_valid) {
         return 0;
     }
     if (signed_blend(&g_dr.st)) {
-        HleVkSurf *rt = hle_surf_get(rt_id);
-        return rt && (rt->aspect & VK_IMAGE_ASPECT_COLOR_BIT) ? 0x10 : 0;
+        return is_colour_rt(rt_id) ? 0x10 : 0;
     }
     if (!g_dr.st.psh) {
         return ff_fb_stages(c, rt_id);
-    }
-    HleVkSurf *rt = hle_surf_get(rt_id);
-    if (!rt || !(rt->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
-        return 0;
     }
     unsigned m = 0;
     for (unsigned st = 0; st < HLE_TSS_STAGES; st++) {
@@ -918,7 +918,7 @@ unsigned hle_draw_fb_stages(const HleCmdDraw *c, uint32_t rt_id)
             m |= 1u << st;
         }
     }
-    return m;
+    return m && is_colour_rt(rt_id) ? m : 0;
 }
 
 bool g_hle_fbbar_off;
@@ -1101,20 +1101,22 @@ static bool samples(unsigned mode)
 
 bool hle_draw_snap_needed(const HleCmdDraw *c, uint32_t rt_id)
 {
-    HleVkSurf *rt = rt_id && g_dr.st_valid && g_dr.st.psh && !tex_find(rt_id) ?
-                    hle_surf_get(rt_id) : NULL;
+    if (!rt_id || !g_dr.st_valid || !g_dr.st.psh) {
+        return false;
+    }
+    unsigned m = 0;
+    for (unsigned st = 0; st < HLE_TSS_STAGES; st++) {
+        unsigned mode = (g_dr.st.rs[HLE_PS_TEXMODES] >> (5 * st)) & 0x1F;
+        if (c->tex[st] == rt_id && samples(mode)) {
+            m |= 1u << st;
+        }
+    }
+    HleVkSurf *rt = m && !tex_find(rt_id) ? hle_surf_get(rt_id) : NULL;
     if (!rt || !rt->img || rt->general || rt->d.parent ||
         !(rt->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
         return false;
     }
-    unsigned fb = hle_draw_fb_stages(c, rt_id);
-    for (unsigned st = 0; st < HLE_TSS_STAGES; st++) {
-        unsigned mode = (g_dr.st.rs[HLE_PS_TEXMODES] >> (5 * st)) & 0x1F;
-        if (c->tex[st] == rt_id && !((fb >> st) & 1) && samples(mode)) {
-            return true;
-        }
-    }
-    return false;
+    return (m & ~hle_draw_fb_stages(c, rt_id)) != 0;
 }
 
 static int snap_get(const HleVkSurf *rt)
@@ -1858,13 +1860,17 @@ static uint32_t fvf_attrs(uint32_t fvf, VkVertexInputAttributeDescription2EXT *a
  * blur read level 1, still the earlier pass's noise, and the halo showed it. */
 static uint32_t stage_lod_down(const HleCmdDraw *c, unsigned st, uint32_t rt_id)
 {
-    HleVkSurf *ts = tex_find(c->tex[st]) ? NULL : tex_surface(c->tex[st], rt_id);
-    HleVkSurf *rt = rt_id ? hle_surf_get(rt_id) : NULL;
-    if (!ts || !rt || ts->scale <= rt->scale || ts->nlevels <= 1) {
+    HleVkSurf *ts = tex_surface(c->tex[st], rt_id);
+    HleVkSurf *rt = ts && ts->nlevels > 1 ? hle_surf_get(rt_id) : NULL;
+    if (!rt || ts->scale <= rt->scale) {
         return 0;
     }
     return (uint32_t)lrintf(log2f((float)ts->scale / (float)rt->scale) * 16.0f);
 }
+
+/* Surfaces sampled as textures, each told once (the first 64 ids below 8192) */
+static uint8_t g_rt_seen[8192 / 8];
+static unsigned g_rt_told;
 
 /* Image slot of the texture bound to stage st (0 = the white texture);
  * *flags gets the stage's linear (texel coordinate) bit. */
@@ -1887,23 +1893,16 @@ static uint32_t stage_slot(const HleCmdDraw *c, unsigned st, uint32_t rt_id, uin
         /* linear surface: texel coords, of a scaled image */
         *flags |= ts->d.pitch ? (1u << st) | (256u << st) : 0;
     }
-    if (c->tex[st] && !tx) {
-        static uint32_t s_seen[64];
-        HleVkSurf *any = hle_surf_get(c->tex[st]);
-        bool logged = false;
-        for (unsigned i = 0; i < 64 && !logged; i++) {
-            if (s_seen[i] == c->tex[st]) {
-                logged = true;
-            } else if (!s_seen[i]) {
-                s_seen[i] = c->tex[st];
-                hle_log("hakuX-hle-drawlog", "rt-tex id=%u surf=%d img=%d layout=%d slot=%u "
-                        "fmt=%d %ux%u rt=%u", c->tex[st], any != NULL,
-                        any && any->img, any ? (int)any->layout : -1, slot,
-                        any ? (int)any->fmt : -1, any ? any->d.w : 0, any ? any->d.h : 0,
-                        rt_id);
-                logged = true;
-            }
-        }
+    uint32_t id = c->tex[st];
+    if (id && !tx && id < 8192 && g_rt_told < 64 && !(g_rt_seen[id >> 3] >> (id & 7) & 1)) {
+        g_rt_seen[id >> 3] |= 1u << (id & 7);
+        g_rt_told++;
+        HleVkSurf *any = hle_surf_get(id);
+        hle_log("hakuX-hle-drawlog", "rt-tex id=%u surf=%d img=%d layout=%d slot=%u "
+                "fmt=%d %ux%u rt=%u", id, any != NULL,
+                any && any->img, any ? (int)any->layout : -1, slot,
+                any ? (int)any->fmt : -1, any ? any->d.w : 0, any ? any->d.h : 0,
+                rt_id);
     }
     return slot;
 }
