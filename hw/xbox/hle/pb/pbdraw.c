@@ -131,7 +131,8 @@ static struct {
     uint32_t rt_w, rt_h;                /* the targets' physical size */
     uint32_t aa_x, aa_y;                /* their antialiasing scale (1, 2) */
     PbObj objs[MAX_OBJS];
-    unsigned nobjs, hand;
+    unsigned nobjs;
+    uint32_t made;                      /* the object last made (evict_slot) */
     uint64_t binds;                     /* targets bound (PbObj.bound's clock) */
     /* colour textures over a depth buffer's memory: their images, converted
      * from the depth image (HLE_OP_ZREAD) at each use, or the CPU's bytes
@@ -473,6 +474,28 @@ static void restored_pixels(PbObj *o)
     o->written = ++g_pd.wseq;
 }
 
+/* The slot a new object takes once all are used: the one bound longest ago
+ * (never bound first), and never one still in use: the bound targets, the
+ * one shown, a cube or its faces (views into it), a z-read's source, the
+ * one just made (a bind makes its colour target, then its depth one).
+ * NULL if every one is. */
+static PbObj *evict_slot(void)
+{
+    PbObj *best = NULL;
+    for (unsigned i = 0; i < g_pd.nobjs; i++) {
+        PbObj *o = &g_pd.objs[i];
+        bool busy = o->id == g_pd.rt || o->id == g_pd.ds || o->id == g_pd.shown_id ||
+                    o->id == g_pd.made || o->cube || o->d.parent;
+        for (unsigned j = 0; j < g_pd.nzr && !busy; j++) {
+            busy = g_pd.zr[j].src == o->id;
+        }
+        if (!busy && (!best || o->bound < best->bound)) {
+            best = o;
+        }
+    }
+    return best;
+}
+
 /* The object for a surface (memory, format, pitch, size), made the first
  * time; 0 if none can be. A linear surface's height is only what its clip
  * reaches (the NV2A has none): a view of the top rows of one already made,
@@ -508,7 +531,14 @@ static uint32_t object(uint32_t pa, uint32_t xfmt, uint32_t pitch, uint32_t w, u
     if (g_pd.nobjs < MAX_OBJS) {
         o = &g_pd.objs[g_pd.nobjs++];
     } else {
-        o = &g_pd.objs[g_pd.hand++ % MAX_OBJS];
+        o = evict_slot();
+        if (!o) {
+            static unsigned s_full;
+            if (s_full++ < 8) {
+                hle_log("hakuX-hle-pb", "surface %08x: all %u objects in use (first 8 logged)", pa, MAX_OBJS);
+            }
+            return 0;
+        }
         HleCmdObjDestroy *x = begin(HLE_OP_OBJ_DESTROY, sizeof(*x));
         x->after = 0;
         x->id = o->id;
@@ -516,6 +546,7 @@ static uint32_t object(uint32_t pa, uint32_t xfmt, uint32_t pitch, uint32_t w, u
     }
     memset(o, 0, sizeof(*o));
     o->id = g_pd.next_id++;
+    g_pd.made = o->id;
     o->d.id = o->id;
     o->d.xfmt = xfmt;
     o->d.w = w;
