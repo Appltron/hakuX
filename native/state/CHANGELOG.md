@@ -14,3 +14,8 @@ One entry per section version (tools/native/statelock.py).
 ## MODS v1 (2026-10-21, after 6abc1f8db4)
 
 - first version
+
+## TIMR v2 (2026-10-22, after ed4707c8ae)
+
+- a timer's APC routine, context and thread (NtSetTimerEx's TimerApcRoutine, delivered at expiry)
+- upgraded: v1..v1 states load

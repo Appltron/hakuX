@@ -1,10 +1,13 @@
 /* Kernel timers and the DPC queue (native/kernel/timer.c). */
 NC_SECTION(TIMR)
 
-NC_REC(NcTimerEntry, 24)
+NC_REC(NcTimerEntry, 40)
 NC_F(NcTimerEntry, timer, U32, 1, 1, 0)
 NC_F(NcTimerEntry, due_ns, U64, 1, 1, 0)
 NC_F(NcTimerEntry, period_ns, U64, 1, 1, 0)
+NC_F(NcTimerEntry, apc, U32, 1, 2, 0)
+NC_F(NcTimerEntry, apc_ctx, U32, 1, 2, 0)
+NC_F(NcTimerEntry, apc_thread, U32, 1, 2, 0)
 NC_END(NcTimerEntry)
 
 NC_REC(NcDpcEntry, 16)

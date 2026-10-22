@@ -45,6 +45,9 @@ typedef struct NcTimerEntry {
     uint32_t timer;
     uint64_t due_ns;
     uint64_t period_ns;
+    /* NtSetTimerEx's TimerApcRoutine(TimerContext, low, high), queued to the
+     * thread that set it (ETHREAD) each time the timer expires; 0: none */
+    uint32_t apc, apc_ctx, apc_thread;
 } NcTimerEntry;
 
 static NcTimerEntry g_timers[MAX_TIMERS];
@@ -297,9 +300,9 @@ static bool timer_set(NcKernel *k, uint32_t timer, int64_t due, uint32_t period_
         nc_log("hakuX-native", "ke: out of timer slots");
         return was;
     }
-    g_timers[g_ntimers].timer = timer;
-    g_timers[g_ntimers].due_ns = nc_ke_now_ns() + (uint64_t)rel * 100u;
-    g_timers[g_ntimers].period_ns = (uint64_t)period_ms * 1000000u;
+    g_timers[g_ntimers] = (NcTimerEntry){.timer = timer,
+                                         .due_ns = nc_ke_now_ns() + (uint64_t)rel * 100u,
+                                         .period_ns = (uint64_t)period_ms * 1000000u};
     g_ntimers++;
     t[KT_INSERTED] = 1;
     next_due(k);
@@ -327,6 +330,13 @@ uint64_t nc_timer_poll(NcKernel *k, bool *fired)
         const uint32_t dpc = nc_vm_rd32(k->vm, timer + KT_DPC);
         if (dpc) {
             nc_dpc_queue(k, dpc, (uint32_t)systime, (uint32_t)(systime >> 32));
+        }
+        NcThread *at = g_timers[i].apc ? nc_ps_thread_of(k, g_timers[i].apc_thread) : NULL;
+        if (at) {
+            /* delivered when the thread next waits alertably, as NT's user APCs */
+            const NcApc apc = {.normal = g_timers[i].apc, .ctx = g_timers[i].apc_ctx,
+                               .a1 = (uint32_t)systime, .a2 = (uint32_t)(systime >> 32)};
+            nc_apc_queue(k, at, &apc);
         }
         *fired = true;
         if (g_timers[i].period_ns) {
@@ -399,13 +409,16 @@ static uint64_t NtSetTimerEx(NcKernel *k, NcFrame *f, const uint32_t *a)
     if (!timer) {
         return NC_STATUS_INVALID_HANDLE;
     }
-    if (a[2]) {
-        nc_log("hakuX-native", "ke: timer APC routine %08x not delivered (not implemented)", a[2]);
-    }
     if (a[7]) {
         *(uint8_t *)nc_vm_host(k->vm, a[7]) = nc_vm_rd32(k->vm, timer + KT_SIGNAL) != 0;
     }
     timer_set(k, timer, rd64(k, a[1]), a[6], 0);
+    const int i = timer_find(timer);
+    if (i >= 0 && a[2] && k->current) {
+        g_timers[i].apc = a[2];
+        g_timers[i].apc_ctx = a[4];
+        g_timers[i].apc_thread = k->current->ethread;
+    }
     return NC_STATUS_SUCCESS;
 }
 

@@ -45,9 +45,9 @@
 #define NC_STATE_V_THRD 1
 #define NC_STATE_MIN_THRD 1
 #define NC_STATE_H_THRD 0x28343291u
-#define NC_STATE_V_TIMR 1
+#define NC_STATE_V_TIMR 2
 #define NC_STATE_MIN_TIMR 1
-#define NC_STATE_H_TIMR 0x11e4006fu
+#define NC_STATE_H_TIMR 0x1afb13d4u
 #define NC_STATE_V_USB 1
 #define NC_STATE_MIN_USB 1
 #define NC_STATE_H_USB 0x62dc86a1u
