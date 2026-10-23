@@ -638,10 +638,12 @@ static uint32_t object(uint32_t pa, uint32_t xfmt, uint32_t pitch, uint32_t w, u
  * clears a swizzled target through a linear view of its memory (a fill is
  * the same in either order): Conker's 256 x 256 bloom target was never
  * cleared, and the pixels its bright pass alpha-tests away kept every
- * earlier frame's glow. Only that way round: a target sampled as a texture
- * takes its addressing from the object (a linear one by texel), and the
- * swizzled textures over it address it normalized (Conker's character
- * shadows, sampled by texel, read one white corner). */
+ * earlier frame's glow. Only that way round. A texture over the object
+ * addresses it as its own format says, linear by texel and swizzled
+ * normalized, not as the object is laid out (vk/draw.c stage_slot): Fable
+ * blurs a silhouette drawn through the linear view with a linear texture,
+ * and Conker's character shadows are swizzled textures (by texel, they
+ * read one white corner). */
 static uint32_t object_view(uint32_t pa, uint32_t xfmt, uint32_t alt, uint32_t pitch, uint32_t w,
                             uint32_t h)
 {
@@ -2210,11 +2212,13 @@ static uint32_t target_part(uint32_t pa, uint32_t code, const HleFmtInfo *fi, ui
 }
 
 /* The texture stage s samples: the object id, 0 if it can't be drawn;
- * *unset when the stage has none (CONTROL0 disabled). */
-static uint32_t texture(unsigned s, bool *unset)
+ * *unset when the stage has none (CONTROL0 disabled), *lin when its format
+ * is linear (sampled by texel coordinates). */
+static uint32_t texture(unsigned s, bool *unset, bool *lin)
 {
     uint32_t b = 64 * s;
     *unset = false;
+    *lin = false;
     if (!(R(NV097_SET_TEXTURE_CONTROL0 + b) & 0x40000000u)) {
         *unset = true;
         return 0;
@@ -2222,7 +2226,8 @@ static uint32_t texture(unsigned s, bool *unset)
     uint32_t off = R(NV097_SET_TEXTURE_OFFSET + b), fmt = R(NV097_SET_TEXTURE_FORMAT + b);
     uint32_t code = HLE_FMT_CODE(fmt), size = 0, pa = off & 0x0FFFFFFFu;
     const HleFmtInfo *fi = hle_fmt_info(code);
-    if (fi && (fi->flags & HLE_FI_LIN)) {
+    *lin = fi && (fi->flags & HLE_FI_LIN);
+    if (*lin) {
         uint32_t rect = R(NV097_SET_TEXTURE_IMAGE_RECT + b), pitch = R(NV097_SET_TEXTURE_CONTROL1 + b) >> 16;
         size = (MAX(rect >> 16, 1u) - 1) | (MAX(rect & 0xFFFF, 1u) - 1) << HLE_SIZE_HEIGHT_SHIFT |
                (MAX(pitch, 64u) / 64 - 1) << HLE_SIZE_PITCH_SHIFT;
@@ -2295,7 +2300,7 @@ static uint32_t texture(unsigned s, bool *unset)
     if (!t->id) {
         if (g_pd.ntex >= TEX_MAX) {
             tex_evict();
-            return texture(s, unset);
+            return texture(s, unset, lin);
         }
         memcpy(t->key, key, sizeof(key));
         t->id = g_pd.next_id++;
@@ -2741,9 +2746,10 @@ static void emit(HleCmdDraw *d)
         ds_written();                   /* depth test and writes, or stencil writes */
     }
     for (unsigned s = 0; s < 4; s++) {
-        bool unset;
-        d->tex[s] = texture(s, &unset);
+        bool unset, lin;
+        d->tex[s] = texture(s, &unset, &lin);
         d->tex_unset |= (uint32_t)unset << s;
+        d->tex_lin |= (uint32_t)lin << s;
     }
     state();
     uint32_t zf = (R(NV097_SET_SURFACE_FORMAT) >> 4) & 0xF;

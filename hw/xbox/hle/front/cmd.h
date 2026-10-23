@@ -279,6 +279,8 @@ typedef struct HleCmdDraw {
     uint32_t tex[HLE_TSS_STAGES];   /* object ids, 0 = none */
     uint32_t tex_unset;         /* bit s: no texture set (D3D's Textures[s] NULL), as
                                    against one HLE could not prepare */
+    uint32_t tex_lin;           /* bit s: the stage's format is linear, sampled by texel
+                                   coordinates (whatever the layout of a target there) */
     /* vertex programs and declarations (P4, pulled forward) */
     uint64_t vsh;               /* program hash (HLE_OP_VSH); 0 = fixed function */
     uint32_t consts_off;        /* program draws: arena, 192 vec4 constants */

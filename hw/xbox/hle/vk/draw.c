@@ -1912,7 +1912,13 @@ static uint8_t g_rt_seen[8192 / 8];
 static unsigned g_rt_told;
 
 /* Image slot of the texture bound to stage st (0 = the white texture);
- * *flags gets the stage's linear (texel coordinate) bit. */
+ * *flags gets the stage's linear (texel coordinate) bit. A target's image
+ * is addressed as the stage's format says, as the NV2A does, not as the
+ * target is laid out: a linear and a swizzled target over the same memory
+ * share one object (object_view). Fable draws a lock-on's silhouette into
+ * a swizzled 256 x 256 target through its linear view and blurs it from
+ * there with a linear texture, by texel; addressed normalized, as the
+ * swizzled object, every tap clamped to the corner and the halo was gone. */
 static uint32_t stage_slot(const HleCmdDraw *c, unsigned st, uint32_t rt_id, uint32_t *flags)
 {
     HleVkTex *tx = tex_find(c->tex[st]);
@@ -1925,12 +1931,12 @@ static uint32_t stage_slot(const HleCmdDraw *c, unsigned st, uint32_t rt_id, uin
     } else if (c->tex[st] == rt_id && g_snap_cur >= 0 && g_snap_rt == rt_id &&
                (rt = hle_surf_get(rt_id)) != NULL) {
         slot = g_snap[g_snap_cur].slot;  /* the target, copied before the draw */
-        *flags |= rt->d.pitch ? (1u << st) | (256u << st) : 0;
+        *flags |= (c->tex_lin >> st & 1) ? (1u << st) | (256u << st) : 0;
         return slot;
     } else if (ts && (ts->general || ts->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
         slot = surf_slot(ts);           /* RT as texture (identity) */
-        /* linear surface: texel coords, of a scaled image */
-        *flags |= ts->d.pitch ? (1u << st) | (256u << st) : 0;
+        /* linear format: texel coords, of a scaled image */
+        *flags |= (c->tex_lin >> st & 1) ? (1u << st) | (256u << st) : 0;
     }
     uint32_t id = c->tex[st];
     if (id && !tx && id < 8192 && g_rt_told < 64 && !(g_rt_seen[id >> 3] >> (id & 7) & 1)) {
