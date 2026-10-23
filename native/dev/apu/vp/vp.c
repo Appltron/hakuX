@@ -377,6 +377,11 @@ bool mcpx_apu_vp_off_notify_all(MCPXAPUState *d)
     return any;
 }
 
+/* The idle voice the SE reported last (SE2FE_IDLE_VOICE, idle_report),
+ * 0xFFFF: none. Not part of a savestate (cleared by the reset before one
+ * loads). */
+static uint16_t g_idle_last = 0xFFFF;
+
 bool mcpx_apu_vp_off_pending(void)
 {
     for (unsigned w = 0; w < MCPX_HW_MAX_VOICES / 64; w++) {
@@ -2376,6 +2381,41 @@ static void voice_work_finalize(MCPXAPUState *d)
     vwd->workers = NULL;
 }
 
+/* The SE reports the idle voices on its lists to the FE, one trap at a time:
+ * on the hardware a pass reports each of them, in list order, and the guest
+ * releases those it wants gone. Here a frame reports one, the next after the
+ * one reported last (the first when that one has left the lists): reported
+ * from the head each frame, an idle voice the guest leaves on its list hid
+ * those after it for good. DirectSound releases a voice group (a
+ * multichannel stream's linked voices) on its last voice's report alone:
+ * MechAssault stops a three-voice stream before a mission and waits for it
+ * to stop playing; with its first voice reported every frame and ignored,
+ * the group was never released and the game spun in GetStatus, loading,
+ * where the guest turned the three off within one frame (the Odin 3). */
+static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
+{
+    unsigned k = 0;
+    for (unsigned i = 0; i < n; i++) {
+        if (idle[i] == g_idle_last) {
+            k = i + 1 < n ? i + 1 : 0;
+            break;
+        }
+    }
+    if (!n || !apu_spin_trylock(&d->vp.fe_spin)) {
+        return;
+    }
+    /* one trap at a time, its method and argument written whole (fe_spin:
+     * the guest's methods run on its CPU meanwhile); only tried: the walk
+     * holds the voice locks of its batch, which a guest write may be waiting
+     * on (a voice not reported now is in a later frame: it stays listed) */
+    if ((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) != NV_PAPU_FECTL_FEMETHMODE_TRAPPED) {
+        fe_method(d, SE2FE_IDLE_VOICE, idle[k]);
+        off_notify_now(d, idle[k]);     /* its VOICE_OFF's, with the trap (voice_off) */
+        g_idle_last = idle[k];
+    }
+    apu_spin_unlock(&d->vp.fe_spin);
+}
+
 void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
 {
     memset(d->vp.sample_buf, 0, sizeof(d->vp.sample_buf));
@@ -2389,6 +2429,8 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
      * MCPX_HW_MAX_VOICES would overrun the queue. */
     uint64_t queued[MCPX_HW_MAX_VOICES / 64] = {0};
     uint64_t listed[MCPX_HW_MAX_VOICES / 64] = {0};   /* the voices on a list now */
+    uint16_t idle[MCPX_HW_MAX_VOICES];  /* the idle voices on them, in list order */
+    unsigned nidle = 0;
 
     /* Process all voices, mixing each into the affected MIXBINs */
     for (int list = 0; list < 3; list++) {
@@ -2417,20 +2459,8 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
             listed[v / 64] |= 1ull << (v % 64);
             if (!voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE,
                                 NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE)) {
-                /* One trap at a time, its method and argument written whole
-                 * (fe_spin: the guest's methods run on its CPU meanwhile);
-                 * an idle voice found while one is pending, or while the
-                 * guest writes a method, is reported in a later frame (it
-                 * stays in its list). Only tried: the walk holds the voice
-                 * locks of its batch, which a guest write may be waiting
-                 * on. */
-                if (apu_spin_trylock(&d->vp.fe_spin)) {
-                    if ((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) !=
-                        NV_PAPU_FECTL_FEMETHMODE_TRAPPED) {
-                        fe_method(d, SE2FE_IDLE_VOICE, v);
-                        off_notify_now(d, v);   /* its VOICE_OFF's, with the trap (voice_off) */
-                    }
-                    apu_spin_unlock(&d->vp.fe_spin);
+                if (nidle < ARRAY_SIZE(idle)) {
+                    idle[nidle++] = (uint16_t)v;    /* reported below (idle_report) */
                 }
             } else {
                 const uint64_t bit = 1ull << (v % 64);
@@ -2443,6 +2473,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
             d->regs[current] = d->regs[next];
         }
     }
+    idle_report(d, idle, nidle);
     /* the guest's VOICE_OFFs (voice_off): notified once their voice has
      * left the lists, its release done */
     for (unsigned w = 0; w < MCPX_HW_MAX_VOICES / 64; w++) {
@@ -2506,6 +2537,7 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
     memset(d->vp.voice_locked, 0, sizeof(d->vp.voice_locked));
     memset(d->vp.voice_wrote, 0, sizeof(d->vp.voice_wrote));
     memset(g_off_pending, 0, sizeof(g_off_pending));
+    g_idle_last = 0xFFFF;
     for (int v = 0; v < ARRAY_SIZE(d->vp.filters); v++) {
         hrtf_filter_init(&d->vp.filters[v].hrtf);
     }
