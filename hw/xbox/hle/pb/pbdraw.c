@@ -24,6 +24,8 @@
 #include "hw/xbox/hle/shader/ffhw.h"
 #include "hw/xbox/hle/shader/vsh.h"
 
+#include "subprojects/nv2a_vsh_cpu/src/nv2a_vsh_emulator.h"
+
 #define XXH_INLINE_ALL
 #include "xxhash.h"                     /* span_hash */
 
@@ -56,6 +58,8 @@
 #define NV097_ARRAY_ELEMENT32             0x1808u
 #define NV097_DRAW_ARRAYS                 0x1810u   /* start 23:0, count - 1 31:24 */
 #define NV097_INLINE_ARRAY                0x1818u
+#define NV097_SET_TRANSFORM_DATA          0x1E80u   /* .. 0x1E8C: a state program's v0 */
+#define NV097_LAUNCH_TRANSFORM_PROGRAM    0x1E90u   /* runs the state program at the slot */
 #define NV097_SET_TRANSFORM_EXECUTION_MODE 0x1E94u  /* mode 1:0: 0 fixed, 2 program */
 #define NV097_SET_TRANSFORM_PROGRAM_LOAD  0x1E9Cu
 #define NV097_SET_TRANSFORM_PROGRAM_START 0x1EA0u
@@ -178,6 +182,7 @@ static struct {
     uint32_t pmem[HLE_VSH_MAX_SLOTS][4];
     uint32_t pload, cload;
     uint32_t consts[HLE_VSH_CONSTANTS][4];
+    uint32_t xdata[4];                  /* SET_TRANSFORM_DATA: the next state program's v0 */
     /* the last program draw's constant block (constants and current
      * attributes), reused while neither changed and the submission it was
      * tagged for is still the one being gathered */
@@ -2248,14 +2253,15 @@ static void drawlog(const HleCmdDraw *d, bool ff)
     }
     hle_log("hakuX-hle-pb", "draw %llu: %s prim %u count %u rt %u ds %u nbind %u stride %u surf "
             "[f%08x c%08x z%08x p%08x clip %08x %08x mask %08x] f0 %08x %08x %08x %08x n %08x at %x/%x/%x bl %x "
-            "z %x/%x/%x po %x %08x %08x skin %x va01 %08x %08x%s",
+            "z %x/%x/%x po %x %08x %08x skin %x va01 %08x %08x zclip %08x %08x%s",
             (unsigned long long)g_pd.draws, ff ? "ff" : "prog", d->prim, d->count, g_pd.rt, g_pd.ds,
             d->nbind, d->bind_stride[0], R(NV097_SET_SURFACE_FORMAT), R(NV097_SET_SURFACE_COLOR_OFFSET),
             R(NV097_SET_SURFACE_ZETA_OFFSET), R(NV097_SET_SURFACE_PITCH),
             R(NV097_SET_SURFACE_CLIP_HORIZONTAL), R(NV097_SET_SURFACE_CLIP_VERTICAL), R(0x0358),
             R(0x0A60), R(0x0A64), R(0x0A68), R(0x0A6C), R(0x1E60), R(0x0300), R(0x033C), R(0x0340),
             R(0x0304), R(0x030C), R(0x035C), R(0x0354), R(0x0338), R(0x0384), R(0x0388), R(0x0328),
-            R(NV097_SET_VERTEX_DATA_ARRAY_FORMAT), R(NV097_SET_VERTEX_DATA_ARRAY_FORMAT + 4), tx);
+            R(NV097_SET_VERTEX_DATA_ARRAY_FORMAT), R(NV097_SET_VERTEX_DATA_ARRAY_FORMAT + 4),
+            R(0x0394), R(0x0398), tx);
 }
 
 /* A submit boundary: what was recorded goes to the GPU. */
@@ -3042,11 +3048,100 @@ void hle_pbd_run(uint32_t m, bool noninc, const uint32_t *w, uint32_t n)
     }
 }
 
+/* The fixed-function transform state the NV2A keeps in the programs' constant
+ * memory (xemu's NV_IGRAPH_XF_XFCTX rows): composite matrix 0-3, projection
+ * 4-7, model-view n 8 + 8n, its inverse 12 + 8n, texgen planes 0x40 + 8t,
+ * texture matrix 0x44 + 8t, eye position 0x38, fog plane 0x39. A program
+ * reads them there: Wreckless's world draws take their transform from the
+ * model-view slots its SetTransform loads, and with them zero (only the
+ * fixed-function state had them) the world was not drawn. The constant slot
+ * of method m, or -1. */
+static int xf_slot(uint32_t m, unsigned *comp)
+{
+    uint32_t base, row0;
+    if (m >= 0x0440 && m < 0x0480) {            /* SET_PROJECTION_MATRIX */
+        base = 0x0440, row0 = 0x04;
+    } else if (m >= 0x0480 && m < 0x0680) {     /* SET_(INVERSE_)MODEL_VIEW_MATRIX */
+        const uint32_t i = (m - 0x0480) >> 2, mat = (i >> 4) & 3, inv = i >> 6;
+        *comp = i & 3;
+        return (int)(0x08 + 4 * inv + 8 * mat + ((i >> 2) & 3));
+    } else if (m >= 0x0680 && m < 0x06C0) {     /* SET_COMPOSITE_MATRIX */
+        base = 0x0680, row0 = 0x00;
+    } else if (m >= 0x06C0 && m < 0x07C0) {     /* SET_TEXTURE_MATRIX */
+        const uint32_t i = (m - 0x06C0) >> 2;
+        *comp = i & 3;
+        return (int)(0x44 + 8 * (i >> 4) + ((i >> 2) & 3));
+    } else if (m >= 0x0840 && m < 0x0940) {     /* SET_TEXGEN_PLANE_S/T/R/Q */
+        const uint32_t i = (m - 0x0840) >> 2;
+        *comp = i & 3;
+        return (int)(0x40 + 8 * (i >> 4) + ((i >> 2) & 3));
+    } else if (m >= 0x09D0 && m < 0x09E0) {     /* SET_FOG_PLANE */
+        base = 0x09D0, row0 = 0x39;
+    } else if (m >= 0x0A50 && m < 0x0A60) {     /* SET_EYE_POSITION */
+        base = 0x0A50, row0 = 0x38;
+    } else {
+        return -1;
+    }
+    const uint32_t i = (m - base) >> 2;
+    *comp = i & 3;
+    return (int)(row0 + (i >> 2));
+}
+
+/* LAUNCH_TRANSFORM_PROGRAM: one run of the program at slot start, v0 the
+ * last SET_TRANSFORM_DATA, its writes going to the constants (D3D's vertex
+ * state shaders, RunVertexStateShader), on the CPU as xemu does. Wreckless
+ * builds each object's transform so; ignored, its world drew nothing. */
+static void launch_state_program(uint32_t start)
+{
+    static struct {
+        Nv2aVshProgram prog;
+        uint32_t pgen;
+        bool ok;
+    } cache[HLE_VSH_MAX_SLOTS];
+    if (start >= HLE_VSH_MAX_SLOTS) {
+        return;
+    }
+    typeof(cache[0]) *c = &cache[start];
+    if (!c->ok || c->pgen != g_pd.pgen) {
+        if (c->ok) {
+            nv2a_vsh_program_destroy(&c->prog);
+        }
+        c->ok = nv2a_vsh_parse_program(&c->prog, g_pd.pmem[start], HLE_VSH_MAX_SLOTS - start) ==
+                NV2AVPR_SUCCESS;
+        c->pgen = g_pd.pgen;
+        if (!c->ok) {
+            static unsigned logged;
+            if (logged++ < 4) {
+                hle_log("hakuX-hle-pb", "state program at %u: not a program it can run", start);
+            }
+            return;
+        }
+    }
+    static float k[HLE_VSH_CONSTANTS * 4];
+    memcpy(k, g_pd.consts, sizeof(k));
+    Nv2aVshCPUXVSSExecutionState xs;
+    Nv2aVshExecutionState st = nv2a_vsh_emu_initialize_xss_execution_state(&xs, k);
+    memcpy(xs.input_regs, g_pd.xdata, sizeof(xs.input_regs));
+    bool wrote[HLE_VSH_CONSTANTS] = { false };
+    nv2a_vsh_emu_execute_track_context_writes(&st, &c->prog, wrote);
+    for (unsigned i = 0; i < HLE_VSH_CONSTANTS; i++) {
+        if (wrote[i] && memcmp(g_pd.consts[i], &k[4 * i], 16)) {
+            memcpy(g_pd.consts[i], &k[4 * i], 16);
+            g_pd.cgen++;
+        }
+    }
+}
+
 /* The methods hle_pbd_method does more for than keep (by method / 4): vertex
  * data, program and constants and their load points, the viewport, the
- * draws, the targets and clears, the swap. The rest (most of a frame's state)
- * is stored and done with, past none of the ranges and switches below. */
+ * fixed-function transform state (xf_slot), state programs, the draws, the
+ * targets and clears, the swap. The rest (most of a frame's state) is stored and done
+ * with, past none of the ranges and switches below. */
 static const bool k_pbd_acts[2048] = {
+    [0x0440 / 4 ... 0x07BC / 4] = true,         /* xf_slot's matrices */
+    [0x0840 / 4 ... 0x093C / 4] = true,
+    [0x09D0 / 4 ... 0x09DC / 4] = true,
+    [0x0A50 / 4 ... 0x0A5C / 4] = true,
     [NV097_SET_VERTEX3F / 4 ... (NV097_SET_VERTEX4F + 12) / 4] = true,
     [NV097_SET_VERTEX_DATA2F_M / 4 ... (NV097_SET_VERTEX_DATA4F_M + 16 * ATTRS - 4) / 4] = true,
     [NV097_SET_TRANSFORM_PROGRAM / 4 ... (NV097_SET_TRANSFORM_PROGRAM + 0x7C) / 4] = true,
@@ -3055,6 +3150,7 @@ static const bool k_pbd_acts[2048] = {
     [NV097_SET_VIEWPORT_SCALE / 4 ... (NV097_SET_VIEWPORT_SCALE + 12) / 4] = true,
     [NV097_SET_TRANSFORM_PROGRAM_LOAD / 4] = true,
     [NV097_SET_TRANSFORM_CONSTANT_LOAD / 4] = true,
+    [NV097_SET_TRANSFORM_DATA / 4 ... NV097_LAUNCH_TRANSFORM_PROGRAM / 4] = true,
     [NV097_SET_ZPASS_PIXEL_COUNT_ENABLE / 4] = true,
     [NV097_SET_BEGIN_END / 4] = true,
     [NV097_ARRAY_ELEMENT16 / 4] = true,
@@ -3110,6 +3206,17 @@ void hle_pbd_method(uint32_t m, uint32_t v)
         g_pd.cgen++;
         return;
     }
+    if (m < 0x0A60) {
+        unsigned comp;
+        const int slot = xf_slot(m, &comp);
+        if (slot >= 0) {
+            if (g_pd.consts[slot][comp] != v) {
+                g_pd.consts[slot][comp] = v;
+                g_pd.cgen++;
+            }
+            return;
+        }
+    }
     if (m >= NV097_SET_VIEWPORT_SCALE && m < NV097_SET_VIEWPORT_SCALE + 16) {
         g_pd.consts[VPSCL][(m >> 2) & 3] = v;
         g_pd.cgen++;
@@ -3121,6 +3228,15 @@ void hle_pbd_method(uint32_t m, uint32_t v)
         break;
     case NV097_SET_TRANSFORM_CONSTANT_LOAD:
         g_pd.cload = v;
+        break;
+    case NV097_SET_TRANSFORM_DATA:
+    case NV097_SET_TRANSFORM_DATA + 4:
+    case NV097_SET_TRANSFORM_DATA + 8:
+    case NV097_SET_TRANSFORM_DATA + 12:
+        g_pd.xdata[(m >> 2) & 3] = v;
+        break;
+    case NV097_LAUNCH_TRANSFORM_PROGRAM:
+        launch_state_program(v);
         break;
     case NV097_SET_ZPASS_PIXEL_COUNT_ENABLE:
         if (v & 1) {

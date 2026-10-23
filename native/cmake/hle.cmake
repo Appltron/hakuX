@@ -72,6 +72,9 @@ add_library(hakux_hle STATIC
   ${NC_HLE}/vk/vkdev.c
   ${NC_HLE}/vk/zread.c
   ${NC_VSH}/nv2a_vsh_disassembler.c
+  ${NC_VSH}/nv2a_vsh_cpu.c
+  ${NC_VSH}/nv2a_vsh_emulator.c
+  ${NC_VSH}/nv2a_vsh_emulator_execution_state.c
   ${CMAKE_CURRENT_SOURCE_DIR}/hle/glue.c
   ${CMAKE_CURRENT_SOURCE_DIR}/hle/host_native.c
   ${CMAKE_CURRENT_SOURCE_DIR}/hle/dirty.c
