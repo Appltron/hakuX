@@ -362,6 +362,31 @@ static void off_notify_now(MCPXAPUState *d, uint16_t v)
     }
 }
 
+/* The frame thread stopped for the guest (the FE trapped or halted, the SE
+ * off) and the guest didn't act: the VOICE_OFFs still waiting are notified,
+ * no frame coming to walk the lists or count their 64. True when one was. */
+bool mcpx_apu_vp_off_notify_all(MCPXAPUState *d)
+{
+    bool any = false;
+    for (unsigned w = 0; w < MCPX_HW_MAX_VOICES / 64; w++) {
+        for (uint64_t p = __atomic_load_n(&g_off_pending[w], __ATOMIC_ACQUIRE); p; p &= p - 1) {
+            off_notify_now(d, (uint16_t)(w * 64 + __builtin_ctzll(p)));
+            any = true;
+        }
+    }
+    return any;
+}
+
+bool mcpx_apu_vp_off_pending(void)
+{
+    for (unsigned w = 0; w < MCPX_HW_MAX_VOICES / 64; w++) {
+        if (__atomic_load_n(&g_off_pending[w], __ATOMIC_ACQUIRE)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* The guest turns a voice off (NV1BA0_PIO_VOICE_OFF). On the hardware the
  * SE finds it idle in its next pass and reports both together: the
  * SE2FE_IDLE_VOICE trap, whose handler releases the voice, and its done
@@ -370,8 +395,14 @@ static void off_notify_now(MCPXAPUState *d, uint16_t v)
  * throttle) before the trap: a stream voice it restarted there waited for a
  * release the ISR defers while that DPC runs (Wreckless hung in menus and
  * in missions, its DPC spinning at 0x12CD7B). When the title takes idle
- * traps, the notification waits until the voice has left the lists
- * (mcpx_apu_vp_frame), the voice is turned on again, or 64 frames. */
+ * traps, the notification waits for the voice's idle trap and comes with it,
+ * as on the hardware (mcpx_apu_vp_frame), or until the voice has left the
+ * lists, is turned on again, or 64 frames (or their time, the frame thread
+ * stopped for the guest). Waiting past the trap, until the trap's DPC had
+ * released the voice, Blood Wake hung loading a mission: its DirectSound
+ * turns a voice off at DISPATCH_LEVEL and spins at 0xFE047 until its ISR
+ * has seen the notification, the DPC kept out, the trap stopping the frames
+ * that would have counted the 64. */
 static void voice_off(MCPXAPUState *d, uint16_t v)
 {
     voice_set_mask(d, v, NV_PAVS_VOICE_PAR_STATE,
@@ -2397,6 +2428,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
                     if ((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) !=
                         NV_PAPU_FECTL_FEMETHMODE_TRAPPED) {
                         fe_method(d, SE2FE_IDLE_VOICE, v);
+                        off_notify_now(d, v);   /* its VOICE_OFF's, with the trap (voice_off) */
                     }
                     apu_spin_unlock(&d->vp.fe_spin);
                 }

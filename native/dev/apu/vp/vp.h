@@ -143,6 +143,11 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
 void mcpx_apu_vp_init(MCPXAPUState *d);
 void mcpx_apu_vp_finalize(MCPXAPUState *d);
 void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
+/* The guest's VOICE_OFFs whose notification waits (vp.c voice_off): any, and
+ * all of them notified now, for a frame thread stopped for the guest that
+ * waited their time (true when one was). */
+bool mcpx_apu_vp_off_pending(void);
+bool mcpx_apu_vp_off_notify_all(MCPXAPUState *d);
 void mcpx_apu_vp_reset(MCPXAPUState *d);
 void mcpx_apu_vp_refresh_voice_cache(MCPXAPUState *d, uint32_t new_base);
 void mcpx_apu_vp_refresh_ssl_cache(MCPXAPUState *d, uint32_t new_base);

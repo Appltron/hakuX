@@ -264,6 +264,8 @@ static void apu_mmio_write(void *opaque, uint32_t off, uint64_t value, unsigned 
 /* One GP frame (32 samples) of real time; the EP boundary takes the rest of
  * EP_FRAME_US so eight frames stay exactly one EP frame. */
 #define GP_FRAME_US (EP_FRAME_US / 8)
+/* A VOICE_OFF's notification waits at most 64 frames (vp.c voice_off). */
+#define OFF_WAIT_US (64 * GP_FRAME_US)
 
 /* Microsecond sleeps (millisecond waits are too coarse on Android), the lock
  * released meanwhile like a timed wait would. */
@@ -558,7 +560,14 @@ static void *mcpx_apu_frame_thread(void *arg)
             (fectl & NV_PAPU_FECTL_FEMETHMODE_TRAPPED) ||
             (fectl & NV_PAPU_FECTL_FEMETHMODE_HALTED)) {
             nc_pause_idle(true);                /* stopped until the guest acts */
-            pthread_cond_wait(&d->cond, &d->lock);
+            if (!mcpx_apu_vp_off_pending()) {
+                pthread_cond_wait(&d->cond, &d->lock);
+            } else if (!apu_cond_timedwait_us(&d->cond, &d->lock, OFF_WAIT_US)) {
+                /* VOICE_OFFs waiting for frames that don't come: notified
+                 * after their 64 frames' time, their interrupt raised at the
+                 * top (the guest may wait for them before it acts) */
+                mcpx_apu_vp_off_notify_all(d);
+            }
             nc_pause_idle(false);
             continue;
         }
