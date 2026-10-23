@@ -3095,20 +3095,25 @@ static void launch_state_program(uint32_t start)
 {
     static struct {
         Nv2aVshProgram prog;
-        uint32_t pgen;
-        bool ok;
+        uint64_t hash;                  /* its slots' (the program memory changes as the title
+                                           switches programs, the state programs stay) */
+        bool parsed, ok;
     } cache[HLE_VSH_MAX_SLOTS];
     if (start >= HLE_VSH_MAX_SLOTS) {
         return;
     }
+    uint32_t n = 0;
+    while (start + n < HLE_VSH_MAX_SLOTS && !(g_pd.pmem[start + n++][3] & 1)) {
+    }
+    const uint64_t h = XXH3_64bits(g_pd.pmem[start], 16 * n);
     typeof(cache[0]) *c = &cache[start];
-    if (!c->ok || c->pgen != g_pd.pgen) {
+    if (!c->parsed || c->hash != h) {
         if (c->ok) {
             nv2a_vsh_program_destroy(&c->prog);
         }
-        c->ok = nv2a_vsh_parse_program(&c->prog, g_pd.pmem[start], HLE_VSH_MAX_SLOTS - start) ==
-                NV2AVPR_SUCCESS;
-        c->pgen = g_pd.pgen;
+        c->ok = nv2a_vsh_parse_program(&c->prog, g_pd.pmem[start], n) == NV2AVPR_SUCCESS;
+        c->parsed = true;
+        c->hash = h;
         if (!c->ok) {
             static unsigned logged;
             if (logged++ < 4) {
