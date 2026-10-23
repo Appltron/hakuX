@@ -346,6 +346,32 @@ static void report_written_voices(MCPXAPUState *d, uint8_t *c)
     }
 }
 
+/* The guest's VOICE_OFFs whose notification waits for the voice's release
+ * (voice_off): a bit per voice, its notifier and the frames it has waited.
+ * Not part of a savestate (cleared by the reset before one loads). */
+static uint64_t g_off_pending[MCPX_HW_MAX_VOICES / 64];
+static uint8_t g_off_notifier[MCPX_HW_MAX_VOICES];
+static uint8_t g_off_frames[MCPX_HW_MAX_VOICES];
+#define OFF_NOTIFY_MAX_FRAMES 64        /* ~43 ms of frames: then it goes anyway */
+
+static void off_notify_now(MCPXAPUState *d, uint16_t v)
+{
+    const uint64_t bit = 1ull << (v % 64);
+    if (__atomic_fetch_and(&g_off_pending[v / 64], ~bit, __ATOMIC_ACQ_REL) & bit) {
+        set_notify_status(d, v, g_off_notifier[v], NV1BA0_NOTIFICATION_STATUS_DONE_SUCCESS);
+    }
+}
+
+/* The guest turns a voice off (NV1BA0_PIO_VOICE_OFF). On the hardware the
+ * SE finds it idle in its next pass and reports both together: the
+ * SE2FE_IDLE_VOICE trap, whose handler releases the voice, and its done
+ * notification. Posted here at once, the notification's interrupt ran
+ * DirectSound's voice service DPC up to a frame (and the frame thread's
+ * throttle) before the trap: a stream voice it restarted there waited for a
+ * release the ISR defers while that DPC runs (Wreckless hung in menus and
+ * in missions, its DPC spinning at 0x12CD7B). When the title takes idle
+ * traps, the notification waits until the voice has left the lists
+ * (mcpx_apu_vp_frame), the voice is turned on again, or 64 frames. */
 static void voice_off(MCPXAPUState *d, uint16_t v)
 {
     voice_set_mask(d, v, NV_PAVS_VOICE_PAR_STATE,
@@ -358,6 +384,13 @@ static void voice_off(MCPXAPUState *d, uint16_t v)
         assert(v < MCPX_HW_MAX_VOICES);
         assert(d->vp.ssl[v].ssl_index <= 1);
         notifier += d->vp.ssl[v].ssl_index;
+    }
+    if (d->regs[NV_PAPU_FETFORCE1] & NV_PAPU_FETFORCE1_SE2FE_IDLE_VOICE) {
+        off_notify_now(d, v);           /* an earlier one first */
+        g_off_notifier[v] = (uint8_t)notifier;
+        g_off_frames[v] = 0;
+        __atomic_fetch_or(&g_off_pending[v / 64], 1ull << (v % 64), __ATOMIC_ACQ_REL);
+        return;
     }
     set_notify_status(d, v, notifier, NV1BA0_NOTIFICATION_STATUS_DONE_SUCCESS);
 }
@@ -496,6 +529,7 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
         if (!locked && !voice_lock(d, selected_handle, true, true)) {
             break;      /* runs again: nothing changed yet */
         }
+        off_notify_now(d, selected_handle);    /* its last VOICE_OFF's, before it plays again */
 
         list = GET_MASK(d->regs[NV_PAPU_FEAV], NV_PAPU_FEAV_LST);
         if (list != NV1BA0_PIO_SET_ANTECEDENT_VOICE_LIST_INHERIT) {
@@ -2323,6 +2357,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
      * lists) would take its own lock again and spin forever, and more than
      * MCPX_HW_MAX_VOICES would overrun the queue. */
     uint64_t queued[MCPX_HW_MAX_VOICES / 64] = {0};
+    uint64_t listed[MCPX_HW_MAX_VOICES / 64] = {0};   /* the voices on a list now */
 
     /* Process all voices, mixing each into the affected MIXBINs */
     for (int list = 0; list < 3; list++) {
@@ -2348,6 +2383,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
             d->regs[next] = voice_get_mask_nolock(d, c, v,
                                NV_PAVS_VOICE_TAR_PITCH_LINK,
                                NV_PAVS_VOICE_TAR_PITCH_LINK_NEXT_VOICE_HANDLE);
+            listed[v / 64] |= 1ull << (v % 64);
             if (!voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE,
                                 NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE)) {
                 /* One trap at a time, its method and argument written whole
@@ -2373,6 +2409,16 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
                 voice_work_enqueue(d, v, list);
             }
             d->regs[current] = d->regs[next];
+        }
+    }
+    /* the guest's VOICE_OFFs (voice_off): notified once their voice has
+     * left the lists, its release done */
+    for (unsigned w = 0; w < MCPX_HW_MAX_VOICES / 64; w++) {
+        for (uint64_t p = __atomic_load_n(&g_off_pending[w], __ATOMIC_ACQUIRE); p; p &= p - 1) {
+            const uint16_t v = (uint16_t)(w * 64 + __builtin_ctzll(p));
+            if (!(listed[w] & (1ull << (v % 64))) || ++g_off_frames[v] >= OFF_NOTIFY_MAX_FRAMES) {
+                off_notify_now(d, v);
+            }
         }
     }
     voice_work_dispatch(d, c, mixbins);
@@ -2427,6 +2473,7 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
     memset(d->vp.submix_headroom, 0, sizeof(d->vp.submix_headroom));
     memset(d->vp.voice_locked, 0, sizeof(d->vp.voice_locked));
     memset(d->vp.voice_wrote, 0, sizeof(d->vp.voice_wrote));
+    memset(g_off_pending, 0, sizeof(g_off_pending));
     for (int v = 0; v < ARRAY_SIZE(d->vp.filters); v++) {
         hrtf_filter_init(&d->vp.filters[v].hrtf);
     }
