@@ -1095,12 +1095,21 @@ static void rtd_write(uint64_t value)
  * texel before and after, and the constants of the draws that changed it.
  * "...@n" anywhere in the value starts recording at the n-th such draw or
  * clear (a frame of more than PIX_MAX: Blinx draws ~17k strips a frame);
- * "k" anywhere: every program draw's constants (draws that miss the texel). */
+ * "k" anywhere: every program draw's constants (draws that miss the texel);
+ * "*n": n frames in a row, a file each (an effect fed by the frame before). */
 #define PIX_MAX 2048
+/* A record's bytes in the readback buffer: the texels (colour +0, stage 0's
+ * target +4, depth +8, stencil +12), then what a small arena draw read as
+ * the GPU ran it: its vertices (+16, PIX_VBYTES) and constants c0..c3 */
+#define PIX_STRIDE 256u
+#define PIX_VBYTES 128u
 typedef struct PixRec {
     uint32_t draw, rt, ds, kind;        /* kind: 0 draw, 1 clear */
     uint32_t cbytes, dbytes, cfmt, dfmt, sbytes;
-    uint32_t rs[8];                     /* hle_draw_rs_brief */
+    uint32_t tbytes;                    /* stage 0's target texture: its texel after the draw */
+    uint32_t vbytes;                    /* a small arena draw: its vertex bytes, as recorded */
+    uint8_t v[PIX_VBYTES];
+    uint32_t rs[9];                     /* hle_draw_rs_brief */
     HleCmdDraw c;
     float k[192][4];                    /* the draw's constants (program draws) */
 } PixRec;
@@ -1115,6 +1124,7 @@ static struct {
     uint32_t n;
     uint32_t skip, seen;                /* "@n": the records before the n-th left out */
     bool all_k;                         /* "k": every program draw's constants */
+    uint32_t frames;                    /* "*n": frames left to record, a file each */
 } g_pix;
 
 static void pix_poll(void)
@@ -1137,6 +1147,8 @@ static void pix_poll(void)
             const char *at = strchr(v, '@');
             g_pix.skip = at ? (uint32_t)strtoul(at + 1, NULL, 10) : 0;
             g_pix.all_k = strchr(v, 'k') != NULL;
+            const char *nf = strchr(v, '*');
+            g_pix.frames = nf ? MAX((uint32_t)strtoul(nf + 1, NULL, 10), 1u) : 1;
             g_pix.next = true;
         }
     }
@@ -1171,7 +1183,7 @@ static void pix_after(const HleCmdDraw *c)
     r->cbytes = rt->texel_bytes;
     r->cfmt = rt->fmt;
     hle_surf_transition(cb, rt, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    VkBufferImageCopy cr = { .bufferOffset = 16 * g_pix.n,
+    VkBufferImageCopy cr = { .bufferOffset = PIX_STRIDE * g_pix.n,
                              .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
                              .imageOffset = { (int32_t)px, (int32_t)py, 0 },
                              .imageExtent = { 1, 1, 1 } };
@@ -1196,6 +1208,27 @@ static void pix_after(const HleCmdDraw *c)
                                      ds->general ? VK_IMAGE_LAYOUT_GENERAL : ds->layout,
                                      g_pix.buf, 1, &sr);
         }
+    }
+    /* a target sampled at stage 0 (a copy of a frame): its texel, at +4 */
+    HleVkSurf *t0 = c && c->tex[0] && c->tex[0] != g_back.rt ? hle_surf_get(c->tex[0]) : NULL;
+    if (rtd_surf_ok(t0) && t0->texel_bytes == 4 && px < t0->w && py < t0->h) {
+        r->tbytes = 4;
+        hle_surf_transition(cb, t0, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        VkBufferImageCopy tr = cr;
+        tr.bufferOffset += 4;
+        T.vkCmdCopyImageToBuffer(cb, t0->img, t0->general ? VK_IMAGE_LAYOUT_GENERAL : t0->layout,
+                                 g_pix.buf, 1, &tr);
+    }
+    /* a few vertices from the arena (a full-screen quad): the bytes now and,
+     * copied by the GPU after the draw, the bytes it read; c0..c3 the same */
+    if (c && c->nbind && !(c->guest_vb & 1) && c->bind_stride[0] &&
+        c->count * c->bind_stride[0] <= PIX_VBYTES) {
+        r->vbytes = c->count * c->bind_stride[0];
+        memcpy(r->v, g_harena.map + c->bind_off[0], r->vbytes);
+        VkBufferCopy bc[2] = {
+            { c->bind_off[0], PIX_STRIDE * g_pix.n + 16, r->vbytes },
+            { c->consts_off, PIX_STRIDE * g_pix.n + 16 + PIX_VBYTES, 64 } };
+        T.vkCmdCopyBuffer(cb, g_harena.buf, g_pix.buf, c->vsh ? 2 : 1, bc);
     }
     if (c) {
         r->c = *c;
@@ -1235,9 +1268,9 @@ static void pix_write(uint64_t value)
         uint32_t last_st[16] = { 0 };
         for (uint32_t i = 0; i < g_pix.n; i++) {
             const PixRec *r = &g_pix.rec[i];
-            uint32_t col = pix_texel(m + 16 * i, r->cbytes);
-            uint32_t dep = r->dbytes ? pix_texel(m + 16 * i + 8, r->dbytes) : 0;
-            uint32_t stn = r->sbytes ? m[16 * i + 12] : 0;
+            uint32_t col = pix_texel(m + PIX_STRIDE * i, r->cbytes);
+            uint32_t dep = r->dbytes ? pix_texel(m + PIX_STRIDE * i + 8, r->dbytes) : 0;
+            uint32_t stn = r->sbytes ? m[PIX_STRIDE * i + 12] : 0;
             unsigned s = r->rt % 16;
             bool known = last_rt[s] == r->rt;
             bool changed = !known || col != last_c[s] || dep != last_d[s] || stn != last_st[s];
@@ -1256,9 +1289,25 @@ static void pix_write(uint64_t value)
                     fprintf(f, " %c%08x/%u", (r->c.guest_vb >> b) & 1 ? 'g' : 'a',
                             r->c.bind_off[b], r->c.bind_stride[b]);
                 }
-                fprintf(f, " attr0 %08x ib %08x atest %u/%x/%02x blend %u %x z %x/%x cw %x",
+                fprintf(f, " attr0 %08x ib %08x atest %u/%x/%02x blend %u %x/%08x z %x/%x cw %x",
                         r->c.attr[0], r->c.ib_off, r->rs[0], r->rs[1], r->rs[2] & 0xFF, r->rs[3],
-                        r->rs[4], r->rs[5], r->rs[6], r->rs[7]);
+                        r->rs[4], r->rs[8], r->rs[5], r->rs[6], r->rs[7]);
+                if (r->tbytes) {
+                    fprintf(f, " t0 texel %08x", pix_texel(m + PIX_STRIDE * i + 4, r->tbytes));
+                }
+                if (r->vbytes) {        /* positions (the first 4 floats of each vertex) */
+                    const uint8_t *gv = m + PIX_STRIDE * i + 16;
+                    uint32_t stride = r->c.bind_stride[0];
+                    fprintf(f, " verts%s", memcmp(gv, r->v, r->vbytes) ? " CHANGED" : "");
+                    for (uint32_t o = 0; o + 16 <= r->vbytes; o += stride) {
+                        float p[4];
+                        memcpy(p, gv + o, 16);
+                        fprintf(f, " (%.1f %.1f %.3g %.3g)", p[0], p[1], p[2], p[3]);
+                    }
+                    if (r->c.vsh && memcmp(gv + PIX_VBYTES, r->k, 64)) {
+                        fprintf(f, " c0-3 CHANGED");
+                    }
+                }
                 if (r->c.vsh) {         /* c0..c3: the usual transform rows */
                     fprintf(f, " c0-3");
                     for (unsigned k = 0; k < 4; k++) {
@@ -1729,13 +1778,15 @@ static void cmd_swap(const HleCmdSwap *c)
             rtd_note(g_rtd.extra[i]);
         }
     }
-    g_pix.active = g_pix.next;
+    bool more = g_pix.active && g_pix.frames > 1;      /* "*n": the next of the n frames */
+    g_pix.frames -= more;
+    g_pix.active = g_pix.next || more;
     g_pix.next = false;
     g_pix.n = 0;
     g_pix.seen = 0;
     if (g_pix.active && !g_pix.buf) {
         g_pix.rec = g_new0(PixRec, PIX_MAX);
-        if (!rtd_buf(16 * PIX_MAX, &g_pix.buf, &g_pix.mem)) {
+        if (!rtd_buf(PIX_STRIDE * PIX_MAX, &g_pix.buf, &g_pix.mem)) {
             g_pix.buf = VK_NULL_HANDLE;
         }
     }

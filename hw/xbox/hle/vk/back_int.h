@@ -146,7 +146,7 @@ bool hle_draw_tex_needs_prep(const HleCmdDraw *c, uint32_t rt_id);
 unsigned hle_draw_fb_stages(const HleCmdDraw *c, uint32_t rt_id);
 /* debug (pixel history): the draw state's alpha test enable, func, ref, blend
  * enable, src << 16 | dst, z enable << 16 | z write, z func, colour write mask */
-void hle_draw_rs_brief(uint32_t out[8]);
+void hle_draw_rs_brief(uint32_t out[9]);
 /* Combiner stages of draw c read the colour target rt_id at coordinates of
  * their own (not its pixel, which fbfetch reads): outside the pass,
  * hle_draw_snap copies it and the draw samples the copy; hle_draw_snap_end

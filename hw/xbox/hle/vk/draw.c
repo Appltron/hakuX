@@ -932,7 +932,7 @@ void hle_draw_counts(uint64_t *verts, uint64_t *pipes)
     *pipes = g_dr.emits[EM_PIPE];
 }
 
-void hle_draw_rs_brief(uint32_t out[8])
+void hle_draw_rs_brief(uint32_t out[9])
 {
     const uint32_t *rs = g_dr.st.rs;
     out[0] = rs[RS_ALPHATESTENABLE];
@@ -943,6 +943,7 @@ void hle_draw_rs_brief(uint32_t out[8])
     out[5] = rs[RS_ZENABLE] << 16 | rs[RS_ZWRITEENABLE];
     out[6] = rs[RS_ZFUNC];
     out[7] = rs[RS_COLORWRITEENABLE];
+    out[8] = rs[RS_BLENDCOLOR];
 }
 
 /*
