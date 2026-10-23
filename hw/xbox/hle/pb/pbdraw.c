@@ -375,7 +375,29 @@ static uint32_t tile_pitch(uint32_t bytes);
  * modes of that width are (640 / 720: 480 lines, 576 at 50 Hz; 1280: 720;
  * 1920: 1080). False when none was set or the pitch fits no such width;
  * *seq: the modes set so far. */
-static bool mode_size(uint32_t *w, uint32_t *h, uint32_t *seq)
+/* An SD mode's frame buffer is 480 or 576 lines, which its mode word doesn't
+ * tell: bit 30 (50 Hz) marks PAL modes whose buffer is 480 lines as well,
+ * the encoder scaling it (Dead or Alive 3's 0x58040415, 720 x 480). The
+ * height the title draws at (cur), when it is one of them; half of it when
+ * that is (a back buffer supersampled 2x down, Hunter's 640 x 960); by the
+ * refresh only else. Taken as 576, DOA3's 480-line targets were made 576
+ * lines (linear_size), their write-backs ran 96 lines past them into its
+ * push buffer, and the FMV hung on its faults. */
+static uint32_t sd_height(uint32_t cur, unsigned hz)
+{
+    if (cur == 480 || cur == 576) {
+        return cur;
+    }
+    if (cur == 960 || cur == 1152) {
+        return cur / 2;
+    }
+    return hz == 50 ? 576 : 480;
+}
+
+/* The display the video mode shows: its width by the frame buffer's pitch,
+ * its height the HD modes' or (SD) sd_height of cur, the height the title
+ * draws at now. */
+static bool mode_size(uint32_t cur, uint32_t *w, uint32_t *h, uint32_t *seq)
 {
     static const uint32_t k_w[] = { 640, 720, 1280, 1920 };
     uint32_t pitch, xfmt;
@@ -386,7 +408,7 @@ static bool mode_size(uint32_t *w, uint32_t *h, uint32_t *seq)
     for (unsigned i = 0; bytes && i < ARRAY_SIZE(k_w); i++) {
         if (k_w[i] * bytes == pitch || tile_pitch(k_w[i] * bytes) == pitch) {
             *w = k_w[i];
-            *h = k_w[i] == 1920 ? 1080 : k_w[i] == 1280 ? 720 : hz == 50 ? 576 : 480;
+            *h = k_w[i] == 1920 ? 1080 : k_w[i] == 1280 ? 720 : sd_height(cur, hz);
             return true;
         }
     }
@@ -404,7 +426,7 @@ static void device(uint32_t w, uint32_t h)
         return;
     }
     uint32_t mw, mh;
-    if (mode_size(&mw, &mh, &g_mode_seen)) {
+    if (mode_size(h, &mw, &mh, &g_mode_seen)) {
         w = mw;
         h = mh;
         g_disp_moded = true;
@@ -914,7 +936,7 @@ static bool window_clip(uint32_t w, uint32_t h, int32_t r[4])
 static void mode_sync(void)
 {
     uint32_t w, h, seq;
-    const bool ok = mode_size(&w, &h, &seq);
+    const bool ok = mode_size(g_pd.disp_h, &w, &h, &seq);
     if (seq == g_mode_seen || !g_pd.device) {
         return;
     }
