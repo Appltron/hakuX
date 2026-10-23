@@ -231,7 +231,7 @@ static VkImageView dst_view(VkImage img)
 }
 
 bool hle_gamma_pass(VkCommandBuffer cb, unsigned slot, const uint8_t ramp[3][256],
-                    HleVkSurf *src, VkImage dst, uint32_t dw, uint32_t dh)
+                    HleVkSurf *src, uint32_t sw, uint32_t sh, VkImage dst, uint32_t dw, uint32_t dh)
 {
     if (!init()) {
         return false;
@@ -264,7 +264,8 @@ bool hle_gamma_pass(VkCommandBuffer cb, unsigned slot, const uint8_t ramp[3][256
                            .renderArea = { { 0, 0 }, { dw, dh } }, .layerCount = 1,
                            .colorAttachmentCount = 1, .pColorAttachments = &ca };
     T.vkCmdBeginRendering(cb, &ri);
-    VkViewport vp = { 0, 0, (float)dw, (float)dh, 0.0f, 1.0f };
+    /* the whole of src over a viewport its shown part (sw x sh) fills dw x dh of */
+    VkViewport vp = { 0, 0, (float)dw * src->w / MAX(sw, 1u), (float)dh * src->h / MAX(sh, 1u), 0.0f, 1.0f };
     VkRect2D sc = { { 0, 0 }, { dw, dh } };
     T.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_gm.pipe);
     hle_draw_state_lost();

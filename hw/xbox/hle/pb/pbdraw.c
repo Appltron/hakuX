@@ -368,11 +368,46 @@ void hle_pbd_draw_counts(uint64_t *draws, uint64_t *ff, uint64_t *skipped, uint6
     *tex_defs = g_pd.tex_defs;
 }
 
-/* The device, at the first render target: the display is its size. */
+static uint32_t tile_pitch(uint32_t bytes);
+
+/* The display AvSetDisplayMode set (hle_pb_display_mode): as wide as its
+ * frame buffer's rows (exactly, or in their tile pitch), and as tall as the
+ * modes of that width are (640 / 720: 480 lines, 576 at 50 Hz; 1280: 720;
+ * 1920: 1080). False when none was set or the pitch fits no such width;
+ * *seq: the modes set so far. */
+static bool mode_size(uint32_t *w, uint32_t *h, uint32_t *seq)
+{
+    static const uint32_t k_w[] = { 640, 720, 1280, 1920 };
+    uint32_t pitch, xfmt;
+    unsigned hz;
+    *seq = hle_pb_display_mode_get(&pitch, &xfmt, &hz);
+    const HleFmtInfo *fi = pitch ? hle_fmt_info(xfmt) : NULL;
+    const uint32_t bytes = fi && !(fi->flags & (HLE_FI_DEPTH | HLE_FI_DXT)) ? fi->bpp / 8 : 0;
+    for (unsigned i = 0; bytes && i < ARRAY_SIZE(k_w); i++) {
+        if (k_w[i] * bytes == pitch || tile_pitch(k_w[i] * bytes) == pitch) {
+            *w = k_w[i];
+            *h = k_w[i] == 1920 ? 1080 : k_w[i] == 1280 ? 720 : hz == 50 ? 576 : 480;
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint32_t g_mode_seen;            /* the video modes set the display followed */
+static bool g_disp_moded;               /* the display is the video mode's size (not a guess) */
+
+/* The device, at the first render target: the display is that target's
+ * size, or the video mode's (mode_sync). */
 static void device(uint32_t w, uint32_t h)
 {
     if (g_pd.device) {
         return;
+    }
+    uint32_t mw, mh;
+    if (mode_size(&mw, &mh, &g_mode_seen)) {
+        w = mw;
+        h = mh;
+        g_disp_moded = true;
     }
     HleCmdDevice *c = begin(HLE_OP_DEVICE_CREATE, sizeof(*c));
     c->disp_w = w;
@@ -869,9 +904,40 @@ static bool window_clip(uint32_t w, uint32_t h, int32_t r[4])
     return true;
 }
 
+/* A video mode set since the display last followed one: the display is its
+ * size. CreateDevice binds its back buffer before it sets the mode, and the
+ * back buffer needn't be the frame shown: Hunter: The Reckoning - Redeemer
+ * supersamples, a 640 x 960 back buffer D3D's Present filters into the
+ * 640 x 480 frame it shows. Sized by the back buffer, the display (and every
+ * surface as wide as it, the frame's own) was 640 x 960, the frames in its
+ * top half. Before the targets that follow are sized (linear_size). */
+static void mode_sync(void)
+{
+    uint32_t w, h, seq;
+    const bool ok = mode_size(&w, &h, &seq);
+    if (seq == g_mode_seen || !g_pd.device) {
+        return;
+    }
+    g_mode_seen = seq;
+    g_disp_moded = ok;
+    if (!ok || (w == g_pd.disp_w && h == g_pd.disp_h)) {
+        return;
+    }
+    HleCmdDevice *c = begin(HLE_OP_DEVICE_RESET, sizeof(*c));
+    memset(c, 0, sizeof(*c));
+    c->disp_w = w;
+    c->disp_h = h;
+    hle_fe_commit();
+    hle_log("hakuX-hle-pb", "display %ux%u: the video mode's (was %ux%u, the first target bound)", w, h,
+            g_pd.disp_w, g_pd.disp_h);
+    g_pd.disp_w = w;
+    g_pd.disp_h = h;
+}
+
 /* The targets the surface methods describe, bound when they changed. */
 static void sync_rt(void)
 {
+    mode_sync();
     if (!g_pd.rt_dirty) {
         return;
     }
@@ -1105,6 +1171,8 @@ static void front_stale(const PbObj *o)
     hle_barrier_set_stale(colour ? o->d.pa : 0, colour ? o->d.pitch * o->d.h : 0, front_fill);
 }
 
+static void shown_part(const PbObj *o, uint32_t ax, uint32_t ay, uint32_t *w, uint32_t *h);
+
 /* FLIP_INCREMENT_WRITE: the frame in the colour target is done; it goes to
  * the display (D3D's vblank handler shows it there too). */
 static void swap(void)
@@ -1130,6 +1198,7 @@ static void swap(void)
     HleCmdSwap *c = begin(HLE_OP_SWAP, sizeof(*c));
     c->value = hle_fe_next_value();
     c->swap_id = ++g_pd.swap_ids;
+    shown_part(g_pd.rt_obj, g_pd.aa_x, g_pd.aa_y, &c->src_w, &c->src_h);
     g_pd.swaps++;
     g_pd.epoch++;
     g_pd.kick_ns = hle_now_ns();
@@ -1166,6 +1235,21 @@ static void fps_log(void)
     }
 }
 
+/* The part of object o the display shows: as many of its pixels from its top
+ * left as the display has (ax x ay samples each: an antialiased target's),
+ * as the NV2A's scanout reads them; it scales nothing. A frame buffer made
+ * taller than the frame (a surface as wide as the display is as tall as it,
+ * and Hunter: The Reckoning - Redeemer's display was its 640 x 960 back
+ * buffer until it set its video mode) shows its frame, not all of itself
+ * squeezed into the display. Whole when it is no bigger, or while the
+ * display's size is a guess (no video mode known: the first target bound). */
+static void shown_part(const PbObj *o, uint32_t ax, uint32_t ay, uint32_t *w, uint32_t *h)
+{
+    const bool crop = o && g_disp_moded && g_pd.disp_w && g_pd.disp_h;
+    *w = crop ? MIN(g_pd.disp_w * MAX(ax, 1u), o->d.w) : 0;
+    *h = crop ? MIN(g_pd.disp_h * MAX(ay, 1u), o->d.h) : 0;
+}
+
 /* id goes on screen as it is now, with no flip: the display scans out the
  * memory it points at */
 static void present_now(uint32_t id)
@@ -1179,6 +1263,7 @@ static void present_now(uint32_t id)
     c->swap_id = ++g_pd.swap_ids;
     c->surf = id;
     c->dump_off = HLE_SWAP_NO_DUMP;
+    shown_part(o, id == g_pd.rt ? g_pd.aa_x : 1, id == g_pd.rt ? g_pd.aa_y : 1, &c->src_w, &c->src_h);
     hle_hitch_pb_swap(c->swap_id);
     hle_hitch_frame(c->swap_id, HLE_FR_FLIP);   /* shown as it is set */
     hle_fe_commit();
@@ -1366,6 +1451,8 @@ void hle_pbd_overlay(bool show)
         s->swap_id = ++g_pd.swap_ids;
         s->surf = g_pd.shown_id;
         s->dump_off = HLE_SWAP_NO_DUMP;
+        shown_part(obj_of(g_pd.shown_id), g_pd.shown_id == g_pd.rt ? g_pd.aa_x : 1,
+                   g_pd.shown_id == g_pd.rt ? g_pd.aa_y : 1, &s->src_w, &s->src_h);
         hle_hitch_pb_swap(s->swap_id);      /* a frame to the monitor, not a gap */
         hle_hitch_frame(s->swap_id, HLE_FR_FLIP);
         hle_fe_commit();

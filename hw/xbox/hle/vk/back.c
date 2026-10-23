@@ -1902,8 +1902,11 @@ static void cmd_swap_present(const HleCmdSwap *c)
         VkImage dst = hle_disp_image(slot);
         uint32_t dw, dh;
         hle_disp_size(&dw, &dh);
+        /* the part of src shown (HleCmdSwap.src_w / src_h), in its pixels */
+        const uint32_t sw = c->src_w ? MIN(src->w, c->src_w * src->scale) : src->w;
+        const uint32_t sh = c->src_h ? MIN(src->h, c->src_h * src->scale) : src->h;
         if (!g_gamma.identity && !g_gamma.off && !hle_disp_gamma_consumer() &&
-            hle_gamma_pass(cb, g_back.cur, g_gamma.rgb, src, dst, dw, dh)) {
+            hle_gamma_pass(cb, g_back.cur, g_gamma.rgb, src, sw, sh, dst, dw, dh)) {
             overlay_blit(cb, dst, dw, dh);
             submit(c->value);           /* through the ramp instead of the blit */
             g_back.st.swaps++;
@@ -1915,7 +1918,7 @@ static void cmd_swap_present(const HleCmdSwap *c)
         VkImageBlit2 r = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
             .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-            .srcOffsets = { { 0, 0, 0 }, { (int32_t)src->w, (int32_t)src->h, 1 } },
+            .srcOffsets = { { 0, 0, 0 }, { (int32_t)sw, (int32_t)sh, 1 } },
             .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
             .dstOffsets = { { 0, 0, 0 }, { (int32_t)dw, (int32_t)dh, 1 } } };
         VkBlitImageInfo2 bi = {

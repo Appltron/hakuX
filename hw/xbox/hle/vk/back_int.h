@@ -85,9 +85,10 @@ void hle_surf_rec_end(void);
 void hle_img_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect,
                      VkImageLayout from, VkImageLayout to);
 void hle_surf_transition(VkCommandBuffer cb, HleVkSurf *s, VkImageLayout to);
-/* gamma.c: the swap's copy through the gamma ramp; false = not done (blit) */
+/* gamma.c: the swap's copy through the gamma ramp of src's top left sw x sh
+ * pixels; false = not done (blit) */
 bool hle_gamma_pass(VkCommandBuffer cb, unsigned slot, const uint8_t ramp[3][256],
-                    HleVkSurf *src, VkImage dst, uint32_t dw, uint32_t dh);
+                    HleVkSurf *src, uint32_t sw, uint32_t sh, VkImage dst, uint32_t dw, uint32_t dh);
 /* zread.c: depth-stencil surface src into colour surface dst as its 32-bit
  * words (HleCmdZRead), outside a pass; slot: the frame's command buffer.
  * NULL = done, else why not. */

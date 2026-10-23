@@ -201,6 +201,8 @@ typedef struct HleCmdSwap {
     uint32_t surf;              /* object id presented */
     uint32_t dump_off;          /* observe shadow: arena space for a copy of surf
                                    (32-bit texels), HLE_SWAP_NO_DUMP = none */
+    uint32_t src_w, src_h;      /* the part of surf shown, from its top left (guest
+                                   pixels, the antialiasing's included); 0: all */
     uint32_t pad;
 } HleCmdSwap;
 

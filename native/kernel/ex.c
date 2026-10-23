@@ -560,6 +560,7 @@ static uint64_t AvSetDisplayMode(NcKernel *k, NcFrame *f, const uint32_t *a)
         /* AV mode bit 30: the 50 Hz modes (PAL 576-line timings, as
          * 0x58030314 is); the 480-line, 480p and HD modes are 60 Hz. */
         nc_dev_nv2a_refresh(a[2] & 0x40000000u ? 50 : 60);
+        nc_dev_nv2a_display_mode(a[4], a[3], a[2] & 0x40000000u ? 50 : 60);
     }
     return 0;
 }

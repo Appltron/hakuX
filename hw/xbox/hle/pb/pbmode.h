@@ -34,6 +34,12 @@ void hle_pb_get(void);
 /* The guest wrote PCRTC_START: the display shows the memory at pa (any
  * thread; the decode thread presents it). */
 void hle_pb_display_start(uint32_t pa);
+/* AvSetDisplayMode (any thread): its frame buffer's pitch and format, the
+ * mode's refresh (50 or 60 Hz); the decoder's display takes its size from
+ * them (hle_pb_display_mode_get: 0s while none was set; its return value
+ * counts the modes set). */
+void hle_pb_display_mode(uint32_t pitch, uint32_t xfmt, unsigned hz);
+uint32_t hle_pb_display_mode_get(uint32_t *pitch, uint32_t *xfmt, unsigned *hz);
 /* The vblank thread, each vblank: when the title hasn't flipped for a while,
  * the decode thread looks whether the CPU changed the frame on screen
  * (hle_pbd_scanout). */
