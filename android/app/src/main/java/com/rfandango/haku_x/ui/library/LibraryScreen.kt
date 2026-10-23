@@ -65,6 +65,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -88,7 +89,9 @@ import com.rfandango.haku_x.data.Game
 import com.rfandango.haku_x.data.GameOverrides
 import com.rfandango.haku_x.data.ModCatalog
 import com.rfandango.haku_x.data.SaveStateStore
+import com.rfandango.haku_x.data.Updates
 import com.rfandango.haku_x.data.XisoConverter
+import com.rfandango.haku_x.ui.update.UpdateDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -103,6 +106,8 @@ fun LibraryScreen(
   vm: LibraryViewModel = viewModel(),
 ) {
   val state by vm.state.collectAsStateWithLifecycle()
+  val update by Updates.available.collectAsStateWithLifecycle()
+  var updateDialog by remember { mutableStateOf(false) }
   LifecycleResumeEffect(Unit) {
     vm.onResume()
     onPauseOrDispose {}
@@ -116,6 +121,16 @@ fun LibraryScreen(
         verticalAlignment = Alignment.CenterVertically,
       ) {
         SearchField(state.query, vm::setQuery, Modifier.weight(1f))
+        // a newer release found by a check: its notes and download
+        if (update != null) {
+          IconButton(onClick = { updateDialog = true }, modifier = Modifier.padding(start = 4.dp)) {
+            Icon(
+              painterResource(R.drawable.ic_update),
+              contentDescription = stringResource(R.string.update_available_icon),
+              tint = MaterialTheme.colorScheme.primary,
+            )
+          }
+        }
         IconButton(onClick = onOpenSettings, modifier = Modifier.padding(start = 4.dp)) {
           Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.settings_title))
         }
@@ -145,6 +160,9 @@ fun LibraryScreen(
     conversion != null -> ConversionDialog(conversion, vm)
     // The refresh after a conversion shows once its dialog is closed.
     state.loading -> LoadingDialog(state.read, state.toRead)
+  }
+  if (updateDialog) {
+    update?.let { UpdateDialog(it, onDismiss = { updateDialog = false }) }
   }
 }
 

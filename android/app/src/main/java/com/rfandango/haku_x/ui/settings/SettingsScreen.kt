@@ -56,6 +56,8 @@ import com.rfandango.haku_x.data.AppPrefs
 import com.rfandango.haku_x.data.Logs
 import com.rfandango.haku_x.data.PreviousVersion
 import com.rfandango.haku_x.data.Storage
+import com.rfandango.haku_x.data.Updates
+import com.rfandango.haku_x.ui.update.UpdateDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -102,6 +104,8 @@ fun SettingsScreen(
   var languageDialog by remember { mutableStateOf(false) }
   var clockOffset by remember { mutableStateOf(prefs.clockOffset) }
   var clockDialog by remember { mutableStateOf(false) }
+  var updateChecking by remember { mutableStateOf(false) }
+  var updateRelease by remember { mutableStateOf<Updates.Release?>(null) }
   var formatDialog by remember { mutableStateOf(false) }
   var cableDialog by remember { mutableStateOf(false) }
   var aspectDialog by remember { mutableStateOf(false) }
@@ -352,6 +356,38 @@ fun SettingsScreen(
         },
       )
 
+      Section(stringResource(R.string.settings_section_updates))
+      ListItem(
+        headlineContent = { Text(stringResource(R.string.settings_update_check)) },
+        supportingContent = {
+          Text(
+            if (updateChecking) stringResource(R.string.settings_update_checking)
+            else stringResource(R.string.settings_update_check_desc, Updates.installedVersion(context))
+          )
+        },
+        modifier = Modifier.clickable(enabled = !updateChecking) {
+          updateChecking = true
+          scope.launch {
+            val found = runCatching { Updates.check(context) }
+            updateChecking = false
+            found.onSuccess { release ->
+              if (release != null) {
+                updateRelease = release
+              } else {
+                Toast.makeText(
+                  context, context.getString(R.string.update_none, Updates.installedVersion(context)), Toast.LENGTH_SHORT,
+                ).show()
+              }
+            }.onFailure {
+              Toast.makeText(
+                context, context.getString(R.string.update_check_failed, it.message ?: it.javaClass.simpleName),
+                Toast.LENGTH_LONG,
+              ).show()
+            }
+          }
+        },
+      )
+
       Section(stringResource(R.string.settings_section_logs))
       ListItem(
         headlineContent = { Text(stringResource(R.string.settings_export_logs)) },
@@ -370,6 +406,7 @@ fun SettingsScreen(
       onDismiss = { languageDialog = false },
     )
   }
+  updateRelease?.let { UpdateDialog(it, onDismiss = { updateRelease = null }) }
   if (clockDialog) {
     ChoiceDialog(
       title = stringResource(R.string.settings_clock),

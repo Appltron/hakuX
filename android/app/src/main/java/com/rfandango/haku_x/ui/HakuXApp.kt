@@ -1,15 +1,20 @@
 package com.rfandango.haku_x.ui
 
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.rfandango.haku_x.R
 import com.rfandango.haku_x.data.Game
 import com.rfandango.haku_x.data.GameOverrides
 import com.rfandango.haku_x.data.SaveStateStore
+import com.rfandango.haku_x.data.Updates
 import com.rfandango.haku_x.ui.controllers.ControllerMappingScreen
 import com.rfandango.haku_x.ui.controllers.ControllersScreen
 import com.rfandango.haku_x.ui.controls.ControlsEditorScreen
@@ -58,6 +63,14 @@ fun HakuXApp(
   onLaunchState: (Game, SaveStateStore, Int) -> Unit,
 ) {
   val nav = rememberNavController()
+  // A newer release on GitHub, looked for once as the app's screens start: told in a toast, the
+  // library's update button then shows it (Updates).
+  val context = LocalContext.current
+  LaunchedEffect(Unit) {
+    Updates.checkAtStart(context)?.let {
+      Toast.makeText(context, context.getString(R.string.update_toast, it.version), Toast.LENGTH_LONG).show()
+    }
+  }
   val start = when {
     needsMigration -> Routes.MIGRATE
     needsSetup -> Routes.SETUP
