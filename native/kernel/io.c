@@ -52,6 +52,7 @@
 #define FILE_DIRECTORY_FILE     0x01u
 #define FILE_SYNCHRONOUS_IO     0x30u /* _ALERT 0x10, _NONALERT 0x20 */
 #define FILE_NON_DIRECTORY_FILE 0x40u
+#define FILE_NO_INTERMEDIATE_BUFFERING 0x08u
 #define STATUS_PENDING          0x00000103u
 
 /* OBJECT_ATTRIBUTES.RootDirectory pseudo-handles (ObDosDevicesDirectory). */
@@ -96,7 +97,7 @@ typedef struct NcFile {
     /* Opened without FILE_SYNCHRONOUS_IO_*: a read or write with an event or
      * APC (on the disc, any) that completes reports STATUS_PENDING, as the
      * Xbox's DMA disk and DVD transfers do, with its result in the
-     * IoStatusBlock (io_finish). */
+     * IoStatusBlock (io_finish); a write only with no_buffering. */
     bool async;
     /* The handle may change the file's data or size (its DesiredAccess has
      * FILE_WRITE_DATA / FILE_APPEND_DATA, GENERIC_WRITE / _ALL or
@@ -109,6 +110,13 @@ typedef struct NcFile {
      * once, a savestate's copy of the drive left it out, and the state
      * couldn't reopen it. */
     bool del;
+    /* Opened with FILE_NO_INTERMEDIATE_BUFFERING: its writes go to the disk
+     * and pend (async). Without it they go through the file system's cache
+     * and complete in the call, as on the Xbox: Breakdown copies an area to
+     * its cache partition in 16 KiB overlapped writes and takes a write that
+     * pends for a failed one; its copy stopped after the first, and the area
+     * then loaded from a file of zeros (no room drawn, nor in cutscenes). */
+    bool no_buffering;
 } NcFile;
 
 /* DesiredAccess bits that grant writing the data. */
@@ -1054,6 +1062,7 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
     }
     snprintf(nf->path, sizeof(nf->path), "%s", path);
     nf->async = !(options & FILE_SYNCHRONOUS_IO);
+    nf->no_buffering = (options & FILE_NO_INTERMEDIATE_BUFFERING) != 0;
     nf->can_write = (access & ACCESS_WRITES) != 0;
     nc_kernel_trace_trigger(path);
     *handle = file_handle(k, nf);
@@ -1402,7 +1411,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                (unsigned long long)off, a[6], a[5], st, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
     }
     nf->pos = off + (n > 0 ? (uint64_t)n : 0);
-    return io_finish(k, nf, a, st, n > 0 ? (uint32_t)n : 0, true);
+    return io_finish(k, nf, a, st, n > 0 ? (uint32_t)n : 0, nf->no_buffering);   /* cached: in the call */
 }
 
 /* ---------------------------------------------------------- information */

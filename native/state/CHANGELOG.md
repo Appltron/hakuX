@@ -19,3 +19,8 @@ One entry per section version (tools/native/statelock.py).
 
 - a timer's APC routine, context and thread (NtSetTimerEx's TimerApcRoutine, delivered at expiry)
 - upgraded: v1..v1 states load
+
+## FILE v3 (2026-10-23, after e9b90ac2d6)
+
+- NcFile.no_buffering: a handle opened with FILE_NO_INTERMEDIATE_BUFFERING; only its writes pend (v2 states: buffered, writes complete in the call)
+- upgraded: v1..v2 states load
