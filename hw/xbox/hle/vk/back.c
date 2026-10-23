@@ -1094,7 +1094,8 @@ static void rtd_write(uint64_t value)
  * draw, its program and textures, a push-buffer run's or not) with the
  * texel before and after, and the constants of the draws that changed it.
  * "...@n" anywhere in the value starts recording at the n-th such draw or
- * clear (a frame of more than PIX_MAX: Blinx draws ~17k strips a frame). */
+ * clear (a frame of more than PIX_MAX: Blinx draws ~17k strips a frame);
+ * "k" anywhere: every program draw's constants (draws that miss the texel). */
 #define PIX_MAX 2048
 typedef struct PixRec {
     uint32_t draw, rt, ds, kind;        /* kind: 0 draw, 1 clear */
@@ -1113,6 +1114,7 @@ static struct {
     PixRec *rec;
     uint32_t n;
     uint32_t skip, seen;                /* "@n": the records before the n-th left out */
+    bool all_k;                         /* "k": every program draw's constants */
 } g_pix;
 
 static void pix_poll(void)
@@ -1134,6 +1136,7 @@ static void pix_poll(void)
             g_pix.id = id;
             const char *at = strchr(v, '@');
             g_pix.skip = at ? (uint32_t)strtoul(at + 1, NULL, 10) : 0;
+            g_pix.all_k = strchr(v, 'k') != NULL;
             g_pix.next = true;
         }
     }
@@ -1265,7 +1268,7 @@ static void pix_write(uint64_t value)
                 }
             }
             fprintf(f, "\n");
-            if (changed && known && !r->kind && r->c.vsh) {
+            if (((changed && known) || g_pix.all_k) && !r->kind && r->c.vsh) {
                 changes++;
                 for (unsigned k = 0; k < 192; k++) {
                     const float *v = r->k[k];
