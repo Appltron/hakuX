@@ -40,6 +40,12 @@ enum {
      * preceded by an empty one of one pixel that clears depth, whose end
      * stores the cleared state (back.c open_pass). */
     HLE_QUIRK_LRZ_CLEAR = 1u << 3,
+    /* A pipeline without a colour attachment sets the blend constants to
+     * zero but keeps the ones set last as current: set again unchanged they
+     * record nothing, and draws blending by them use zero. The first colour
+     * draw after such a pipeline sets other constants before its own
+     * (vk/draw.c). */
+    HLE_QUIRK_BLEND_CONST_RESET = 1u << 4,
 };
 
 extern uint32_t g_hle_quirks;

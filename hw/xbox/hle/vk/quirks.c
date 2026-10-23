@@ -49,6 +49,11 @@ static const HleQuirk k_quirks[] = {
      * backdrop with the depth test off, then the model. TU_DEBUG=nolrzfc
      * (LRZ cleared by a blit) drew them right (2026-10-22). */
     { HLE_QUIRK_LRZ_CLEAR, "lrz_clear", mesa_turnip },
+    /* Turnip (tu_pipeline.cc: no colour attachments, a static dummy blend
+     * group): Fatal Frame's afterimage (CONSTANT_ALPHA over the last frame)
+     * dropped out on the frames whose post pass shared a command buffer with
+     * its depth-only shadow pass, and the scene flickered (2026-10-23). */
+    { HLE_QUIRK_BLEND_CONST_RESET, "blend_const_reset", mesa_turnip },
 };
 
 static uint32_t g_defaults;

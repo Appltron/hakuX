@@ -2633,6 +2633,8 @@ static struct {
     uint32_t cull, ff, topo, zt, zw, zop, bias_en, stn, sop[4], smask, swmask, sref;
     uint32_t sraw[4];               /* the registers sop was translated from */
     float bias[2], bc[4];
+    bool bc_lost;                   /* a pipeline without colour zeroed the driver's
+                                       blend constants (HLE_QUIRK_BLEND_CONST_RESET) */
     uint32_t nbd, nad;
     VkVertexInputBindingDescription2EXT bd[HLE_DRAW_MAX_BIND];
     VkVertexInputAttributeDescription2EXT ad[HLE_DRAW_ATTRS];
@@ -2666,6 +2668,7 @@ void hle_draw_rec_begin(VkCommandBuffer cb)
 void hle_draw_state_lost(void)
 {
     memset(&g_rec, 0, sizeof(g_rec));   /* also what a draw does not record */
+    g_rec.bc_lost = hle_quirk(HLE_QUIRK_BLEND_CONST_RESET);    /* whatever was bound */
 }
 
 /* A strip batch bound its own index buffer (batch.c). */
@@ -3257,6 +3260,7 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
         } else if (hle_quirk(HLE_QUIRK_VI_AFTER_PIPELINE)) {
             g_rec.nbd = UINT32_MAX;     /* the vertex input is recorded again (quirks.h) */
         }
+        g_rec.bc_lost |= !k.cfmt && hle_quirk(HLE_QUIRK_BLEND_CONST_RESET);
     }
     if (!g_rec.valid) {                 /* the bindless set never changes */
         T.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_dr.layout, 0, 1,
@@ -3463,8 +3467,16 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
     }
     float bcf[4] = { ((bc >> 16) & 0xFF) / 255.0f, ((bc >> 8) & 0xFF) / 255.0f,
                      (bc & 0xFF) / 255.0f, (bc >> 24) / 255.0f };
-    if (!g_rec.valid || memcmp(g_rec.bc, bcf, sizeof(bcf))) {
+    /* HLE_QUIRK_BLEND_CONST_RESET: the first colour draw after a pipeline
+     * without colour sets other constants first, so its own are recorded */
+    bool bc_reset = g_rec.bc_lost && k.cfmt;
+    if (!g_rec.valid || memcmp(g_rec.bc, bcf, sizeof(bcf)) || bc_reset) {
         memcpy(g_rec.bc, bcf, sizeof(bcf));
+        if (bc_reset) {
+            const float other[4] = { bcf[0], bcf[1], bcf[2], bcf[3] == 0.0f ? 1.0f : 0.0f };
+            T.vkCmdSetBlendConstants(cb, other);
+            g_rec.bc_lost = false;
+        }
         T.vkCmdSetBlendConstants(cb, bcf);
         g_dr.emits[EM_DYN]++;
     }
