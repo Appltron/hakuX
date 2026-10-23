@@ -2052,6 +2052,54 @@ typedef struct PalHash {
 } PalHash;
 static PalHash g_pal_hash[PAL_HASHES];
 
+/* A linear texture over memory a colour target with its pitch and texel size
+ * covers from an earlier address (a part of it, past its first row or texel):
+ * that part of the target, copied by the GPU into the texture's image (the
+ * object there, dst, else a new one) when the target was drawn after the
+ * image was last written, before the draw that samples it (the NV2A reads
+ * the memory before the draw writes it). Breakdown draws its 640 x 448 scene
+ * at row 16 of a 640 x 480 frame buffer, into a target of its own there or
+ * the frame buffer clipped to it, and samples it from row 16 for its post
+ * pass: from memory, which holds nothing the GPU drew, or the target there
+ * not drawn this frame, the pass painted the scene black under its HUD. 0:
+ * no such target. */
+static uint32_t target_part(uint32_t pa, uint32_t code, const HleFmtInfo *fi, uint32_t pitch,
+                            uint32_t w, uint32_t h, PbObj *dst)
+{
+    PbObj *src = NULL;
+    for (unsigned i = 0; i < g_pd.nobjs; i++) {
+        PbObj *o = &g_pd.objs[i];
+        const HleFmtInfo *oi = !o->cube && o->d.pitch == pitch && !o->d.parent ? hle_fmt_info(o->d.xfmt) : NULL;
+        if (oi && !(oi->flags & HLE_FI_DEPTH) && oi->bpp == fi->bpp && o->d.pa < pa &&
+            pa - o->d.pa < pitch * o->d.h && (!src || o->written > src->written)) {
+            src = o;
+        }
+    }
+    const uint32_t bytes = fi->bpp / 8, rel = src ? pa - src->d.pa : 0;
+    const uint32_t x = bytes ? rel % pitch / bytes : 0, y = src ? rel / pitch : 0;
+    if (!src || !bytes || rel % pitch % bytes || x + w > src->d.w || y + h > src->d.h || !src->written ||
+        (dst && src->written <= dst->written)) {
+        return dst ? dst->id : 0;           /* the image there is the newer */
+    }
+    if (!dst) {
+        dst = obj_of(object(pa, code, pitch, w, h));
+        if (!dst || dst == src) {
+            return 0;
+        }
+    }
+    rt_cpu_sync(src->id);
+    HleCmdCopy *c = begin(HLE_OP_COPY, sizeof(*c));
+    memset(c, 0, sizeof(*c));
+    c->src = src->id;
+    c->dst = dst->id;
+    c->nrects = 1;
+    c->rect[0] = (HleRect){ (int32_t)x, (int32_t)y, (int32_t)(x + w), (int32_t)(y + h) };
+    hle_fe_commit();
+    hle_mem_written(pa, pitch * h);         /* the image holds the copy, not the memory */
+    dst->written = ++g_pd.wseq;
+    return dst->id;
+}
+
 /* The texture stage s samples: the object id, 0 if it can't be drawn;
  * *unset when the stage has none (CONTROL0 disabled). */
 static uint32_t texture(unsigned s, bool *unset)
@@ -2114,6 +2162,16 @@ static uint32_t texture(unsigned s, bool *unset)
     }
     if (best) {
         rt_cpu_sync(best->id);
+    }
+    if (fi && (fi->flags & HLE_FI_LIN) && !want_depth && !dxt && (!best || best->d.pitch)) {
+        const uint32_t rect = R(NV097_SET_TEXTURE_IMAGE_RECT + b);
+        const uint32_t part = target_part(pa, code, fi, R(NV097_SET_TEXTURE_CONTROL1 + b) >> 16,
+                                          rect >> 16, rect & 0xFFFF, best);
+        if (part) {
+            return part;
+        }
+    }
+    if (best) {
         return best->id;
     }
     uint32_t pal_reg = code == HLE_XFMT_P8 ? R(NV097_SET_TEXTURE_PALETTE + b) : 0;
