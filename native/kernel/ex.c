@@ -142,6 +142,14 @@ void nc_kernel_set_language(int language)
     g_language = language >= 1 && language <= 9 ? language : 0;
 }
 
+/* The app's time zone (nc_kernel_set_time_zone): minutes east of UTC. */
+static int g_tz_minutes;
+
+void nc_kernel_set_time_zone(int minutes_east)
+{
+    g_tz_minutes = minutes_east;
+}
+
 /* The Xbox EEPROM section checksum: ones' complement of the carry-folded sum. */
 static uint32_t eeprom_checksum(const uint8_t *p, unsigned len)
 {
@@ -225,10 +233,17 @@ static uint8_t *eeprom(NcKernel *k)
         if (g_language) {
             nc_wr32(g_eeprom + 0x90, (uint32_t)g_language);
         }
+        /* And the time zone, the phone's: its offset from UTC now as the
+         * bias (UTC = local time + bias, minutes), without daylight saving
+         * rules of its own (no names, dates or standard / daylight biases). */
+        nc_wr32(g_eeprom + 0x64, (uint32_t)-g_tz_minutes);
+        memset(g_eeprom + 0x68, 0, 8);
+        memset(g_eeprom + 0x78, 0, 8);
+        memset(g_eeprom + 0x88, 0, 8);
         eeprom_seal();
         g_eeprom_ready = true;
-        nc_log("hakuX-native", "ex: video flags %08x, AV pack %d, language %u", nc_rd32(g_eeprom + 0x94), g_av_pack,
-               nc_rd32(g_eeprom + 0x90));
+        nc_log("hakuX-native", "ex: video flags %08x, AV pack %d, language %u, time zone bias %d min",
+               nc_rd32(g_eeprom + 0x94), g_av_pack, nc_rd32(g_eeprom + 0x90), (int32_t)nc_rd32(g_eeprom + 0x64));
     }
     return g_eeprom;
 }

@@ -121,6 +121,14 @@ class AppPrefs(context: Context) {
     get() = sp.getString(KEY_LANGUAGE, LANG_AUTO) ?: LANG_AUTO
     set(value) = sp.edit { putString(KEY_LANGUAGE, value) }
 
+  /**
+   * The console's clock: null, the phone's time; set by hand, its distance from the phone's (ms),
+   * so that it runs on from what was set, as a console's does.
+   */
+  var clockOffset: Long?
+    get() = if (sp.contains(KEY_CLOCK_OFFSET)) sp.getLong(KEY_CLOCK_OFFSET, 0L) else null
+    set(value) = sp.edit { if (value == null) remove(KEY_CLOCK_OFFSET) else putLong(KEY_CLOCK_OFFSET, value) }
+
   /** The game about to run: NativeCoreActivity falls back to dvdUri. */
   fun rememberLaunch(uri: Uri, relativePath: String?, title: String?) {
     sp.edit(commit = true) {
@@ -185,6 +193,7 @@ class AppPrefs(context: Context) {
     const val AV_SVIDEO = "svideo"
     private const val KEY_LANGUAGE = "console_language"
     const val LANG_AUTO = "auto"
+    private const val KEY_CLOCK_OFFSET = "console_clock_offset"
 
     /** The Xbox's languages, in XC_LANGUAGE order (1 English ... 9 Portuguese). */
     val XBOX_LANGUAGES = listOf("en", "ja", "de", "fr", "es", "it", "ko", "zh", "pt")

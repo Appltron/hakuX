@@ -43,11 +43,16 @@ enum {
 /* The Xbox's performance counter runs at the ACPI timer's 3.375 MHz. */
 #define PERF_FREQUENCY 3375000ull
 
-/* 2001-01-01 as a FILETIME (100 ns since 1601). */
+/* The system time's origin, 2001-01-01 as a FILETIME (100 ns since 1601):
+ * the system time is it + g_time_offset + the guest's time since boot. */
 #define BOOT_FILETIME 0x01C0739BEB8F8000ull
 
 static uint64_t g_boot_ns;
-static uint64_t g_time_offset; /* NtSetSystemTime, 100 ns (wraps for negative) */
+/* The console's clock at boot past BOOT_FILETIME (the phone's time, moved by
+ * the settings: clock_boot), and what NtSetSystemTime moved it since; 100 ns
+ * (wraps for negative). A savestate keeps it. */
+static uint64_t g_time_offset;
+static int64_t g_clock_ms;      /* nc_kernel_set_clock */
 
 /* One clock read per kernel entry. On the RP5 a read traps to the host
  * kernel, which emulates the counter (~160 ns, CLOCK_MONOTONIC and
@@ -1129,6 +1134,28 @@ static uint64_t NtSetSystemTime(NcKernel *k, NcFrame *f, const uint32_t *a)
     return NC_STATUS_SUCCESS;
 }
 
+void nc_kernel_set_clock(int64_t offset_ms)
+{
+    g_clock_ms = offset_ms;
+}
+
+/* The console's clock at boot: the phone's time moved by the settings'
+ * offset, never before BOOT_FILETIME. */
+static void clock_boot(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    /* Unix time is 11644473600 s past the FILETIME's 1601 */
+    const int64_t t = ((int64_t)ts.tv_sec + 11644473600ll) * 10000000ll + ts.tv_nsec / 100 + g_clock_ms * 10000;
+    g_time_offset = t > (int64_t)BOOT_FILETIME ? (uint64_t)t - BOOT_FILETIME : 0;
+    const time_t s = (time_t)((BOOT_FILETIME + g_time_offset) / 10000000u) - (time_t)11644473600ll;
+    struct tm tm;
+    gmtime_r(&s, &tm);
+    nc_log("hakuX-native", "ke: console clock %04d-%02d-%02d %02d:%02d:%02d UTC, %s", tm.tm_year + 1900,
+           tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
+           g_clock_ms ? "as set in the settings" : "the phone's time");
+}
+
 /* KeQueryInterruptTime() -> 100 ns since boot */
 static uint64_t KeQueryInterruptTime(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
@@ -1207,6 +1234,7 @@ static uint64_t KeNoBoost(NcKernel *k, NcFrame *f, const uint32_t *a)
 void nc_ke_register(NcKernel *k)
 {
     g_boot_ns = nc_ke_now_ns();
+    clock_boot();
     nc_ke_update_time(k);
 
     nc_kernel_impl(k, "KeInitializeEvent", KeInitializeEvent);

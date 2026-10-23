@@ -557,6 +557,14 @@ EXPORT int SDL_main(int argc, char *argv[])
             nc_kernel_set_language(atoi(argv[i] + 5));
             nc_log("hakuX-app", "console language %s", argv[i] + 5);
         }
+        /* The console's clock: clock=<ms> its distance from the phone's time
+         * (none: the phone's), tz=<minutes east of UTC> the phone's zone. */
+        if (!strncmp(argv[i], "clock=", 6)) {
+            nc_kernel_set_clock(strtoll(argv[i] + 6, NULL, 10));
+        }
+        if (!strncmp(argv[i], "tz=", 3)) {
+            nc_kernel_set_time_zone(atoi(argv[i] + 3));
+        }
         /* vkdriver=<driver dir>|<library>|<hook library dir>: the custom
          * Vulkan driver chosen in the settings (Turnip), via adrenotools. */
         if (!strncmp(argv[i], "vkdriver=", 9)) {

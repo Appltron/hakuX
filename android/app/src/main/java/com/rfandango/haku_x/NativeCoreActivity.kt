@@ -45,6 +45,7 @@ import com.rfandango.haku_x.data.XboxDisc
 import com.rfandango.haku_x.input.PadRouter
 import com.rfandango.haku_x.overlay.OverlayEditorBar
 import java.io.File
+import java.util.TimeZone
 import org.libsdl.app.SDLActivity
 
 /**
@@ -159,6 +160,10 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     args += "video=%x".format(settings.videoFlags())
     args += "avpack=${settings.avPack}"
     args += "lang=${settings.xboxLanguage()}"
+    /* The console's clock (the phone's time, or as set in the settings) and
+     * the phone's time zone. */
+    AppPrefs(this).clockOffset?.let { args += "clock=$it" }
+    args += "tz=${TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000}"
     /* Shaders compiled off the render thread (draws needing one skipped
      * meanwhile), and the ones cached built before the game starts. */
     args += "asyncpipe=${if (settings.asyncShaders) 1 else 0}"

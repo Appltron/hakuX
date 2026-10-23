@@ -351,6 +351,15 @@ void nc_kernel_set_video(int64_t flags, int av_pack);
  * 7 Korean, 8 Chinese (traditional), 9 Portuguese. Before the title starts;
  * any other value keeps the stored one. */
 void nc_kernel_set_language(int language);
+
+/* The console's clock and time zone, before the title starts. ke.c: its
+ * time at boot is the phone's (CLOCK_REALTIME) moved by offset_ms, the
+ * distance the settings set it from the phone's (0: the phone's time); it
+ * runs with the guest's time from there, and a savestate goes on from its
+ * own. ex.c: the EEPROM's time zone, which XAPI's local time comes from: the
+ * phone's offset from UTC, minutes east. */
+void nc_kernel_set_clock(int64_t offset_ms);
+void nc_kernel_set_time_zone(int minutes_east);
 void nc_kernel_apu_spin(NcKernel *k, NcFrame *f);
 
 /* seh.c: RtlRaiseException and RtlUnwind, and their stubs. */

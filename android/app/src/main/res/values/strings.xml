@@ -103,6 +103,11 @@
   <string name="settings_language">Language</string>
   <string name="settings_language_desc">Games show their text and speech in it where they have it; the others keep their own. Takes effect at the next game start.</string>
   <string name="settings_language_auto">Auto: the phone\'s (%1$s)</string>
+  <string name="settings_clock">Clock</string>
+  <string name="settings_clock_desc">Games date their saves by it, and some hold events on given days. Takes effect at the next game start; a savestate goes on from the time it was made at.</string>
+  <string name="settings_clock_phone">The phone\'s time</string>
+  <string name="settings_clock_set_pick">Set by hand…</string>
+  <string name="settings_clock_set">Set by hand: %1$s on the console now</string>
   <string name="settings_section_console_video">Console video</string>
   <string name="settings_console_video_desc">The Xbox\'s own video settings, as its dashboard sets them. Games that support a mode use it: widescreen, progressive and HD resolutions. Takes effect at the next game start.</string>
   <string name="settings_screen_format">Screen format</string>

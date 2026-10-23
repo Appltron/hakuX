@@ -1,6 +1,11 @@
 package com.rfandango.haku_x.ui.settings
 
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+import android.content.Context
 import android.net.Uri
+import android.text.format.DateFormat
+import android.text.format.DateUtils
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -55,6 +60,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Calendar
+import java.util.GregorianCalendar
 
 /** What the core reads at game start, plus the games folders the library scans. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -93,6 +100,8 @@ fun SettingsScreen(
   var avPack by remember { mutableStateOf(prefs.avPack) }
   var language by remember { mutableStateOf(prefs.language) }
   var languageDialog by remember { mutableStateOf(false) }
+  var clockOffset by remember { mutableStateOf(prefs.clockOffset) }
+  var clockDialog by remember { mutableStateOf(false) }
   var formatDialog by remember { mutableStateOf(false) }
   var cableDialog by remember { mutableStateOf(false) }
   var aspectDialog by remember { mutableStateOf(false) }
@@ -241,6 +250,11 @@ fun SettingsScreen(
         },
         modifier = Modifier.clickable { languageDialog = true },
       )
+      ListItem(
+        headlineContent = { Text(stringResource(R.string.settings_clock)) },
+        supportingContent = { Text(clockLabel(clockOffset) + ". " + stringResource(R.string.settings_clock_desc)) },
+        modifier = Modifier.clickable { clockDialog = true },
+      )
 
       Section(stringResource(R.string.settings_section_console_video))
       Text(
@@ -354,6 +368,27 @@ fun SettingsScreen(
       current = language,
       onPick = { language = it; prefs.language = it; languageDialog = false },
       onDismiss = { languageDialog = false },
+    )
+  }
+  if (clockDialog) {
+    ChoiceDialog(
+      title = stringResource(R.string.settings_clock),
+      options = listOf(false to stringResource(R.string.settings_clock_phone),
+                       true to stringResource(R.string.settings_clock_set_pick)),
+      current = clockOffset != null,
+      onPick = { set ->
+        clockDialog = false
+        if (set) {
+          pickClock(context, System.currentTimeMillis() + (clockOffset ?: 0L)) {
+            clockOffset = it - System.currentTimeMillis()
+            prefs.clockOffset = clockOffset
+          }
+        } else {
+          clockOffset = null
+          prefs.clockOffset = null
+        }
+      },
+      onDismiss = { clockDialog = false },
     )
   }
   if (formatDialog) {
@@ -478,6 +513,40 @@ internal fun languageLabel(value: String) =
   } else {
     LANGUAGE_NAMES[value] ?: value
   }
+
+/** The console's clock: the phone's time, or the time set by hand it shows now. */
+@Composable
+private fun clockLabel(offset: Long?) =
+  if (offset == null) {
+    stringResource(R.string.settings_clock_phone)
+  } else {
+    val now = System.currentTimeMillis() + offset
+    stringResource(
+      R.string.settings_clock_set,
+      DateUtils.formatDateTime(
+        LocalContext.current, now,
+        DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_YEAR or DateUtils.FORMAT_SHOW_TIME,
+      ),
+    )
+  }
+
+/**
+ * The console's date (2001-2099), then its time, from the given moment (ms), in the phone's own
+ * pickers (they fit a landscape screen); onSet gets the moment picked.
+ */
+private fun pickClock(context: Context, from: Long, onSet: (Long) -> Unit) {
+  val c = Calendar.getInstance().apply { timeInMillis = from }
+  val date = DatePickerDialog(context, { _, year, month, day ->
+    TimePickerDialog(context, { _, hour, minute ->
+      c.set(year, month, day, hour, minute, 0)
+      c.set(Calendar.MILLISECOND, 0)
+      onSet(c.timeInMillis)
+    }, c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), DateFormat.is24HourFormat(context)).show()
+  }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH))
+  date.datePicker.minDate = GregorianCalendar(2001, Calendar.JANUARY, 1).timeInMillis
+  date.datePicker.maxDate = GregorianCalendar(2099, Calendar.DECEMBER, 31).timeInMillis
+  date.show()
+}
 
 internal fun formatLabel(value: String) = when (value) {
   AppPrefs.FORMAT_LETTERBOX -> R.string.settings_format_letterbox
