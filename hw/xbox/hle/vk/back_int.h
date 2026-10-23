@@ -112,11 +112,12 @@ void hle_surf_sample_views(HleVkSurf *s, VkImageView *view, VkImageView *cube);
  * whatever passes on it wrote there (its sampled views say so). */
 bool hle_surf_x_alpha(const HleVkSurf *s);
 
-/* An 8-bit target (NV2A B8, R8 here) stores the colour's blue channel: the
- * fragment shaders write .bgra and clears swap red and blue. */
+/* An 8-bit target (NV2A B8, R8 here) stores the colour's blue channel, a
+ * G8B8 one (R8G8) blue and green: the fragment shaders write .bgra and clears
+ * swap red and blue. */
 static inline bool hle_surf_out_bgra(VkFormat f)
 {
-    return f == VK_FORMAT_R8_UNORM;
+    return f == VK_FORMAT_R8_UNORM || f == VK_FORMAT_R8G8_UNORM;
 }
 
 /* draw.c (P3) */

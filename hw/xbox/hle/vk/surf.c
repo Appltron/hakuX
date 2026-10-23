@@ -126,6 +126,9 @@ static VkFormat surf_format(uint32_t xfmt, VkImageAspectFlags *aspect, uint32_t 
     case HLE_XFMT_L8: case HLE_XFMT_LIN_L8:     /* NV2A B8: the blue channel */
         *bytes = 1;
         return VK_FORMAT_R8_UNORM;
+    case HLE_XFMT_G8B8: case HLE_XFMT_LIN_G8B8: /* B in the low byte (R), G the high */
+        *bytes = 2;
+        return VK_FORMAT_R8G8_UNORM;
     case HLE_XFMT_L16: case HLE_XFMT_LIN_L16:   /* a depth buffer's halves (zread) */
         *bytes = 2;
         return attach_ok(VK_FORMAT_R16_UNORM, false) ? VK_FORMAT_R16_UNORM : VK_FORMAT_UNDEFINED;
@@ -726,6 +729,10 @@ void hle_surf_sample_views(HleVkSurf *s, VkImageView *view, VkImageView *cube)
             vci.components = (VkComponentMapping){
                 VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
                 VK_COMPONENT_SWIZZLE_ONE };
+        } else if (s->fmt == VK_FORMAT_R8G8_UNORM) {    /* G8B8: (b, g, b, g), its texture map */
+            vci.components = (VkComponentMapping){
+                VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R,
+                VK_COMPONENT_SWIZZLE_G };
         } else if (hle_surf_x_alpha(s)) {
             /* GTA San Andreas's shadow camera renders its silhouette into an
              * X8R8G8B8 target (alpha 0 where the ped is) and resamples it

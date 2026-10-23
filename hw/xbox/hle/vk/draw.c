@@ -777,8 +777,9 @@ static uint32_t surf_slot(HleVkSurf *s)
     VkImageLayout layout = s->general ? VK_IMAGE_LAYOUT_GENERAL
                                       : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     if (s->general || !(s->aspect & VK_IMAGE_ASPECT_COLOR_BIT) ||
-        s->fmt == VK_FORMAT_R8_UNORM || s->fmt == VK_FORMAT_R16_UNORM || hle_surf_x_alpha(s)) {
-        /* depth: the depth aspect alone; B8, L16: the luminance swizzle;
+        s->fmt == VK_FORMAT_R8_UNORM || s->fmt == VK_FORMAT_R16_UNORM ||
+        s->fmt == VK_FORMAT_R8G8_UNORM || hle_surf_x_alpha(s)) {
+        /* depth: the depth aspect alone; B8, L16: the luminance swizzle; G8B8 (b, g, b, g);
          * X8R8G8B8 and X1R5G5B5: alpha 1 */
         hle_surf_sample_views(s, &view, &cube);
     }
@@ -1086,7 +1087,7 @@ void hle_draw_tex_prep(const HleCmdDraw *c, uint32_t rt_id, VkCommandBuffer cb)
 #define SNAP_MAX 4
 static struct {
     VkFormat fmt;
-    uint32_t w, h, swz;                 /* swz: hle_surf_sample_views' swizzle (1 B8, 2 X8) */
+    uint32_t w, h, swz;                 /* swz: hle_surf_sample_views' swizzle (1 B8, 2 X8, 3 G8B8) */
     VkImage img;
     VkDeviceMemory mem;
     VkImageView view;
@@ -1125,7 +1126,8 @@ bool hle_draw_snap_needed(const HleCmdDraw *c, uint32_t rt_id)
 
 static int snap_get(const HleVkSurf *rt)
 {
-    uint32_t swz = rt->fmt == VK_FORMAT_R8_UNORM ? 1 : hle_surf_x_alpha(rt) ? 2 : 0;
+    uint32_t swz = rt->fmt == VK_FORMAT_R8_UNORM ? 1 : hle_surf_x_alpha(rt) ? 2 :
+                   rt->fmt == VK_FORMAT_R8G8_UNORM ? 3 : 0;
     for (unsigned i = 0; i < g_nsnap; i++) {
         if (g_snap[i].fmt == rt->fmt && g_snap[i].w == rt->w && g_snap[i].h == rt->h &&
             g_snap[i].swz == swz) {
@@ -1163,6 +1165,9 @@ static int snap_get(const HleVkSurf *rt)
                                                VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE };
     } else if (swz == 2) {
         vci.components.a = VK_COMPONENT_SWIZZLE_ONE;
+    } else if (swz == 3) {
+        vci.components = (VkComponentMapping){ VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,
+                                               VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G };
     }
     if (mt < 0 || T.vkAllocateMemory(g_hvk.dev, &mai, NULL, &s->mem) != VK_SUCCESS ||
         T.vkBindImageMemory(g_hvk.dev, s->img, s->mem, 0) != VK_SUCCESS ||
