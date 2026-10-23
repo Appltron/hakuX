@@ -27,10 +27,17 @@ NODES       equ 0x114           ; object: node matrices' size (word), offset (wo
 TVAL        equ 0x00            ; t
 WRITTEN     equ 0x04            ; CUR holds values (byte)
 AMAX        equ 0x08            ; the largest recent tick fraction
+USED        equ 0x10            ; the last tick's snapshot: bytes, objects, objects left out
+NSEEN       equ 0x14            ; (for debugging: NC_PEEK=*11800:32)
+NSKIP       equ 0x18
+PASSF       equ 0x1C            ; the snapshot's pass: 2 characters, vehicles, creatures; 1 the
+                                ; rest that moves
+OFFV        equ 0x20            ; nonzero: no blending (an A/B switch, poked; the code isn't
+                                ; patched at runtime: the JIT keeps its translation)
 TAB         equ 0x40            ; per object index, 16 bytes: +0 object, +4 salt,
 NTAB        equ 2048            ; +6 bytes (position + nodes, 0: none), +8 offset
 TABSZ       equ NTAB * 16       ; in PREV / CUR, +12 written
-AREA        equ 0x30000
+AREA        equ 0x30000         ; Cairo Station: 45 bipeds' nodes are 120 KB of ~178 KB
 PREV        equ TAB + TABSZ
 CUR         equ PREV + AREA
 BUFSZ       equ CUR + AREA
@@ -55,16 +62,60 @@ pre_tick:
     mov ebp, eax
 .have:
     call objects
+    mov [ebp+NSEEN], ecx
+    and dword [ebp+NSKIP], 0
+    and dword [ebp+USED], 0
     jecxz .done
-    xor edx, edx
-.loop:
+    push ecx
+    push edi
+.clear:
     mov word [edi+6], 0
+    add edi, 16
+    dec ecx
+    jnz .clear
+    pop edi
+    pop ecx
+    ; Only the types that move, and the characters first: in the array's
+    ; order the level's scenery filled the area and the characters spawned
+    ; after it were left out (Cairo Station: 137 of 736 objects).
+    push 2
+    pop eax
+    call snap_pass
+    push 1
+    pop eax
+    call snap_pass
+.done:
+    popad
+    jmp TICK_FN
+
+; one pass over the ecx headers at esi (the table at edi), from [ebp+USED]
+; on: eax = 2 the objects of the types in c_first, 1 the other types in
+; c_movers
+snap_pass:
+    pushad
+    mov [ebp+PASSF], eax
+    mov edx, [ebp+USED]
+.loop:
     mov ax, [esi]
     test ax, ax
     jz .next
     mov ebx, [esi+8]
     test ebx, ebx
     jz .next
+    movzx eax, byte [esi+3]     ; the object's type
+    push edx
+    xor edx, edx
+    cmp eax, 31
+    ja .typed
+    bt dword [c_movers], eax
+    adc edx, 0
+    bt dword [c_first], eax
+    adc edx, 0
+.typed:
+    cmp edx, [ebp+PASSF]
+    pop edx
+    jne .next
+    mov ax, [esi]
     mov [edi+4], ax
     mov [edi], ebx
     call nodes_size             ; eax = 12 + the node bytes
@@ -72,7 +123,7 @@ pre_tick:
     add eax, edx
     cmp eax, AREA
     pop eax
-    ja .next
+    ja .full
     mov [edi+6], ax
     mov [edi+8], edx
     pushad
@@ -90,14 +141,17 @@ pre_tick:
 .nonodes:
     popad
     add edx, eax
+    jmp .next
+.full:
+    inc dword [ebp+NSKIP]
 .next:
     add esi, 12
     add edi, 16
     dec ecx
     jnz .loop
-.done:
+    mov [ebp+USED], edx
     popad
-    jmp TICK_FN
+    ret
 
 ; ---- the call of the frame's ticks (0x12B632)
 after_ticks:
@@ -147,6 +201,8 @@ interp:
     call restore                ; (ebp = buf)
     test ebp, ebp
     jz .ret
+    cmp byte [ebp+OFFV], 0
+    jne .ret
     mov eax, [GAME_TIME]
     test eax, eax
     jz .ret
@@ -241,7 +297,8 @@ restore:
     je .ret
     mov byte [ebp+WRITTEN], 0
     call objects
-    jecxz .ret
+    test ecx, ecx
+    jz .ret
 .loop:
     cmp byte [edi+12], 0
     je .next
@@ -296,6 +353,12 @@ check:
     inc eax
     ret
 
+; the object types that move: biped, vehicle, weapon, equipment, garbage,
+; projectile, machine (doors, lifts), creature; not scenery, crates (Cairo:
+; 193 of them, 12 KB), controls, lights or sound scenery. Bipeds, vehicles
+; and creatures first.
+c_movers: dd (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 7) | (1 << 12)
+c_first: dd (1 << 0) | (1 << 1) | (1 << 12)
 c_decay: dd 0.99
 c_jump2: dd 16.0
 code_end:

@@ -35,7 +35,7 @@ def main():
             if sva <= va < sva + rsize:
                 o = raw + va - sva
                 return d[o:o + n]
-        if base <= va < base + 0x1000:
+        if base <= va < base + max(hdr, 0x1000):     # the headers (Halo 2's are 0x2000 bytes)
             return d[va - base:va - base + n]
         raise ValueError(hex(va))
 
