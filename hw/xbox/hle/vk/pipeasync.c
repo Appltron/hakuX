@@ -504,7 +504,12 @@ static void *prebuild_worker(void *opaque)
         }
         RecPipe *r = &g_pa.list[i];
         const Prog *p = r->vsh ? prog_find(r->vsh) : NULL;
-        r->r = g_pa.build(r->key, p ? p->tok : NULL, p ? p->nslots : 0, false, &r->pipe);
+        /* from the caches when they hold it, else compiled (only those make
+         * the pipeline cache worth writing again, vk/pcache.c) */
+        r->r = g_pa.build(r->key, p ? p->tok : NULL, p ? p->nslots : 0, true, &r->pipe);
+        if (r->r == HLE_PB_COMPILE) {
+            r->r = g_pa.build(r->key, p ? p->tok : NULL, p ? p->nslots : 0, false, &r->pipe);
+        }
         hle_atomic_inc(&g_pa.pb_done);
     }
     return NULL;

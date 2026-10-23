@@ -1738,6 +1738,8 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
         vr = T.vkCreateGraphicsPipelines(g_hvk.dev, hle_pcache_get(), 1, &gci, NULL, &p);
         if (vr != VK_SUCCESS) {
             p = VK_NULL_HANDLE;
+        } else if (!cache_only) {
+            hle_pcache_compiled();      /* after a cache-only try failed (but async off) */
         }
     }
     if (vm) {

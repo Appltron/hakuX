@@ -15,8 +15,11 @@
 /* The pipeline cache, loaded from disk (empty if none or rejected). */
 void hle_pcache_init(void);
 VkPipelineCache hle_pcache_get(void);
-/* Writes the pipeline cache when pipelines were added since the last write,
- * at most every few seconds unless forced. Back-end thread. */
+/* A pipeline the driver compiled (not one its cache held): the cache has
+ * something new to write. Any thread. */
+void hle_pcache_compiled(void);
+/* Writes the pipeline cache when pipelines were compiled since the last
+ * write, at most once a minute unless forced. Back-end thread. */
 void hle_pcache_save(bool force);
 void hle_pcache_destroy(void);
 

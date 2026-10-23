@@ -2,15 +2,26 @@
  * hakuX HLE GPU — on-disk shader and pipeline caches (P3 Task 13).
  * - SPIR-V: <base>/hle_spirv/<fnv64 of the GLSL>-<stage>.spv, a header with
  *   the source length and a second hash so a collision reads as a miss.
- * - Pipelines: <base>/hle_pipeline_cache.bin, the VkPipelineCache blob (the
- *   driver rejects a blob from another device or driver version), written by
- *   a worker thread: the blob is megabytes and the write syncs to flash
- *   (~110 ms), which on the render thread stalled a frame every 5 s. The
- *   cache is internally synchronized: the worker reads it while the render
- *   thread creates pipelines.
+ * - Pipelines: <base>/hle_pipeline_cache/<title id>.bin, the title's
+ *   VkPipelineCache blob (the driver rejects a blob from another device or
+ *   driver version), written by a worker thread: the blob is megabytes and
+ *   the write syncs to flash (~110 ms), which on the render thread stalled a
+ *   frame every 5 s. The cache is internally synchronized: the worker reads
+ *   it while the render thread creates pipelines. Written when pipelines
+ *   were compiled since (hle_pcache_compiled), at most once a minute, from a
+ *   copy: the driver holds its cache's lock while it serializes, and a write
+ *   of the live cache kept the render thread's pipeline lookups out for
+ *   0.2-0.8 s at a time (NGB froze, then dropped the frames it caught up
+ *   with). A pipeline compiled since the last write and lost with the
+ *   process is built again by the next start's prebuild (its record,
+ *   pipeasync.c, is written apart). One cache for every title (until
+ *   1.0.0's) grew to 515 MB on the RP5 over 45 titles: each game held all of
+ *   it in memory and wrote all of it back.
  */
 #include "hw/xbox/hle/base.h"
 #include <pthread.h>
+#include <stdio.h>
+#include <sys/stat.h>
 #include "hw/xbox/hle/hle.h"
 
 #include "hw/xbox/hle/vk/pcache.h"
@@ -19,12 +30,12 @@
 
 #define T (g_hvk.t)
 #define SPV_MAGIC   0x56505348u     /* "HSPV" */
-#define SAVE_EVERY_US (5 * G_USEC_PER_SEC)
+#define SAVE_EVERY_US (60 * G_USEC_PER_SEC)
 
 static struct {
     VkPipelineCache cache;
     char *dir, *blob;
-    uint64_t added, saved;          /* pipelines created / at the last write */
+    uint64_t added, saved;          /* pipelines compiled / at the last write */
     int64_t last_save;
     uint64_t spv_hits, spv_misses;
     HleThread th;
@@ -48,9 +59,19 @@ void hle_pcache_init(void)
     gsize len = 0;
     if (!hle_pipe_nocache()) {      /* else neither read nor written (pipeasync.h) */
         g_pc.dir = g_strdup_printf("%shle_spirv", base);
-        g_pc.blob = g_strdup_printf("%shle_pipeline_cache.bin", base);
+        g_autofree char *pdir = g_strdup_printf("%shle_pipeline_cache", base);
+        g_pc.blob = g_strdup_printf("%s/%08x.bin", pdir, g_hle.title.xbe.title_id);
         g_mkdir_with_parents(g_pc.dir, 0700);
+        g_mkdir_with_parents(pdir, 0700);
         g_file_get_contents(g_pc.blob, &data, &len, NULL);
+        /* every title's, before: its pipelines come back by each title's
+         * prebuild, compiled once into the title's own */
+        g_autofree char *shared = g_strdup_printf("%shle_pipeline_cache.bin", base);
+        struct stat sb;
+        if (stat(shared, &sb) == 0 && remove(shared) == 0) {
+            hle_log("hakuX-hle-pipe", "the shared pipeline cache removed (%lld bytes): one per "
+                    "title now", (long long)sb.st_size);
+        }
     }
     VkPipelineCacheCreateInfo ci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
@@ -68,23 +89,45 @@ void hle_pcache_init(void)
 
 VkPipelineCache hle_pcache_get(void)
 {
-    hle_atomic_inc(&g_pc.added);       /* the render thread and the pipeline workers */
     return g_pc.cache;
+}
+
+void hle_pcache_compiled(void)
+{
+    hle_atomic_inc(&g_pc.added);       /* the render thread and the pipeline workers */
 }
 
 static void write_blob(void)
 {
-    size_t n = 0;
-    if (!g_pc.blob ||
-        T.vkGetPipelineCacheData(g_hvk.dev, g_pc.cache, &n, NULL) != VK_SUCCESS || !n) {
+    if (!g_pc.blob) {
         return;
     }
-    void *buf = g_malloc(n);
-    if (T.vkGetPipelineCacheData(g_hvk.dev, g_pc.cache, &n, buf) == VK_SUCCESS) {
-        int64_t t0 = g_get_monotonic_time();
+    /* a copy to serialize (Mesa's merge takes references to the entries):
+     * the live cache is locked for the merge alone */
+    const int64_t t0 = g_get_monotonic_time();
+    VkPipelineCacheCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+    VkPipelineCache copy = VK_NULL_HANDLE;
+    if (T.vkCreatePipelineCache(g_hvk.dev, &ci, NULL, &copy) != VK_SUCCESS) {
+        return;
+    }
+    const bool merged = T.vkMergePipelineCaches(g_hvk.dev, copy, 1, &g_pc.cache) == VK_SUCCESS;
+    const int64_t t1 = g_get_monotonic_time();
+    size_t n = 0;
+    void *buf = NULL;
+    if (merged && T.vkGetPipelineCacheData(g_hvk.dev, copy, &n, NULL) == VK_SUCCESS && n) {
+        buf = g_malloc(n);
+        if (T.vkGetPipelineCacheData(g_hvk.dev, copy, &n, buf) != VK_SUCCESS) {
+            g_free(buf);
+            buf = NULL;
+        }
+    }
+    T.vkDestroyPipelineCache(g_hvk.dev, copy, NULL);
+    if (buf) {
+        const int64_t t2 = g_get_monotonic_time();
         g_file_set_contents(g_pc.blob, buf, n, NULL);   /* temp file + rename */
-        hle_log("hakuX-hle-pipe", "pipeline cache saved: %zu bytes in %.1f ms, spirv "
-                "hits=%llu misses=%llu", n, (g_get_monotonic_time() - t0) / 1000.0,
+        hle_log("hakuX-hle-pipe", "pipeline cache saved: %zu bytes (merged in %.1f ms, "
+                "serialized in %.1f ms, written in %.1f ms), spirv hits=%llu misses=%llu", n,
+                (t1 - t0) / 1000.0, (t2 - t1) / 1000.0, (g_get_monotonic_time() - t2) / 1000.0,
                 (unsigned long long)g_pc.spv_hits, (unsigned long long)g_pc.spv_misses);
     }
     g_free(buf);
