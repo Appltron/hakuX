@@ -131,6 +131,7 @@
   <string name="overlay_menu_hide">Hide on-screen controls</string>
   <string name="overlay_menu_show">Show on-screen controls</string>
   <string name="overlay_menu_exit">Exit to library</string>
+  <string name="overlay_menu_exit_frontend">Exit</string>
   <string name="overlay_menu_resume">Resume</string>
   <string name="overlay_editor_hint">Drag a control to move it. Pinch, or drag the corner of the selected one, to resize it.</string>
   <string name="overlay_editor_pick">Tap a control</string>

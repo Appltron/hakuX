@@ -364,6 +364,14 @@ EXPORT JNIEXPORT jboolean JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_
     return SDL_GetAtomicInt(&g_core_state) == -1 && g_core.kernel.relaunch;
 }
 
+/* NativeCoreActivity: the core stopped as the title left (to the dashboard, a
+ * reboot, a shutdown); the activity closes the game. */
+EXPORT JNIEXPORT jboolean JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeGetQuit(JNIEnv *env,
+                                                                                        jclass cls)
+{
+    return SDL_GetAtomicInt(&g_core_state) == -1 && g_core.kernel.quit;
+}
+
 static void *core_thread(void *arg)
 {
     if (!nc_core_boot(&g_core, g_disc_fd)) {

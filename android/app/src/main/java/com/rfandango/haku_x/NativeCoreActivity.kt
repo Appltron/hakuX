@@ -113,7 +113,7 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
             }
           )
           .setCancelable(false)
-          .setPositiveButton(android.R.string.ok) { _, _ -> exitToLibrary() }
+          .setPositiveButton(android.R.string.ok) { _, _ -> exitGame() }
           .show()
         return
       }
@@ -122,6 +122,13 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
        * run, so it starts again in a new process with "relaunch". */
       if (nativeGetRelaunch()) {
         relaunchCore()
+        return
+      }
+      /* The title left (to the dashboard, a reboot, a shutdown): the game
+       * closes, as on a console. */
+      if (nativeGetQuit()) {
+        Log.i(TAG, "the title left: closing the game")
+        exitGame()
         return
       }
       fpsHandler.postDelayed(this, FPS_INTERVAL_MS)
@@ -617,7 +624,8 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     if (runCheats.isNotEmpty()) {
       items += getString(R.string.overlay_menu_cheats) to ::showCheats
     }
-    items += getString(R.string.overlay_menu_exit) to ::exitToLibrary
+    val exit = if (launchedExternally) R.string.overlay_menu_exit_frontend else R.string.overlay_menu_exit
+    items += getString(exit) to ::exitGame
     showMenuDialog(
       AlertDialog.Builder(this)
         .setItems(items.map { it.first }.toTypedArray()) { _, which -> items[which].second() }
@@ -699,15 +707,23 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     editorBar = bar
   }
 
+  /** A frontend (ES-DE...) launched the game: there's no library to go back to. */
+  private val launchedExternally
+    get() = intent.getBooleanExtra(LauncherActivity.EXTRA_LAUNCHED_EXTERNALLY, false)
+
   /**
-   * Back to the library. The core keeps its state in this process for one
-   * run, so the process goes with the game.
+   * The game closes: back to the frontend that launched it (Android shows
+   * what was under the game, its own task or this one), or to the library.
+   * The core keeps its state in this process for one run, so the process
+   * goes with the game.
    */
-  private fun exitToLibrary() {
-    startActivity(
-      Intent(this, LauncherActivity::class.java)
-        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-    )
+  private fun exitGame() {
+    if (!launchedExternally) {
+      startActivity(
+        Intent(this, LauncherActivity::class.java)
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+      )
+    }
     finish()
     android.os.Process.killProcess(android.os.Process.myPid())
   }
@@ -1002,6 +1018,10 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     /** The core stopped to boot another of the title's XBEs. */
     @JvmStatic
     external fun nativeGetRelaunch(): Boolean
+
+    /** The core stopped as the title left (to the dashboard, a reboot, a shutdown). */
+    @JvmStatic
+    external fun nativeGetQuit(): Boolean
 
     /** A title frame has been on screen. */
     @JvmStatic

@@ -671,6 +671,8 @@ static uint64_t HalReturnToFirmware(NcKernel *k, NcFrame *f, const uint32_t *a)
     if (page) {
         memcpy(launch, nc_vm_host(k->vm, page + LAUNCH_PATH_OFF), LAUNCH_PATH_LEN);
     }
+    /* the title is done (the dashboard, a reboot): the game closes */
+    k->quit = true;
     nc_kernel_request_stop(k, f, "title returned to the firmware (routine %u%s%s)", a[0],
                            page ? ", launch path " : "", launch);
     return 0;
@@ -678,6 +680,7 @@ static uint64_t HalReturnToFirmware(NcKernel *k, NcFrame *f, const uint32_t *a)
 
 static uint64_t HalInitiateShutdown(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
+    k->quit = true;
     nc_kernel_request_stop(k, f, "title shut the console down");
     return 0;
 }
