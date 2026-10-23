@@ -2041,7 +2041,8 @@ static uint32_t zread(uint32_t pa, uint32_t w, uint32_t h, const uint8_t map[4],
      * there since the depth buffer last was (a draw, clear or blit): Splinter
      * Cell Chaos Theory's thermal vision blits its frame over its depth
      * buffer and shimmers it from there; the depth's bytes came out as
-     * green / yellow / red contour bands */
+     * green / yellow / red contour bands. That target's texels are read in
+     * the texture's byte order (tex_order: Mercenaries' sky) */
     for (unsigned k = 0; k < g_pd.nobjs; k++) {
         const PbObj *o = &g_pd.objs[k];
         const HleFmtInfo *oi = o->d.pa == pa && !o->cube &&
@@ -2366,6 +2367,40 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
         }
     }
     return t->ok ? t->id : 0;
+}
+
+/* Stage s's 32-bit byte order where the object it samples (id) is a colour
+ * target, A8R8G8B8 or X8R8G8B8 as the NV2A renders, and the texture's format
+ * another 8888 order: HLE_DRAW_ORD_*, the back end reading the target's
+ * texels in the texture's order (vk/surf.c hle_surf_order_view). 0: the
+ * target's own order, or no target (a texture, a z-read: their own bytes). */
+static uint32_t tex_order(unsigned s, uint32_t id)
+{
+    uint32_t ord;
+    switch (HLE_FMT_CODE(R(NV097_SET_TEXTURE_FORMAT + 64 * s))) {
+    case HLE_XFMT_A8B8G8R8: case HLE_XFMT_LIN_A8B8G8R8:
+        ord = HLE_DRAW_ORD_ABGR;
+        break;
+    case HLE_XFMT_B8G8R8A8: case HLE_XFMT_LIN_B8G8R8A8:
+        ord = HLE_DRAW_ORD_BGRA;
+        break;
+    case HLE_XFMT_R8G8B8A8: case HLE_XFMT_LIN_R8G8B8A8:
+        ord = HLE_DRAW_ORD_RGBA;
+        break;
+    default:
+        return 0;
+    }
+    const PbObj *o = obj_of(id);
+    if (!o || o->cube) {
+        return 0;
+    }
+    switch (o->d.xfmt) {
+    case HLE_XFMT_A8R8G8B8: case HLE_XFMT_X8R8G8B8:
+    case HLE_XFMT_LIN_A8R8G8B8: case HLE_XFMT_LIN_X8R8G8B8:
+        return ord;
+    default:
+        return 0;
+    }
 }
 
 static void state(void)
@@ -2750,6 +2785,7 @@ static void emit(HleCmdDraw *d)
         d->tex[s] = texture(s, &unset, &lin);
         d->tex_unset |= (uint32_t)unset << s;
         d->tex_lin |= (uint32_t)lin << s;
+        d->tex_ord |= tex_order(s, d->tex[s]) << 2 * s;
     }
     state();
     uint32_t zf = (R(NV097_SET_SURFACE_FORMAT) >> 4) & 0xF;

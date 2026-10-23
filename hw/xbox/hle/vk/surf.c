@@ -175,6 +175,9 @@ static void destroy_now(HleVkSurf *s)
     if (s->sview) {
         T.vkDestroyImageView(g_hvk.dev, s->sview, NULL);
     }
+    if (s->oview) {
+        T.vkDestroyImageView(g_hvk.dev, s->oview, NULL);
+    }
     if (s->zr_depth) {
         T.vkDestroyImageView(g_hvk.dev, s->zr_depth, NULL);
     }
@@ -433,6 +436,7 @@ bool hle_surf_ensure(HleVkSurf *s)
     s->dirty = 0;
     s->rendered_levels = 0;
     s->sview_levels = 0;
+    s->oview_levels = 0;
     return true;
 }
 
@@ -750,5 +754,51 @@ void hle_surf_sample_views(HleVkSurf *s, VkImageView *view, VkImageView *cube)
     }
     *view = s->sview;
     *cube = s->cube_view;
+}
+
+/* The NV2A renders colour as A8R8G8B8 (X8R8G8B8): B8G8R8A8 here, its bytes
+ * B G R A. A texture of another 8888 order over the target's memory reads
+ * those bytes as its own channels (pbres.c k_zread: channel -> byte):
+ * Mercenaries copies its scene depth into a colour target and looks its sky
+ * dome's fade up by that copy's bytes, sampled as A8B8G8R8 (DPNDNT_GB); read
+ * in the target's own order, the lookup took the stencil byte for the
+ * depth's and the sky stayed black. */
+VkImageView hle_surf_order_view(HleVkSurf *s, uint32_t ord)
+{
+    static const uint8_t k_byte[4][4] = {       /* ord: the texture's channel -> byte */
+        { 2, 1, 0, 3 }, { 0, 1, 2, 3 }, { 1, 2, 3, 0 }, { 3, 2, 1, 0 } };
+    static const VkComponentSwizzle k_chan[4] = {   /* byte -> the image's channel */
+        VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R,
+        VK_COMPONENT_SWIZZLE_A };
+    if (!ord || ord > HLE_DRAW_ORD_RGBA || s->d.parent || !s->img || s->fmt != VK_FORMAT_B8G8R8A8_UNORM ||
+        !(s->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
+        return VK_NULL_HANDLE;
+    }
+    const uint32_t n = MAX(MIN(MAX(s->rendered_levels, 1u), s->nlevels), 1u);
+    if (s->oview && s->oview_ord == ord && s->oview_levels == n) {
+        return s->oview;
+    }
+    retire_view(s->oview);
+    s->oview = VK_NULL_HANDLE;
+    VkComponentSwizzle c[4];
+    for (unsigned i = 0; i < 4; i++) {
+        c[i] = k_chan[k_byte[ord][i]];
+        if (c[i] == VK_COMPONENT_SWIZZLE_A && hle_surf_x_alpha(s)) {
+            c[i] = VK_COMPONENT_SWIZZLE_ONE;    /* X8R8G8B8: alpha 1, as its own view */
+        }
+    }
+    VkImageViewCreateInfo vci = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = s->img,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = s->fmt,
+        .components = { c[0], c[1], c[2], c[3] },
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, n, 0, 1 } };
+    if (T.vkCreateImageView(g_hvk.dev, &vci, NULL, &s->oview) != VK_SUCCESS) {
+        s->oview = VK_NULL_HANDLE;
+        return VK_NULL_HANDLE;
+    }
+    s->oview_ord = ord;
+    s->oview_levels = n;
+    s->oview_gen = ++g_view_gen;
+    return s->oview;
 }
 

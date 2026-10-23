@@ -139,7 +139,7 @@ static struct {
     HleVkTex white, white_cube, white_3d;
     struct { uint64_t key, key2; VkSampler s; } smp[HLE_MAX_SAMPLERS];
     uint32_t nsmp;
-    struct { uint32_t id; VkImageView view, cube; uint64_t gen; uint32_t slot; } sslot[256];
+    struct { uint32_t id, ord; VkImageView view, cube; uint64_t gen; uint32_t slot; } sslot[256];
     uint32_t nsslot;
     HlePipe pipes[HLE_MAX_PIPES];
     uint32_t npipes;
@@ -770,26 +770,33 @@ void hle_draw_cmd_tex(const HleCmdTex *c, VkCommandBuffer cb)
  * kept the dead image's descriptor; Conker's bloom read its back buffer black
  * every other frame once the device's frame buffers were redefined). A
  * texture whose levels or faces are rendered samples all of them (cube:
- * binding 2). */
-static uint32_t surf_slot(HleVkSurf *s)
+ * binding 2). ord: a 32-bit texture of another byte order samples the
+ * target's texels reordered (hle_surf_order_view), through a slot of its own. */
+static uint32_t surf_slot(HleVkSurf *s, uint32_t ord)
 {
-    VkImageView view = s->view, cube = VK_NULL_HANDLE;
+    VkImageView view = ord ? hle_surf_order_view(s, ord) : VK_NULL_HANDLE, cube = VK_NULL_HANDLE;
+    uint64_t gen = s->oview_gen;
     VkImageLayout layout = s->general ? VK_IMAGE_LAYOUT_GENERAL
                                       : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    if (s->general || !(s->aspect & VK_IMAGE_ASPECT_COLOR_BIT) ||
-        s->fmt == VK_FORMAT_R8_UNORM || s->fmt == VK_FORMAT_R16_UNORM ||
-        s->fmt == VK_FORMAT_R8G8_UNORM || hle_surf_x_alpha(s)) {
-        /* depth: the depth aspect alone; B8, L16: the luminance swizzle; G8B8 (b, g, b, g);
-         * X8R8G8B8 and X1R5G5B5: alpha 1 */
-        hle_surf_sample_views(s, &view, &cube);
+    if (!view) {
+        ord = 0;
+        view = s->view;
+        if (s->general || !(s->aspect & VK_IMAGE_ASPECT_COLOR_BIT) ||
+            s->fmt == VK_FORMAT_R8_UNORM || s->fmt == VK_FORMAT_R16_UNORM ||
+            s->fmt == VK_FORMAT_R8G8_UNORM || hle_surf_x_alpha(s)) {
+            /* depth: the depth aspect alone; B8, L16: the luminance swizzle; G8B8 (b, g, b, g);
+             * X8R8G8B8 and X1R5G5B5: alpha 1 */
+            hle_surf_sample_views(s, &view, &cube);
+        }
+        gen = s->view_gen;
     }
     for (uint32_t i = 0; i < g_dr.nsslot; i++) {
-        if (g_dr.sslot[i].id == s->id) {
+        if (g_dr.sslot[i].id == s->id && g_dr.sslot[i].ord == ord) {
             if (g_dr.sslot[i].view != view || g_dr.sslot[i].cube != cube ||
-                g_dr.sslot[i].gen != s->view_gen) {
+                g_dr.sslot[i].gen != gen) {
                 g_dr.sslot[i].view = view;
                 g_dr.sslot[i].cube = cube;
-                g_dr.sslot[i].gen = s->view_gen;
+                g_dr.sslot[i].gen = gen;
                 write_slot_layout(g_dr.sslot[i].slot, view, cube, layout);
             }
             return g_dr.sslot[i].slot;
@@ -801,29 +808,31 @@ static uint32_t surf_slot(HleVkSurf *s)
     }
     uint32_t i = g_dr.nsslot++;
     g_dr.sslot[i].id = s->id;
+    g_dr.sslot[i].ord = ord;
     g_dr.sslot[i].view = view;
     g_dr.sslot[i].cube = cube;
-    g_dr.sslot[i].gen = s->view_gen;
+    g_dr.sslot[i].gen = gen;
     g_dr.sslot[i].slot = slot;
     write_slot_layout(slot, view, cube, layout);
     return slot;
 }
 
-/* A surface object goes: its slot is reused once recordings that may
- * sample it complete. */
+/* A surface object goes: its slots (one per byte order it was sampled in)
+ * are reused once recordings that may sample it complete. */
 void hle_draw_forget_surf(uint32_t id)
 {
-    for (uint32_t i = 0; i < g_dr.nsslot; i++) {
-        if (g_dr.sslot[i].id == id) {
-            if (g_nretire == TEX_RETIRE_MAX) {
-                hle_tl_wait(hle_tl_submitted());
-                hle_draw_tex_reap(hle_tl_completed());
-            }
-            g_retire[g_nretire++] = (typeof(g_retire[0])){
-                .slot = g_dr.sslot[i].slot, .after = HLE_SURF_PARKED };
-            g_dr.sslot[i] = g_dr.sslot[--g_dr.nsslot];
-            return;
+    for (uint32_t i = 0; i < g_dr.nsslot;) {
+        if (g_dr.sslot[i].id != id) {
+            i++;
+            continue;
         }
+        if (g_nretire == TEX_RETIRE_MAX) {
+            hle_tl_wait(hle_tl_submitted());
+            hle_draw_tex_reap(hle_tl_completed());
+        }
+        g_retire[g_nretire++] = (typeof(g_retire[0])){
+            .slot = g_dr.sslot[i].slot, .after = HLE_SURF_PARKED };
+        g_dr.sslot[i] = g_dr.sslot[--g_dr.nsslot];
     }
 }
 
@@ -1934,7 +1943,7 @@ static uint32_t stage_slot(const HleCmdDraw *c, unsigned st, uint32_t rt_id, uin
         *flags |= (c->tex_lin >> st & 1) ? (1u << st) | (256u << st) : 0;
         return slot;
     } else if (ts && (ts->general || ts->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
-        slot = surf_slot(ts);           /* RT as texture (identity) */
+        slot = surf_slot(ts, c->tex_ord >> 2 * st & 3);  /* RT as texture (identity) */
         /* linear format: texel coords, of a scaled image */
         *flags |= (c->tex_lin >> st & 1) ? (1u << st) | (256u << st) : 0;
     }

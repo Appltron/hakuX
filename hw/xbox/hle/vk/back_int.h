@@ -51,6 +51,10 @@ typedef struct HleVkSurf {
     uint32_t rendered_levels;   /* owners: levels 0..n-1 sampled (the highest rendered + 1) */
     uint32_t sview_levels;
     VkImageView sview, cube_view;   /* owners: sampled views */
+    VkImageView oview;          /* owners: the texels in another byte order
+                                   (hle_surf_order_view: oview_ord) */
+    uint32_t oview_ord, oview_levels;
+    uint64_t oview_gen;         /* view_gen's, for oview */
     VkImage owner_img;          /* views: the owner image the view was made from */
     VkImageView zr_depth, zr_stencil;   /* depth buffers read as colour (zread.c) */
     uint64_t wgen;              /* new value whenever a pass or copy may write it */
@@ -109,6 +113,11 @@ VkImage hle_surf_down(VkCommandBuffer cb, HleVkSurf *o, VkImageLayout layout,
  * on their way up; VK_NULL_HANDLE = none (the format cannot be blitted). */
 VkImage hle_surf_scratch(VkFormat fmt, uint32_t w, uint32_t h);
 void hle_surf_sample_views(HleVkSurf *s, VkImageView *view, VkImageView *cube);
+
+/* An A8R8G8B8 / X8R8G8B8 target's texels as a 32-bit texture of another
+ * byte order over its memory reads them (ord: HLE_DRAW_ORD_*): a view with
+ * its channels reordered; VK_NULL_HANDLE when s is no such target. */
+VkImageView hle_surf_order_view(HleVkSurf *s, uint32_t ord);
 /* s's format has no alpha (X8R8G8B8, X1R5G5B5): sampled, its alpha is 1
  * whatever passes on it wrote there (its sampled views say so). */
 bool hle_surf_x_alpha(const HleVkSurf *s);
