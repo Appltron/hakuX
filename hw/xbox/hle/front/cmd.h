@@ -246,6 +246,9 @@ typedef struct HleCmdState {
                                    rt_ms_bit, the multisample types): it scales screen
                                    positions by xs/ys and D3D's are logical pixels;
                                    0: D3D scales by xs/ys itself (supersampling) */
+    uint32_t zclamp;            /* NV2A ZMIN_MAX_CONTROL ZCLAMP_EN: depth past the near
+                                   and far planes is clamped to them, not clipped */
+    uint32_t pad;               /* 8-byte words (hle_fe_state) */
 } HleCmdState;
 
 /* Texels are tightly packed in the arena: for each face (6 for cubes), each

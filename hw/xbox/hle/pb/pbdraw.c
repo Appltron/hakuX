@@ -2253,7 +2253,7 @@ static void drawlog(const HleCmdDraw *d, bool ff)
     }
     hle_log("hakuX-hle-pb", "draw %llu: %s prim %u count %u rt %u ds %u nbind %u stride %u surf "
             "[f%08x c%08x z%08x p%08x clip %08x %08x mask %08x] f0 %08x %08x %08x %08x n %08x at %x/%x/%x bl %x "
-            "z %x/%x/%x po %x %08x %08x skin %x va01 %08x %08x zclip %08x %08x%s",
+            "z %x/%x/%x po %x %08x %08x skin %x va01 %08x %08x zclip %08x %08x zmm %x%s",
             (unsigned long long)g_pd.draws, ff ? "ff" : "prog", d->prim, d->count, g_pd.rt, g_pd.ds,
             d->nbind, d->bind_stride[0], R(NV097_SET_SURFACE_FORMAT), R(NV097_SET_SURFACE_COLOR_OFFSET),
             R(NV097_SET_SURFACE_ZETA_OFFSET), R(NV097_SET_SURFACE_PITCH),
@@ -2261,7 +2261,7 @@ static void drawlog(const HleCmdDraw *d, bool ff)
             R(0x0A60), R(0x0A64), R(0x0A68), R(0x0A6C), R(0x1E60), R(0x0300), R(0x033C), R(0x0340),
             R(0x0304), R(0x030C), R(0x035C), R(0x0354), R(0x0338), R(0x0384), R(0x0388), R(0x0328),
             R(NV097_SET_VERTEX_DATA_ARRAY_FORMAT), R(NV097_SET_VERTEX_DATA_ARRAY_FORMAT + 4),
-            R(0x0394), R(0x0398), tx);
+            R(0x0394), R(0x0398), R(0x1D78), tx);
 }
 
 /* A submit boundary: what was recorded goes to the GPU. */

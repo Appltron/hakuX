@@ -33,6 +33,8 @@ typedef struct HleVshKey {
     uint8_t zfree;              /* no depth test: the program's z clips nothing */
     uint8_t fog_table;          /* FOGTABLEMODE other than NONE (a program writing
                                    no oFog: distance 0, else factor 1) */
+    uint8_t zclamp;             /* depth clamped, not clipped (the pipeline's: in the
+                                   padding, the key's size is the pipeline record's) */
 } HleVshKey;
 
 /* Parses nslots 4-dword instructions (stopping at the FINAL one) and writes

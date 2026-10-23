@@ -1672,6 +1672,7 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
             .viewportCount = 1, .scissorCount = 1 };
         VkPipelineRasterizationStateCreateInfo rs = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .depthClampEnable = k->vsh ? k->vk.zclamp : k->vs.zclamp,
             .polygonMode = VK_POLYGON_MODE_FILL, .lineWidth = 1.0f };
         VkPipelineMultisampleStateCreateInfo ms = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -3163,11 +3164,17 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
      * characters); their pixel stage scale is 1 / wfar (c->wscale). */
     bool wff = !prog && !rhw && c->wscale > 0.0f;
     bool wbuf = (prog || rhw || wff) && ds && s->rs[RS_ZENABLE] == 2 && !(dbgf & 8);
+    /* NV2A ZCLAMP_EN CLAMP: depth past the near and far planes is clamped to
+     * them instead of clipping the primitive (MechAssault 2's sky, drawn past
+     * the far plane, was black): the rasterizer's depth clamp */
+    bool zclamp = ds && s->rs[RS_ZENABLE] != 0 && s->zclamp;
     if (prog) {
         k.vk.wbuf = wbuf;
         k.vk.zfree = !ds || s->rs[RS_ZENABLE] == 0;
+        k.vk.zclamp = zclamp;
     } else {
         k.vs.wbuf = wbuf;
+        k.vs.zclamp = zclamp;
     }
     if (s->psh) {
         k.pk.wbuf = wbuf;

@@ -275,6 +275,9 @@ void hle_kelvin_state(HleCmdState *st)
     if (W(0x03B8)) {
         st->spec = R(0x03B8) != 0;
     }
+    if (W(0x1D78)) {                    /* SET_ZMIN_MAX_CONTROL: ZCLAMP_EN (bits 4..7) CLAMP */
+        st->zclamp = ((R(0x1D78) >> 4) & 0xF) == 1;
+    }
 }
 
 /* ---- savestates (pb/pbstate.h) ------------------------------------------------------ */

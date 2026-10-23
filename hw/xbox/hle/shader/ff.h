@@ -78,6 +78,8 @@ typedef struct HleFfVsKey {
     uint8_t wbuf;                     /* W-buffering (XYZRHW): vW = 1 / rhw */
     uint8_t cmp_normal;               /* the normal is NV2A CMP (11:11:10 signed), fetched
                                          as two 16-bit halves (a declaration's) */
+    uint8_t zclamp;                   /* depth clamped, not clipped (the pipeline's: in
+                                         the padding, as HleVshKey's) */
 } HleFfVsKey;
 
 /* The FF uniform block (set 1, binding 0: the dynamic window the vertex
