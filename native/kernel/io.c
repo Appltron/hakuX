@@ -1151,15 +1151,29 @@ static int partition_root(const NcFile *nf);
  * nor APC too (its completion sets the file object's event): Otogi's stream
  * reader (XDK 5455) counts the bytes only after ERROR_IO_PENDING, through
  * GetOverlappedResult, and took a disc read that succeeded at once as 0 bytes
- * read, a dirty disc. */
-static uint32_t io_finish(NcKernel *k, const NcFile *nf, const uint32_t *a, uint32_t st, uint32_t n)
+ * read, a dirty disc. pend: a success may pend (not a read through the cache,
+ * disc_cached). */
+static uint32_t io_finish(NcKernel *k, const NcFile *nf, const uint32_t *a, uint32_t st, uint32_t n, bool pend)
 {
     if (nf->async && st >= 0xC0000000u) {
         return st;
     }
     io_status(k, a[4], st, n);
     complete(k, a);
-    return nf->async && (a[1] || a[2] || nf->kind == F_DISC) ? STATUS_PENDING : st;
+    return pend && nf->async && (a[1] || a[2] || nf->kind == F_DISC) ? STATUS_PENDING : st;
+}
+
+/* A disc read of part of a sector goes through the file system's cache, which
+ * reads in the caller's thread: it completes in the call, overlapped or not
+ * (only whole sectors go to the drive and pend). Wreckless reads Font18.xpr's
+ * 12-byte header overlapped, then loads the OVERLAPPED's status into a
+ * register once and loops while it is STATUS_PENDING: pended, it hung at
+ * boot unless the read happened to land before that load. */
+#define DISC_SECTOR 2048u
+
+static bool disc_cached(const NcFile *nf, uint64_t off, uint32_t len)
+{
+    return nf->kind == F_DISC && ((off | len) & (DISC_SECTOR - 1));
 }
 
 /* A synchronous read this long goes to the reader thread too, the calling
@@ -1202,7 +1216,7 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         if (g_trace_io) {
             nc_log("hakuX-native-io", "read %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);
         }
-        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6]);
+        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true);
     }
     if (nf->is_dir || nf->kind == F_VOLUME) {
         io_status(k, a[4], STATUS_INVALID_DEVICE_REQUEST, 0);
@@ -1216,6 +1230,7 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         }
     }
     const uint64_t size = file_size(nf);
+    const bool async = nf->async && !disc_cached(nf, off, a[6]);
     uint32_t st = NC_STATUS_SUCCESS, n = 0;
     if (!a[6]) {
         /* Zero bytes succeed, past the end too, as the file systems check
@@ -1228,15 +1243,15 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         if (!nc_kernel_resident(k, a[5], n, true)) {
             return 0;
         }
-        const bool later = nf->async || (n >= SYNC_LATER_MIN && can_block(k));
+        const bool later = async || (n >= SYNC_LATER_MIN && can_block(k));
         if ((nf->kind == F_DISC || (nf->kind == F_HOST && nf->fd >= 0)) && later &&
-            disc_read_later(k, nf, a, off, n, !nf->async)) {
+            disc_read_later(k, nf, a, off, n, !async)) {
             nf->pos = off + n;
             if (g_trace_io) {
                 nc_log("hakuX-native-io", "read %s +%llx %u into %08x %s%s%s", nf->path, (unsigned long long)off,
-                       n, a[5], nf->async ? "pending" : "waited for", a[1] ? " event" : "", a[2] ? " apc" : "");
+                       n, a[5], async ? "pending" : "waited for", a[1] ? " event" : "", a[2] ? " apc" : "");
             }
-            if (!nf->async) {
+            if (!async) {
                 nc_ke_block(k);         /* the read's status replaces this when it completes */
             }
             return STATUS_PENDING;
@@ -1261,7 +1276,7 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                nf->path, (unsigned long long)off, a[6], a[5], st, n, a[1] ? " event" : "", a[2] ? " apc" : "",
                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
     }
-    return io_finish(k, nf, a, st, n);
+    return io_finish(k, nf, a, st, n, async);
 }
 
 /* The partition number if nf is a hard disk partition's root, else -1. */
@@ -1337,7 +1352,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                 nc_log("hakuX-native-io", "write %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);
             }
         }
-        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6]);
+        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true);
     }
     if (nf->kind == F_HOST && nf->is_dir && partition_root(nf) >= 3) {
         /* A cache drive formatted raw (XMountUtilityDrive): the superblock
@@ -1354,7 +1369,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                    g_cluster_sectors[part], nf->host);
             remove_tree(nf->host, false);
         }
-        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6]);
+        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true);
     }
     if (nf->kind != F_HOST || nf->is_dir || !handle_can_write(nf, "write to")) {
         io_status(k, a[4], STATUS_ACCESS_DENIED, 0);
@@ -1387,7 +1402,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                (unsigned long long)off, a[6], a[5], st, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
     }
     nf->pos = off + (n > 0 ? (uint64_t)n : 0);
-    return io_finish(k, nf, a, st, n > 0 ? (uint32_t)n : 0);
+    return io_finish(k, nf, a, st, n > 0 ? (uint32_t)n : 0, true);
 }
 
 /* ---------------------------------------------------------- information */
