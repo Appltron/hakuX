@@ -321,7 +321,7 @@ class ControlPainter {
     c.drawText(s.id.label, s.cx, s.cy + text.textSize * 0.35f, text)
   }
 
-  /* The jewel in the middle of the controller: black glass with the green X. Opens the menu. */
+  /* The jewel in the middle of the controller: black glass with a green dot. Opens the menu. */
   private fun menu(c: Canvas, s: ControlSpec, pressed: Boolean) {
     val r = s.radius
     socket(c, s.cx, s.cy, r * 1.1f)
@@ -332,16 +332,12 @@ class ControlPainter {
       floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP,
     ))
     c.drawCircle(s.cx, s.cy, r, p)
+    val d = r * 0.38f
     shade(LinearGradient(
-      s.cx - r, s.cy - r, s.cx + r, s.cy + r,
+      s.cx - d, s.cy - d, s.cx + d, s.cy + d,
       0xFFC6EE7A.toInt(), 0xFF3A8F1C.toInt(), Shader.TileMode.CLAMP,
     ))
-    // The X: two crossing strokes pinched at the middle, as on the logo.
-    val k = r * 0.52f
-    path.reset()
-    xArm(s.cx, s.cy, k, r * 0.17f, 1f)
-    xArm(s.cx, s.cy, k, r * 0.17f, -1f)
-    c.drawPath(path, p)
+    c.drawCircle(s.cx, s.cy, d, p)
     p.shader = null
     rect.set(s.cx - r * 0.6f, s.cy - r * 0.88f, s.cx + r * 0.6f, s.cy - r * 0.2f)
     shade(LinearGradient(
@@ -354,23 +350,6 @@ class ControlPainter {
       p.color = Color.argb(70, 255, 255, 255)
       c.drawCircle(s.cx, s.cy, r, p)
     }
-  }
-
-  /* One stroke of the X, from corner to corner, narrower at the centre. */
-  private fun xArm(cx: Float, cy: Float, k: Float, w: Float, dir: Float) {
-    // Direction along the arm (unit) and across it.
-    val ux = 0.7071f
-    val uy = 0.7071f * dir
-    val nx = -uy
-    val ny = ux
-    val l = k * 1.41f
-    val ex = ux * l
-    val ey = uy * l
-    path.moveTo(cx - ex + nx * w, cy - ey + ny * w)
-    path.quadTo(cx + nx * w * 0.45f, cy + ny * w * 0.45f, cx + ex + nx * w, cy + ey + ny * w)
-    path.lineTo(cx + ex - nx * w, cy + ey - ny * w)
-    path.quadTo(cx - nx * w * 0.45f, cy - ny * w * 0.45f, cx - ex - nx * w, cy - ey - ny * w)
-    path.close()
   }
 
   /*
