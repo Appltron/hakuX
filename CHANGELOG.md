@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.0 (unreleased, branch v1.0.0-prepare)
+## v1.0.0
 
 A new core replaces xemu's QEMU-based one.
 
@@ -12,12 +12,28 @@ A new core replaces xemu's QEMU-based one.
 - **Mods and cheats** — per game, from `mods/` (library long-press "Mods & cheats"): XBE patches and replaced disc files; 60 and 120 fps mods for 13 games (`mods/README.md`, generators in `tools/mods`)
 - **Controllers** — each physical controller routed to a player with its own mapping; the on-screen controller adds to player 1
 
-### Hardening (core review, 2026-10-22)
-- The APU checks the guest's voice, HRTF, DSP memory, DMA and FIFO indexes
-- A lost audio stream is reopened; a lost GPU device stops the game with a message instead of hanging
-- Saves no longer resume the game while the state is being written; surface eviction never destroys a bound or shown target; thread stack slots are reused
-- Controller input reaches the game as it arrives, not a refresh later
-- Cheats toggled in-game are no longer lost to the Mods screen
+### New features
+- **Updates** — hakuX looks for a newer release on GitHub when it starts and on demand (Settings → Updates); one found shows its notes and installs from there
+- **Frontends** — a game launched from ES-DE or another frontend returns to it when it closes
+- **Console clock** — follows the phone's time and time zone, or a time set by hand (Settings → Console → Clock)
+- **Start errors** — a game that can't start says why (the file can't be read, isn't an Xbox disc, or its program can't load) and goes back to the library
+- **Mods** — Halo 2's 60 fps mod draws characters, vehicles and objects at 60; DOA2's 120 fps mod keeps the select screen's legend
+
+### Performance
+- **No pipeline-cache stutter** — each game keeps its own pipeline cache, written only after new compiles; the one shared by every game was rewritten every few seconds and froze the picture for 0.2–0.8 s (Ninja Gaiden Black)
+- **Audio** — about 32 ms of latency instead of 128 ms, and less CPU for the sound engine
+- **GPU emulation** — faster push-buffer decoding, texture unswizzling (NEON) and hashing, fewer lookups per draw
+- **Savestates** — compressed on several threads (a Halo 2 save: 9.6 s to 3.9 s)
+- **Idle frames** — the screen isn't redrawn when nothing changed, and the on-screen controller redraws only what changed
+- **Disc reads** — a large read waits only its own thread, not the whole game
+- **Library** — folders scanned in one pass (38 games: 270 ms to 63 ms)
+
+### App
+- **On-screen controller** — the menu button is a green dot
+- **Large screens** — Android 16 keeps the landscape lock (the app is declared a game)
+- **Storage** — JIT symbol maps left by earlier builds (gigabytes on some devices) are deleted at start
+- **Backups** — hakuX's data is left out of Android's cloud backups and device transfers
+- **Library** — savestate thumbnails and driver ZIPs load off the main thread
 
 ## v0.3.1
 
