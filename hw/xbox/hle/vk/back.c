@@ -1109,6 +1109,8 @@ typedef struct PixRec {
     uint32_t tbytes;                    /* stage 0's target texture: its texel after the draw */
     uint32_t vbytes;                    /* a small arena draw: its vertex bytes, as recorded */
     uint8_t v[PIX_VBYTES];
+    uint32_t gvbytes;                   /* a draw from guest memory: its first vertex's bytes */
+    uint8_t gv[64];
     uint32_t rs[9];                     /* hle_draw_rs_brief */
     HleCmdDraw c;
     float k[192][4];                    /* the draw's constants (program draws) */
@@ -1230,6 +1232,16 @@ static void pix_after(const HleCmdDraw *c)
             { c->consts_off, PIX_STRIDE * g_pix.n + 16 + PIX_VBYTES, 64 } };
         T.vkCmdCopyBuffer(cb, g_harena.buf, g_pix.buf, c->vsh ? 2 : 1, bc);
     }
+    /* a draw reading guest memory: the bytes of the vertex its first index names */
+    if (c && c->nbind && (c->guest_vb & 1) && c->bind_stride[0]) {
+        uint32_t ix = c->ib_off != 0xFFFFFFFFu ? *(const uint16_t *)(g_harena.map + c->ib_off) : 0;
+        uint32_t len = MIN(c->bind_stride[0], (uint32_t)sizeof(r->gv));
+        const uint8_t *gp = hle_pa_ptr(c->bind_off[0] + ix * c->bind_stride[0], len);
+        if (gp) {
+            memcpy(r->gv, gp, len);
+            r->gvbytes = len;
+        }
+    }
     if (c) {
         r->c = *c;
         hle_draw_rs_brief(r->rs);
@@ -1292,6 +1304,18 @@ static void pix_write(uint64_t value)
                 fprintf(f, " attr0 %08x ib %08x atest %u/%x/%02x blend %u %x/%08x z %x/%x cw %x",
                         r->c.attr[0], r->c.ib_off, r->rs[0], r->rs[1], r->rs[2] & 0xFF, r->rs[3],
                         r->rs[4], r->rs[8], r->rs[5], r->rs[6], r->rs[7]);
+                fprintf(f, " attrs");       /* vN=format byte | binding << 8 | offset << 16 */
+                for (unsigned a = 0; a < HLE_DRAW_ATTRS; a++) {
+                    if (r->c.attr[a] & 0xF0) {
+                        fprintf(f, " v%u=%x", a, r->c.attr[a]);
+                    }
+                }
+                if (r->gvbytes) {
+                    fprintf(f, " vertex");
+                    for (uint32_t o = 0; o + 4 <= r->gvbytes; o += 4) {
+                        fprintf(f, " %08x", hle_ldl_le(r->gv + o));
+                    }
+                }
                 if (r->tbytes) {
                     fprintf(f, " t0 texel %08x", pix_texel(m + PIX_STRIDE * i + 4, r->tbytes));
                 }

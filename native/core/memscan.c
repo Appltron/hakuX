@@ -12,6 +12,8 @@
  *               lists the addresses holding that value (the first 300)
  *   poke=<va>:<value>[:<bytes>]
  *               writes 1, 2 or 4 bytes there once (hex)
+ *   peek=<va>:<len>
+ *               logs len bytes from va (hex, up to 4 KiB), 32 a line
  *   mats        lists runs of rigid 4x4 matrices a stride apart (bone
  *               palettes) and how many changed since the snapshot
  *   mats1[:<va>] a snapshot, then mats at the next vblank (what one frame
@@ -265,6 +267,30 @@ static void poke(const NcVm *vm, const char *what)
     nc_log("hakuX-native-scan", "poke %08x = %x (%u bytes)", va, val, n);
 }
 
+/* "peek=<va>:<len>" (hex): the bytes there, as 32-bit words */
+static void peek(const NcVm *vm, const char *what)
+{
+    char *end;
+    const uint32_t va = (uint32_t)strtoul(what, &end, 16) & ~3u;
+    uint32_t len = *end == ':' ? (uint32_t)strtoul(end + 1, NULL, 16) : 64;
+    len = len > 4096 ? 4096 : len;
+    for (uint32_t o = 0; o < len; o += 32) {
+        char line[160];
+        int n = snprintf(line, sizeof(line), "%08x:", va + o);
+        for (uint32_t w = 0; w < 32 && o + w < len; w += 4) {
+            const uint32_t pa = nc_vm_phys(vm, va + o + w);
+            uint32_t v = 0;
+            if (pa == UINT32_MAX || pa + 4 > vm->ram_size) {
+                n += snprintf(line + n, sizeof(line) - (size_t)n, " --------");
+                continue;
+            }
+            memcpy(&v, vm->phys + pa, 4);
+            n += snprintf(line + n, sizeof(line) - (size_t)n, " %08x", v);
+        }
+        nc_log("hakuX-native-scan", "%s", line);
+    }
+}
+
 static void log_word(const NcVm *vm, uint32_t va)
 {
     const uint32_t pa = va ? nc_vm_phys(vm, va) : UINT32_MAX;
@@ -312,6 +338,8 @@ void nc_memscan_poll(const NcVm *vm)
         find(vm, v);
     } else if (!strncmp(v, "poke=", 5)) {
         poke(vm, v + 5);
+    } else if (!strncmp(v, "peek=", 5)) {
+        peek(vm, v + 5);
     } else if (!strcmp(v, "mats")) {
         mats(vm);
     } else if (!strncmp(v, "mats1", 5)) {

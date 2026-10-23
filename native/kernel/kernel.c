@@ -748,6 +748,14 @@ static void stats_tick(NcKernel *k)
     }
     dump_seen = true;
     memcpy(dump_last, v, sizeof(dump_last));
+    /* debug.hakux.ncresume=<id>[,salt], a new value: resume thread t<id> */
+    static char resume_last[PROP_VALUE_MAX];
+    v[0] = 0;
+    __system_property_get("debug.hakux.ncresume", v);
+    if (v[0] && strcmp(v, resume_last)) {
+        nc_ps_debug_resume(k, (unsigned)atoi(v));
+    }
+    memcpy(resume_last, v, sizeof(resume_last));
 #endif
 }
 

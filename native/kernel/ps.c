@@ -506,6 +506,17 @@ static uint32_t resume(NcKernel *k, NcThread *t)
     return prev;
 }
 
+void nc_ps_debug_resume(NcKernel *k, unsigned id)
+{
+    for (unsigned i = 0; i < NC_MAX_THREADS; i++) {
+        NcThread *t = &k->threads[i];
+        if (t->state != NC_T_FREE && t->id == id) {
+            nc_log("hakuX-native", "debug: t%u resumed (suspend count was %u)", id, resume(k, t));
+            return;
+        }
+    }
+}
+
 /* NtSuspendThread(ThreadHandle, PreviousSuspendCount) / NtResumeThread(...) */
 static uint64_t NtSuspendThread(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
