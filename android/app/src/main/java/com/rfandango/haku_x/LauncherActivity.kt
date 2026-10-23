@@ -42,10 +42,7 @@ class LauncherActivity : ComponentActivity() {
     // the first start after the update from the xemu-based release: its data comes over first
     val needsMigration = !prefs.previousMigrated && PreviousVersion(this).find() != null
 
-    val external = externalGame()
-    if (folderReady && external != null) {
-      Storage.persistPermission(this, external, write = false)
-      startCore(external, null, null, launchedExternally = true)
+    if (folderReady && launchExternal()) {
       return
     }
 
@@ -90,8 +87,28 @@ class LauncherActivity : ComponentActivity() {
       putExtra(NativeCoreActivity.EXTRA_DVD_URI, uri.toString())
       putExtra(EXTRA_LAUNCHED_EXTERNALLY, launchedExternally)
       if (state != null) putExtra(NativeCoreActivity.EXTRA_LOADSTATE, state)
+      /* a frontend's: the game alone in the app's task (a library left in it
+       * goes), so that what's under it when it closes is the frontend */
+      if (launchedExternally) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
     })
     finish()
+  }
+
+  /* A frontend's launch while the library is open (singleTop). */
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    if (AppPrefs(this).gamesFolders.any { Storage.hasReadPermission(this, it) }) {
+      launchExternal()
+    }
+  }
+
+  /** The game a frontend asked for, straight to the core; false: none asked. */
+  private fun launchExternal(): Boolean {
+    val external = externalGame() ?: return false
+    Storage.persistPermission(this, external, write = false)
+    startCore(external, null, null, launchedExternally = true)
+    return true
   }
 
   private fun externalGame(): Uri? {

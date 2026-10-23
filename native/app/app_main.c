@@ -376,6 +376,9 @@ static void *core_thread(void *arg)
 {
     if (!nc_core_boot(&g_core, g_disc_fd)) {
         nc_log("hakuX-app", "core: boot failed");
+        if (!nc_hle_fatal()) {
+            nc_hle_set_fatal(NC_FATAL_BOOT, "The game stopped while starting.");
+        }
         SDL_SetAtomicInt(&g_core_state, -1);
         return NULL;
     }
@@ -458,8 +461,8 @@ EXPORT int SDL_main(int argc, char *argv[])
     const char *disc = argv[1];
     g_disc_fd = !strncmp(disc, "fd:", 3) ? atoi(disc + 3) : open(disc, O_RDONLY | O_CLOEXEC);
     if (g_disc_fd < 0) {
+        /* the boot says so (NC_FATAL_BOOT), and the activity goes back */
         nc_log("hakuX-app", "can't open the disc %s", disc);
-        return 1;
     }
     /* debug: debug.hakux.hdd=NAME runs on the hard disk <hdd>-NAME instead,
      * made empty the first time: a title's first boot (its cache partition

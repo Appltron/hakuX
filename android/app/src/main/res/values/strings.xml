@@ -48,6 +48,8 @@
   <string name="native_fatal_gpu">The graphics driver %1$s, which hakuX\'s Xbox GPU needs.\n\nChoose a Turnip driver in Settings → GPU Driver and start the game again.</string>
   <string name="native_gpu_lost_title">The GPU driver stopped</string>
   <string name="native_gpu_lost">The graphics driver %1$s, so the game can\'t go on.\n\nStart the game again. If it keeps happening, try another GPU driver in Settings → GPU Driver.</string>
+  <string name="native_boot_failed_title">This game can\'t start</string>
+  <string name="native_boot_failed">%1$s\n\nSettings → Export logs saves the details, to report it.</string>
   <string name="native_incompatible_title">This game isn\'t compatible yet</string>
   <string name="native_incompatible">hakuX doesn\'t support this game yet, so it can\'t run.</string>
   <string name="settings_gpu_driver_installed">Driver installed successfully. Applied on next game launch.</string>

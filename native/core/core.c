@@ -33,6 +33,13 @@ void nc_core_set_loadstate(const char *path)
 }
 static bool core_hook_query(void *opaque, uint32_t eip);
 
+/* The title can't start: why, for the activity's dialog (NC_FATAL_BOOT). */
+static bool boot_failed(const char *why)
+{
+    nc_hle_set_fatal(NC_FATAL_BOOT, why);
+    return false;
+}
+
 bool nc_core_boot(NcCore *c, int disc_fd)
 {
     memset(c, 0, sizeof(*c));
@@ -40,11 +47,8 @@ bool nc_core_boot(NcCore *c, int disc_fd)
     /* NC_RAM_MB=128 (debug kit size): a dev switch for memory investigations. */
     const char *mb = getenv("NC_RAM_MB");
     const uint32_t ram = mb && atoi(mb) == 128 ? 128u << 20 : NC_RAM_RETAIL;
-    if (!nc_vm_init(&c->vm, ram)) {
-        return false;
-    }
-    if (!nc_kernel_init(&c->kernel, &c->vm)) {
-        return false;
+    if (!nc_vm_init(&c->vm, ram) || !nc_kernel_init(&c->kernel, &c->vm)) {
+        return boot_failed("The emulated console couldn't be set up.");
     }
     if (g_relaunch) {
         /* the last title's kept memory (D3D's saved display), where it was */
@@ -55,9 +59,12 @@ bool nc_core_boot(NcCore *c, int disc_fd)
     nc_dev_ohci_init(&c->vm);
     nc_dev_aci_init(&c->vm);
     nc_dev_misc_init();
+    if (disc_fd < 0) {
+        return boot_failed("The game's file can't be opened.");
+    }
     if (!nc_disc_open(&c->disc, disc_fd)) {
         close(disc_fd);
-        return false;
+        return boot_failed("The game's file isn't an Xbox disc image.");
     }
     nc_mods_install(&c->disc);          /* the mods' files and XBE patches, the cheats */
     /* A relaunch (XLaunchNewImage, NativeCoreActivity starts the core again):
@@ -98,7 +105,10 @@ bool nc_core_boot(NcCore *c, int disc_fd)
         }
     }
     if (!nc_xbe_load(&c->vm, &c->disc, xbe_path, &c->kernel, &c->xbe)) {
-        return false;
+        char why[256];
+        snprintf(why, sizeof(why), "The game's program (%s) can't be loaded: it's damaged, or hakuX doesn't support "
+                 "it yet.", xbe_path[0] == '\\' ? xbe_path + 1 : xbe_path);
+        return boot_failed(why);
     }
     nc_kernel_title_loaded(&c->kernel, &c->disc, &c->xbe.file, c->xbe.info.base, c->xbe.info.sizeof_image);
     if (have_page) {
@@ -116,7 +126,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
     };
     c->cpu = nc_cpu_create(&cfg, c->kernel.kpcr_va);
     if (!c->cpu) {
-        return false;
+        return boot_failed("The emulated CPU couldn't start.");
     }
     nc_mods_bind(&c->vm, c->cpu, &c->xbe.info);
 
@@ -126,7 +136,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
     }
     g_boot = nc_kernel_boot_thread(&c->kernel, c->cpu, c->xbe.info.entry, stack);
     if (!g_boot) {
-        return false;
+        return boot_failed("The emulated CPU couldn't start.");
     }
     nc_log("hakuX-native-frontier", "stage S1 entry %08x, stack %08x-%08x, fs %08x",
            c->xbe.info.entry, g_boot->stack_limit, g_boot->stack_base, c->kernel.kpcr_va);

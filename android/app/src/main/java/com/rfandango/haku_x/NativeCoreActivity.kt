@@ -101,6 +101,7 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
               FATAL_DRIVER -> R.string.native_fatal_title
               FATAL_STATE -> R.string.state_load_failed_title
               FATAL_GPU_LOST -> R.string.native_gpu_lost_title
+              FATAL_BOOT -> R.string.native_boot_failed_title
               else -> R.string.native_incompatible_title
             }
           )
@@ -109,6 +110,7 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
               driver -> getString(R.string.native_fatal_gpu, why)
               kind == FATAL_STATE -> why
               kind == FATAL_GPU_LOST -> getString(R.string.native_gpu_lost, why)
+              kind == FATAL_BOOT -> getString(R.string.native_boot_failed, why)
               else -> getString(R.string.native_incompatible)
             }
           )
@@ -1014,6 +1016,7 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     private const val FATAL_DRIVER = 1
     private const val FATAL_STATE = 3
     private const val FATAL_GPU_LOST = 4
+    private const val FATAL_BOOT = 5
 
     /** The core stopped to boot another of the title's XBEs. */
     @JvmStatic

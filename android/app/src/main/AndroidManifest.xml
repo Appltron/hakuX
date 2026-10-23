@@ -13,9 +13,13 @@
     android:supportsRtl="true"
     android:theme="@style/Theme.HakuX">
 
-    <!-- The app's screens (Compose) and the entry for frontends' launches. -->
+    <!-- The app's screens (Compose) and the entry for frontends' launches.
+         singleTop: a frontend's launch while the library is open comes to
+         it (onNewIntent); Android would otherwise only bring it forward
+         when the intents match but for their extras (rom_path). -->
     <activity
       android:name=".LauncherActivity"
+      android:launchMode="singleTop"
       android:screenOrientation="fullSensor"
       android:windowSoftInputMode="adjustResize|stateHidden"
       android:exported="true">
