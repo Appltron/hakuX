@@ -26,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -36,6 +37,7 @@ import com.rfandango.haku_x.data.SaveStateStore
 import com.rfandango.haku_x.ui.common.ConfirmDialog
 import com.rfandango.haku_x.ui.common.DeleteButton
 import com.rfandango.haku_x.ui.common.ThumbnailShape
+import com.rfandango.haku_x.ui.common.rememberFocusOnShow
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +58,7 @@ fun LoadStatesDialog(
   var slots by remember { mutableStateOf(store.saved()) }
   var deleting by remember { mutableStateOf<Int?>(null) }
   val format = remember { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT) }
+  val shown = rememberFocusOnShow()
 
   AlertDialog(
     onDismissRequest = onDismiss,
@@ -70,6 +73,7 @@ fun LoadStatesDialog(
               Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(8.dp))
+                .then(if (slot == slots.first()) Modifier.focusRequester(shown) else Modifier)
                 .clickable { onLoad(slot) }
                 .padding(vertical = 6.dp),
               verticalAlignment = Alignment.CenterVertically,

@@ -43,9 +43,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -202,7 +207,23 @@ fun DeleteButton(onClick: () -> Unit, enabled: Boolean = true, description: Stri
   }
 }
 
-/** A choice of one, as radio buttons. */
+/**
+ * What takes the focus as it shows (a dialog's choice, a menu's first item; its element's
+ * Modifier.focusRequester), with a controller or keyboard in use, so their keys act on it at once.
+ * With touch nothing is focused.
+ */
+@Composable
+fun rememberFocusOnShow(): FocusRequester {
+  val requester = remember { FocusRequester() }
+  val keys = LocalInputModeManager.current.inputMode == InputMode.Keyboard
+  LaunchedEffect(requester) {
+    // its element may not be there (no choice is the current one)
+    if (keys) runCatching { requester.requestFocus() }
+  }
+  return requester
+}
+
+/** A choice of one, as radio buttons (the current one focused for a controller). */
 @Composable
 fun <T> ChoiceDialog(
   title: String,
@@ -211,6 +232,7 @@ fun <T> ChoiceDialog(
   onPick: (T) -> Unit,
   onDismiss: () -> Unit,
 ) {
+  val shown = rememberFocusOnShow()
   AlertDialog(
     onDismissRequest = onDismiss,
     title = { Text(title) },
@@ -220,6 +242,7 @@ fun <T> ChoiceDialog(
           Row(
             Modifier
               .fillMaxWidth()
+              .then(if (value == current) Modifier.focusRequester(shown) else Modifier)
               .selectable(selected = value == current, role = Role.RadioButton) { onPick(value) }
               .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -237,7 +260,8 @@ fun <T> ChoiceDialog(
 
 /**
  * A question before something is done: its button names what (Delete, Remove, Convert…); the other
- * button cancels (or says dismiss: Not now).
+ * button cancels (or says dismiss: Not now), and has a controller's focus first: a second press of A
+ * doesn't delete.
  */
 @Composable
 fun ConfirmDialog(
@@ -248,12 +272,13 @@ fun ConfirmDialog(
   onDismiss: () -> Unit,
   dismiss: String = stringResource(android.R.string.cancel),
 ) {
+  val shown = rememberFocusOnShow()
   AlertDialog(
     onDismissRequest = onDismiss,
     title = { Text(title) },
     text = { Text(text) },
     confirmButton = { TextButton(onClick = onConfirm) { Text(confirm) } },
-    dismissButton = { TextButton(onClick = onDismiss) { Text(dismiss) } },
+    dismissButton = { TextButton(onClick = onDismiss, modifier = Modifier.focusRequester(shown)) { Text(dismiss) } },
   )
 }
 

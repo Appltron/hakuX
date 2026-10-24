@@ -1,10 +1,14 @@
 package com.rfandango.haku_x.ui.update
 
+import androidx.compose.foundation.border
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -18,8 +22,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -31,6 +44,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.rfandango.haku_x.R
 import com.rfandango.haku_x.data.Updates
 import com.rfandango.haku_x.ui.common.ProgressBlock
+import com.rfandango.haku_x.ui.common.rememberFocusOnShow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -62,12 +76,10 @@ fun UpdateDialog(release: Updates.Release, onDismiss: () -> Unit) {
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           modifier = Modifier.padding(bottom = 8.dp),
         )
-        Column(Modifier.fillMaxWidth().heightIn(max = notesHeight).verticalScroll(rememberScrollState())) {
-          Text(
-            notesText(release.notes.ifBlank { stringResource(R.string.update_no_notes) }),
-            style = MaterialTheme.typography.bodyMedium,
-          )
-        }
+        Notes(
+          notesText(release.notes.ifBlank { stringResource(R.string.update_no_notes) }),
+          Modifier.fillMaxWidth().heightIn(max = notesHeight),
+        )
         if (downloading) {
           ProgressBlock(
             progress.takeIf { it >= 0f },
@@ -116,6 +128,41 @@ fun UpdateDialog(release: Updates.Release, onDismiss: () -> Unit) {
     },
   )
 }
+
+/**
+ * The notes, scrolled. A controller (or a keyboard) reads them too: they have its focus first,
+ * outlined then; up and down scroll them, and past either end move the focus on (the buttons).
+ */
+@Composable
+private fun Notes(text: AnnotatedString, modifier: Modifier) {
+  val scroll = rememberScrollState()
+  val scope = rememberCoroutineScope()
+  val step = with(LocalDensity.current) { NOTES_STEP.toPx() }
+  var focused by remember { mutableStateOf(false) }
+  Column(
+    modifier
+      .focusRequester(rememberFocusOnShow())
+      .onFocusChanged { focused = it.isFocused }
+      .onKeyEvent { e ->
+        val by = when (e.key) {
+          Key.DirectionDown -> step.takeIf { scroll.canScrollForward }
+          Key.DirectionUp -> (-step).takeIf { scroll.canScrollBackward }
+          else -> null
+        } ?: return@onKeyEvent false
+        if (e.type == KeyEventType.KeyDown) scope.launch { scroll.scrollBy(by) }
+        true
+      }
+      .focusable()
+      .border(2.dp, if (focused) MaterialTheme.colorScheme.primary else Color.Transparent, RoundedCornerShape(8.dp))
+      .padding(horizontal = 6.dp, vertical = 4.dp)
+      .verticalScroll(scroll),
+  ) {
+    Text(text, style = MaterialTheme.typography.bodyMedium)
+  }
+}
+
+/** How far a key scrolls the notes: three lines or so. */
+private val NOTES_STEP = 64.dp
 
 /**
  * Release notes' Markdown, plainly: headings in bold, list items with a bullet (indented by level),

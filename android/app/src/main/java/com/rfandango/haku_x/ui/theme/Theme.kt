@@ -3,10 +3,16 @@ package com.rfandango.haku_x.ui.theme
 import android.content.Context
 import android.content.res.Configuration
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material.ripple.RippleAlpha
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RippleConfiguration
+import androidx.compose.material3.RippleDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
@@ -101,7 +107,26 @@ fun appInDarkTheme(): Boolean {
   return AppTheme.isDark(mode, isSystemInDarkTheme())
 }
 
+/**
+ * What has a controller's (or keyboard's) focus stands out: its highlight at 24 %, Material's 10 % is
+ * hard to find on a handheld's screen. Presses and the rest are Material's.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+private val FocusRipple = RippleDefaults.RippleAlpha.let {
+  RippleConfiguration(
+    rippleAlpha = RippleAlpha(
+      draggedAlpha = it.draggedAlpha,
+      focusedAlpha = 0.24f,
+      hoveredAlpha = it.hoveredAlpha,
+      pressedAlpha = it.pressedAlpha,
+    ),
+  )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HakuXTheme(dark: Boolean = appInDarkTheme(), content: @Composable () -> Unit) {
-  MaterialTheme(colorScheme = if (dark) HakuXDarkColors else HakuXColors, content = content)
+  MaterialTheme(colorScheme = if (dark) HakuXDarkColors else HakuXColors) {
+    CompositionLocalProvider(LocalRippleConfiguration provides FocusRipple, content = content)
+  }
 }

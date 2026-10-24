@@ -6,8 +6,10 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
 import android.widget.BaseAdapter
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -54,6 +56,15 @@ class SaveStates(
         .setNegativeButton(android.R.string.cancel, null)
     )
     adapter.dialog = dialog
+    /* a controller's X (or Delete) deletes the slot it's on: the row's delete button takes no focus */
+    if (!save) {
+      dialog.listView.setOnKeyListener { list, code, e ->
+        val i = (list as AdapterView<*>).selectedItemPosition
+        if (code !in DELETE_KEYS || i == AdapterView.INVALID_POSITION) return@setOnKeyListener false
+        if (e.action == KeyEvent.ACTION_UP) adapter.delete(adapter.getItem(i))
+        true
+      }
+    }
   }
 
   fun save(slot: Int) {
@@ -172,15 +183,21 @@ class SaveStates(
           contentDescription = activity.getString(R.string.state_delete)
           setPadding(pad, pad, pad, pad)
           isFocusable = false
-          setOnClickListener {
-            confirmDelete(slot) {
-              slots.remove(slot)
-              if (slots.isEmpty()) dialog?.dismiss() else notifyDataSetChanged()
-            }
-          }
+          setOnClickListener { delete(slot) }
         })
       }
       return row
     }
+
+    fun delete(slot: Int) {
+      confirmDelete(slot) {
+        slots.remove(slot)
+        if (slots.isEmpty()) dialog?.dismiss() else notifyDataSetChanged()
+      }
+    }
+  }
+
+  private companion object {
+    val DELETE_KEYS = setOf(KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_DEL, KeyEvent.KEYCODE_FORWARD_DEL)
   }
 }

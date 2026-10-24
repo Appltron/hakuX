@@ -34,6 +34,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -302,11 +307,26 @@ fun ControllerMappingScreen(deviceId: Int, onBack: () -> Unit) {
   }
 }
 
+/** A slider with its value; a controller's left and right move it by 0.01 (Material's takes no keys). */
 @Composable
 private fun LabeledSlider(title: String, value: Float, range: ClosedFloatingPointRange<Float>, onDone: (Float) -> Unit) {
   var v by remember(value) { mutableStateOf(value) }
   Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
     Text("$title: %.2f".format(v), style = MaterialTheme.typography.bodyMedium)
-    Slider(value = v, onValueChange = { v = it }, valueRange = range, onValueChangeFinished = { onDone(v) })
+    Slider(
+      value = v,
+      onValueChange = { v = it },
+      valueRange = range,
+      onValueChangeFinished = { onDone(v) },
+      modifier = Modifier.onKeyEvent { e ->
+        val step = when (e.key) {
+          Key.DirectionLeft -> -0.01f
+          Key.DirectionRight -> 0.01f
+          else -> return@onKeyEvent false
+        }
+        if (e.type == KeyEventType.KeyDown) v = (v + step).coerceIn(range) else onDone(v)
+        true
+      },
+    )
   }
 }
