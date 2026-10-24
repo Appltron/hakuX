@@ -11,10 +11,20 @@ libraries in, then build the APK.
 - CMake 3.20 or later, Ninja
 - JDK 21
 
-## Sources outside the repository
+## Sources
 
-- The FEX fork, branch `haku` (CMake `HAKUX_FEX_DIR`).
-- The core's third-party sources (CMake `NC_DEPS`):
+- The FEX fork ([rfandango/FEX](https://github.com/rfandango/FEX), branch
+  `hakuX`) is the submodule `external/fex`, with the FEX submodules it builds
+  with:
+
+  ```
+  git submodule update --init external/fex
+  git -C external/fex submodule update --init External/fmt External/range-v3 \
+    External/rpmalloc External/unordered_dense External/xxhash Source/Common/cpp-optparse
+  ```
+
+  CMake `HAKUX_FEX_DIR` names another checkout instead.
+- The core's third-party sources, outside the repository (CMake `NC_DEPS`):
 
 | Path in `NC_DEPS` | Revision |
 |---|---|
@@ -34,7 +44,7 @@ From the repository root:
 cmake -S native -B build/native/core -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=<ndk>/build/cmake/android.toolchain.cmake \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 -DCMAKE_BUILD_TYPE=Release \
-  -DHAKUX_FEX_DIR=<fex> -DNC_DEPS=<native-deps>
+  -DNC_DEPS=<native-deps>
 ninja -C build/native/core hakuxcore
 bash tools/native/app-libs.sh
 cd android

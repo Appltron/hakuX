@@ -1,10 +1,14 @@
-# FEXCore from the FEX fork (branch haku), for the native core and its tests.
+# FEXCore from the FEX fork (branch hakuX), for the native core and its tests.
 #
 # Provides the target nc_fex: FEXCore plus FEX's host feature detection
 # (taken from its front-end Common library without the rest of it), with the
 # directory-scoped definitions FEX sources expect.
 
-set(HAKUX_FEX_DIR "D:/code/FEX" CACHE PATH "Checkout of the FEX fork (branch haku)")
+set(HAKUX_FEX_DIR "${CMAKE_CURRENT_LIST_DIR}/../../external/fex" CACHE PATH "Checkout of the FEX fork (branch hakuX)")
+if(NOT EXISTS "${HAKUX_FEX_DIR}/CMakeLists.txt")
+  message(FATAL_ERROR "No FEX fork at ${HAKUX_FEX_DIR}: git submodule update --init external/fex "
+    "(and its submodules, android/README.md), or set HAKUX_FEX_DIR")
+endif()
 
 # FEXCore only. No thunks, tests, FEXConfig, telemetry, glibc jemalloc,
 # vixl or LTO; FEX's own allocator (rpmalloc) stays on.
