@@ -6,17 +6,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -26,12 +19,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import com.rfandango.haku_x.R
 import com.rfandango.haku_x.data.AppPrefs
 import com.rfandango.haku_x.data.GameOverrides
 import com.rfandango.haku_x.data.GameSetting
+import com.rfandango.haku_x.ui.common.ChoiceDialog
+import com.rfandango.haku_x.ui.common.Hint
+import com.rfandango.haku_x.ui.common.Section
+import com.rfandango.haku_x.ui.common.SubScreen
 
 /** A setting a game can override: its values (as stored) and how they read. */
 private class Overridable(
@@ -48,17 +43,13 @@ private val ON_OFF = listOf("true", "false")
 private fun onOff(value: String) =
   stringResource(if (value == "true") R.string.game_settings_on else R.string.game_settings_off)
 
-@Composable
-private fun scaleLabel(value: String) =
-  if (value == "1") stringResource(R.string.settings_scale_native) else "${value}x"
-
 private val SECTIONS: List<Pair<Int, List<Overridable>>> = listOf(
   R.string.settings_section_display to listOf(
     Overridable(GameSetting.UNCAPPED, R.string.settings_uncap, ON_OFF, { it.uncapped.toString() }, { onOff(it) }),
     Overridable(GameSetting.ASPECT, R.string.settings_aspect, ASPECTS, { it.aspectRatio }, { stringResource(aspectLabel(it)) }),
   ),
   R.string.settings_section_graphics to listOf(
-    Overridable(GameSetting.RENDER_SCALE, R.string.settings_scale, (1..4).map { "$it" }, { it.renderScale.toString() }, { scaleLabel(it) }),
+    Overridable(GameSetting.RENDER_SCALE, R.string.settings_scale, SCALES.map { "$it" }, { it.renderScale.toString() }, { scaleLabel(it.toInt()) }),
     Overridable(GameSetting.FXAA, R.string.settings_fxaa, ON_OFF, { it.fxaa.toString() }, { onOff(it) }),
     Overridable(GameSetting.UPSCALE, R.string.settings_upscale, UPSCALERS, { it.upscaleFilter }, { stringResource(upscaleLabel(it)) }),
     Overridable(GameSetting.ASYNC_SHADERS, R.string.settings_async_shaders, ON_OFF, { it.asyncShaders.toString() }, { onOff(it) }),
@@ -78,7 +69,6 @@ private val SECTIONS: List<Pair<Int, List<Overridable>>> = listOf(
 )
 
 /** One game's settings: each follows the app's until the game overrides it. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GameSettingsScreen(gameKey: String, title: String, onBack: () -> Unit) {
   val context = LocalContext.current
@@ -89,45 +79,22 @@ fun GameSettingsScreen(gameKey: String, title: String, onBack: () -> Unit) {
   }
   var editing by remember { mutableStateOf<Overridable?>(null) }
 
-  Scaffold(
-    topBar = {
-      TopAppBar(
-        title = {
-          Column {
-            Text(stringResource(R.string.game_settings_title))
-            Text(
-              title,
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-          }
+  SubScreen(
+    title = stringResource(R.string.game_settings_title),
+    subtitle = title,
+    onBack = onBack,
+    actions = {
+      TextButton(
+        onClick = {
+          overrides.clear()
+          GameSetting.entries.forEach { values[it] = null }
         },
-        navigationIcon = {
-          IconButton(onClick = onBack) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
-          }
-        },
-        actions = {
-          TextButton(
-            onClick = {
-              overrides.clear()
-              GameSetting.entries.forEach { values[it] = null }
-            },
-            enabled = values.values.any { it != null },
-          ) { Text(stringResource(R.string.game_settings_reset)) }
-        },
-      )
+        enabled = values.values.any { it != null },
+      ) { Text(stringResource(R.string.game_settings_reset)) }
     },
   ) { padding ->
     Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
-      Text(
-        stringResource(R.string.game_settings_desc),
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-      )
+      Hint(stringResource(R.string.game_settings_desc))
       for ((section, items) in SECTIONS) {
         Section(stringResource(section))
         for (item in items) {

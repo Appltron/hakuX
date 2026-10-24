@@ -6,34 +6,19 @@ import android.content.Context
 import android.net.Uri
 import android.text.format.DateFormat
 import android.text.format.DateUtils
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -42,12 +27,9 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.unit.dp
 import com.rfandango.haku_x.BuildConfig
 import com.rfandango.haku_x.GpuDriverHelper
 import com.rfandango.haku_x.NativeCoreActivity
@@ -57,6 +39,15 @@ import com.rfandango.haku_x.data.Logs
 import com.rfandango.haku_x.data.PreviousVersion
 import com.rfandango.haku_x.data.Storage
 import com.rfandango.haku_x.data.Updates
+import com.rfandango.haku_x.ui.common.ActionItem
+import com.rfandango.haku_x.ui.common.ChoiceDialog
+import com.rfandango.haku_x.ui.common.ConfirmDialog
+import com.rfandango.haku_x.ui.common.DeleteButton
+import com.rfandango.haku_x.ui.common.Hint
+import com.rfandango.haku_x.ui.common.Section
+import com.rfandango.haku_x.ui.common.SubScreen
+import com.rfandango.haku_x.ui.common.SwitchItem
+import com.rfandango.haku_x.ui.common.notify
 import com.rfandango.haku_x.ui.update.UpdateDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -65,7 +56,6 @@ import java.util.Calendar
 import java.util.GregorianCalendar
 
 /** What the core reads at game start, plus the games folders the library scans. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
   onBack: () -> Unit,
@@ -125,33 +115,22 @@ fun SettingsScreen(
       }
     }
   }
+  val snackbar = remember { SnackbarHostState() }
   /* The folder the logs' ZIP goes to (data/Logs.kt). */
   val pickLogsFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
     if (uri != null) {
-      Toast.makeText(context, R.string.settings_export_logs_working, Toast.LENGTH_SHORT).show()
+      snackbar.notify(scope, context.getString(R.string.settings_export_logs_working))
       scope.launch {
         val name = withContext(Dispatchers.IO) { Logs.export(context, uri) }
-        Toast.makeText(
-          context,
+        snackbar.notify(
+          scope,
           if (name != null) context.getString(R.string.settings_export_logs_done, name)
           else context.getString(R.string.settings_export_logs_failed),
-          Toast.LENGTH_LONG,
-        ).show()
+        )
       }
     }
   }
-  Scaffold(
-    topBar = {
-      TopAppBar(
-        title = { Text(stringResource(R.string.settings_title)) },
-        navigationIcon = {
-          IconButton(onClick = onBack) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
-          }
-        },
-      )
-    },
-  ) { padding ->
+  SubScreen(title = stringResource(R.string.settings_title), onBack = onBack, snackbar = snackbar) { padding ->
     Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
       Section(stringResource(R.string.settings_section_games))
       for (f in folders) {
@@ -159,11 +138,7 @@ fun SettingsScreen(
           headlineContent = { Text(Storage.folderLabel(context, f)) },
           supportingContent = { Text(Storage.folderPlace(context, f)) },
           trailingContent = if (folders.size > 1) {
-            {
-              IconButton(onClick = { removing = f }) {
-                Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.settings_games_folder_remove))
-              }
-            }
+            { DeleteButton(onClick = { removing = f }, description = stringResource(R.string.settings_games_folder_remove)) }
           } else {
             null
           },
@@ -173,15 +148,14 @@ fun SettingsScreen(
           },
         )
       }
-      ListItem(
-        headlineContent = { Text(stringResource(R.string.settings_games_folder_add)) },
-        supportingContent = { Text(stringResource(R.string.settings_games_folder_add_desc)) },
-        leadingContent = { Icon(Icons.Filled.Add, contentDescription = null) },
-        modifier = Modifier.clickable {
-          replacing = null
-          pickFolder.launch(folders.lastOrNull())
-        },
-      )
+      ActionItem(
+        title = stringResource(R.string.settings_games_folder_add),
+        summary = stringResource(R.string.settings_games_folder_add_desc),
+        icon = Icons.Filled.Add,
+      ) {
+        replacing = null
+        pickFolder.launch(folders.lastOrNull())
+      }
 
       Section(stringResource(R.string.settings_section_controls))
       ListItem(
@@ -254,12 +228,7 @@ fun SettingsScreen(
       )
 
       Section(stringResource(R.string.settings_section_console_video))
-      Text(
-        stringResource(R.string.settings_console_video_desc),
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-      )
+      Hint(stringResource(R.string.settings_console_video_desc))
       ListItem(
         headlineContent = { Text(stringResource(R.string.settings_screen_format)) },
         supportingContent = { Text(stringResource(formatLabel(format))) },
@@ -363,15 +332,12 @@ fun SettingsScreen(
               if (release != null) {
                 updateRelease = release
               } else {
-                Toast.makeText(
-                  context, context.getString(R.string.update_none, Updates.installedVersion(context)), Toast.LENGTH_SHORT,
-                ).show()
+                snackbar.notify(scope, context.getString(R.string.update_none, Updates.installedVersion(context)))
               }
             }.onFailure {
-              Toast.makeText(
-                context, context.getString(R.string.update_check_failed, it.message ?: it.javaClass.simpleName),
-                Toast.LENGTH_LONG,
-              ).show()
+              snackbar.notify(
+                scope, context.getString(R.string.update_check_failed, it.message ?: it.javaClass.simpleName),
+              )
             }
           }
         },
@@ -454,53 +420,35 @@ fun SettingsScreen(
     )
   }
   if (scaleDialog) {
-    ScaleDialog(
+    ChoiceDialog(
+      title = stringResource(R.string.settings_scale),
+      options = SCALES.map { it to scaleLabel(it) },
       current = scale,
       onPick = { scale = it; prefs.renderScale = it; scaleDialog = false },
       onDismiss = { scaleDialog = false },
     )
   }
   removing?.let { f ->
-    AlertDialog(
-      onDismissRequest = { removing = null },
-      title = { Text(stringResource(R.string.settings_games_folder_remove)) },
-      text = {
-        Text(stringResource(R.string.settings_games_folder_remove_text, Storage.folderPlace(context, f)))
+    ConfirmDialog(
+      title = stringResource(R.string.settings_games_folder_remove),
+      text = stringResource(R.string.settings_games_folder_remove_text, Storage.folderPlace(context, f)),
+      confirm = stringResource(R.string.settings_games_folder_remove_confirm),
+      onConfirm = {
+        prefs.gamesFolders = folders - f
+        folders = prefs.gamesFolders
+        Storage.releasePermission(context, f)
+        removing = null
       },
-      confirmButton = {
-        TextButton(onClick = {
-          prefs.gamesFolders = folders - f
-          folders = prefs.gamesFolders
-          Storage.releasePermission(context, f)
-          removing = null
-        }) { Text(stringResource(R.string.settings_games_folder_remove_confirm)) }
-      },
-      dismissButton = {
-        TextButton(onClick = { removing = null }) { Text(stringResource(android.R.string.cancel)) }
-      },
+      onDismiss = { removing = null },
     )
   }
 }
 
-@Composable
-internal fun Section(title: String) {
-  Text(
-    title,
-    style = MaterialTheme.typography.labelLarge,
-    color = MaterialTheme.colorScheme.primary,
-    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 4.dp),
-  )
-}
+/** The render scales: native, then 2x to 4x. */
+internal val SCALES = (1..4).toList()
 
 @Composable
-internal fun SwitchItem(title: String, summary: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-  ListItem(
-    headlineContent = { Text(title) },
-    supportingContent = { Text(summary) },
-    trailingContent = { Switch(checked = checked, onCheckedChange = null) },
-    modifier = Modifier.selectable(selected = checked, role = Role.Switch) { onChange(!checked) },
-  )
-}
+internal fun scaleLabel(value: Int) = if (value == 1) stringResource(R.string.settings_scale_native) else "${value}x"
 
 internal val ASPECTS = listOf("auto", "4:3", "16:9", "stretch")
 
@@ -586,68 +534,6 @@ internal fun aspectLabel(value: String) = when (value) {
   "16:9" -> R.string.settings_aspect_16_9
   "stretch" -> R.string.settings_aspect_stretch
   else -> R.string.settings_aspect_auto
-}
-
-/** A choice of one, as radio buttons. */
-@Composable
-internal fun <T> ChoiceDialog(
-  title: String,
-  options: List<Pair<T, String>>,
-  current: T,
-  onPick: (T) -> Unit,
-  onDismiss: () -> Unit,
-) {
-  AlertDialog(
-    onDismissRequest = onDismiss,
-    title = { Text(title) },
-    text = {
-      Column {
-        for ((value, label) in options) {
-          Row(
-            Modifier
-              .fillMaxWidth()
-              .selectable(selected = value == current, role = Role.RadioButton) { onPick(value) }
-              .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            RadioButton(selected = value == current, onClick = null)
-            Text(label, modifier = Modifier.padding(start = 12.dp))
-          }
-        }
-      }
-    },
-    confirmButton = {},
-    dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(android.R.string.cancel)) } },
-  )
-}
-
-@Composable
-private fun ScaleDialog(current: Int, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
-  AlertDialog(
-    onDismissRequest = onDismiss,
-    title = { Text(stringResource(R.string.settings_scale)) },
-    text = {
-      Column {
-        for (s in 1..4) {
-          Row(
-            Modifier
-              .fillMaxWidth()
-              .selectable(selected = s == current, role = Role.RadioButton) { onPick(s) }
-              .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            RadioButton(selected = s == current, onClick = null)
-            Text(
-              if (s == 1) stringResource(R.string.settings_scale_native) else "${s}x",
-              modifier = Modifier.padding(start = 12.dp),
-            )
-          }
-        }
-      }
-    },
-    confirmButton = {},
-    dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(android.R.string.cancel)) } },
-  )
 }
 
 /** The driver in use, for the settings' GPU driver item (its version, when its package names one). */

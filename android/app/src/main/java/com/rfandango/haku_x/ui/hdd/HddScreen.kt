@@ -20,36 +20,25 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
@@ -64,7 +53,18 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.rfandango.haku_x.R
 import com.rfandango.haku_x.data.hdd.ConsoleFiles
 import com.rfandango.haku_x.data.hdd.HddStore
-import com.rfandango.haku_x.ui.settings.Section
+import com.rfandango.haku_x.ui.common.ActionItem
+import com.rfandango.haku_x.ui.common.CheckItem
+import com.rfandango.haku_x.ui.common.ConfirmDialog
+import com.rfandango.haku_x.ui.common.DeleteButton
+import com.rfandango.haku_x.ui.common.EmptyText
+import com.rfandango.haku_x.ui.common.Hint
+import com.rfandango.haku_x.ui.common.NoticeEffect
+import com.rfandango.haku_x.ui.common.ProgressBlock
+import com.rfandango.haku_x.ui.common.Section
+import com.rfandango.haku_x.ui.common.SubScreen
+import com.rfandango.haku_x.ui.common.ThumbnailShape
+import com.rfandango.haku_x.ui.common.fractionOf
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -80,7 +80,6 @@ import java.util.Locale
  * disk image (qcow2 or raw) or its saves, re-signed for hakuX with keys read
  * from the user's dumps (the console files).
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
   val context = LocalContext.current
@@ -98,15 +97,12 @@ fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
   val notice by vm.notice.collectAsStateWithLifecycle()
   val saveImport by vm.saveImport.collectAsStateWithLifecycle()
   val restore by vm.restore.collectAsStateWithLifecycle()
-  LaunchedEffect(notice) {
-    // cleared once shown: clearing it first changes the key, which cancels the snackbar
-    snackbar.showSnackbar(notice ?: return@LaunchedEffect)
-    vm.noticeShown()
-  }
+  NoticeEffect(snackbar, notice, vm::noticeShown)
 
   val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-    if (uri != null) confirm = Confirm(R.string.hdd_import_confirm_title, context.getString(R.string.hdd_import_confirm)) {
-      vm.import(uri)
+    if (uri != null) {
+      confirm = Confirm(R.string.hdd_import_confirm_title, context.getString(R.string.hdd_import_confirm),
+                        R.string.hdd_import_replace) { vm.import(uri) }
     }
   }
   val createBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri: Uri? ->
@@ -133,26 +129,9 @@ fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
     createZip.launch(name.replace(Regex("[\\\\/:*?\"<>|]"), "_") + ".zip")
   }
 
-  Scaffold(
-    snackbarHost = { SnackbarHost(snackbar) },
-    topBar = {
-      TopAppBar(
-        title = { Text(stringResource(R.string.hdd_title)) },
-        navigationIcon = {
-          IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) }
-        },
-      )
-    },
-  ) { padding ->
+  SubScreen(title = stringResource(R.string.hdd_title), onBack = onBack, snackbar = snackbar) { padding ->
     LazyColumn(Modifier.padding(padding).fillMaxSize()) {
-      item {
-        Text(
-          stringResource(R.string.hdd_desc),
-          style = MaterialTheme.typography.bodyMedium,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
-      }
+      item { Hint(stringResource(R.string.hdd_desc)) }
       c.usage?.let { u ->
         item { Section(stringResource(R.string.hdd_space)) }
         item { UsageRow(stringResource(R.string.hdd_space_saves), size(u.saves)) }
@@ -166,11 +145,11 @@ fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
               headlineContent = { Text(stringResource(R.string.hdd_previous)) },
               supportingContent = { Text(stringResource(R.string.hdd_previous_desc, size(img.length()))) },
               trailingContent = {
-                IconButton(onClick = {
+                DeleteButton(onClick = {
                   confirm = Confirm(R.string.hdd_previous_delete, context.getString(R.string.hdd_previous_delete_desc)) {
                     vm.deletePreviousImage()
                   }
-                }) { Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.state_delete)) }
+                })
               },
             )
           }
@@ -196,25 +175,23 @@ fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
       }
 
       item { Section(stringResource(R.string.hdd_saves)) }
-      if (c.saves.isEmpty() && !c.loading) item { Empty(stringResource(R.string.hdd_saves_none)) }
+      if (c.saves.isEmpty() && !c.loading) item { EmptyText(stringResource(R.string.hdd_saves_none)) }
       item {
-        ListItem(
-          headlineContent = { Text(stringResource(R.string.hdd_saves_import)) },
-          supportingContent = { Text(stringResource(R.string.hdd_saves_import_desc)) },
-          trailingContent = { Icon(Icons.Filled.Add, contentDescription = null) },
-          modifier = Modifier.clickable {
-            pickSaves.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
-          },
-        )
+        ActionItem(
+          title = stringResource(R.string.hdd_saves_import),
+          summary = stringResource(R.string.hdd_saves_import_desc),
+          icon = Icons.Filled.Add,
+        ) {
+          pickSaves.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+        }
       }
       if (c.saves.isNotEmpty()) {
         item {
-          ListItem(
-            headlineContent = { Text(stringResource(R.string.hdd_saves_export_all)) },
-            supportingContent = { Text(stringResource(R.string.hdd_saves_export_all_desc)) },
-            trailingContent = { Icon(Icons.Filled.Share, contentDescription = null) },
-            modifier = Modifier.clickable { saveZip("", context.getString(R.string.hdd_saves_export_all_file)) },
-          )
+          ActionItem(
+            title = stringResource(R.string.hdd_saves_export_all),
+            summary = stringResource(R.string.hdd_saves_export_all_desc),
+            icon = Icons.Filled.Share,
+          ) { saveZip("", context.getString(R.string.hdd_saves_export_all_file)) }
         }
       }
       items(c.saves, key = { "s" + it.id }) { t ->
@@ -242,11 +219,11 @@ fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
                     IconButton(onClick = { saveZip("${t.id}/${s.dir.name}", "${t.name ?: t.id} - ${s.name}") }) {
                       Icon(Icons.Filled.Share, contentDescription = stringResource(R.string.hdd_save_export))
                     }
-                    IconButton(onClick = {
+                    DeleteButton(onClick = {
                       confirm = Confirm(R.string.hdd_save_delete, context.getString(R.string.hdd_save_delete_desc, s.name)) {
                         vm.delete(s.dir)
                       }
-                    }) { Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.state_delete)) }
+                    })
                   }
                 },
               )
@@ -275,24 +252,17 @@ fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
             headlineContent = { Text(t.name ?: stringResource(R.string.hdd_title_id, t.id), maxLines = 1, overflow = TextOverflow.Ellipsis) },
             supportingContent = { Text(size(t.size)) },
             trailingContent = {
-              IconButton(onClick = {
+              DeleteButton(onClick = {
                 confirm = Confirm(R.string.hdd_title_data_delete,
                                   context.getString(R.string.hdd_title_data_delete_desc, t.name ?: t.id)) { vm.delete(t.dir) }
-              }) { Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.state_delete)) }
+              })
             },
           )
         }
       }
 
       item { Section(stringResource(R.string.hdd_caches)) }
-      item {
-        Text(
-          stringResource(R.string.hdd_caches_desc),
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          modifier = Modifier.padding(horizontal = 16.dp),
-        )
-      }
+      item { Hint(stringResource(R.string.hdd_caches_desc)) }
       items(c.caches, key = { "c" + it.part }) { d ->
         ListItem(
           headlineContent = { Text(stringResource(R.string.hdd_cache_drive, d.drive)) },
@@ -303,9 +273,8 @@ fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
           trailingContent = {
             if (d.formatted) {
               TextButton(onClick = {
-                confirm = Confirm(R.string.hdd_cache_clear, context.getString(R.string.hdd_cache_clear_desc, d.drive)) {
-                  vm.clearCache(d.part)
-                }
+                confirm = Confirm(R.string.hdd_cache_clear_title, context.getString(R.string.hdd_cache_clear_desc, d.drive),
+                                  R.string.hdd_cache_clear) { vm.clearCache(d.part) }
               }) { Text(stringResource(R.string.hdd_cache_clear)) }
             }
           },
@@ -321,24 +290,17 @@ fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
             headlineContent = { Text(names[id] ?: s.key, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             supportingContent = { Text(pluralStringResource(R.plurals.hdd_states_count, s.slots, s.slots, size(s.size))) },
             trailingContent = {
-              IconButton(onClick = {
+              DeleteButton(onClick = {
                 confirm = Confirm(R.string.hdd_states_delete,
                                   context.getString(R.string.hdd_states_delete_desc, names[id] ?: s.key)) { vm.delete(s.dir) }
-              }) { Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.state_delete)) }
+              })
             },
           )
         }
       }
 
       item { Section(stringResource(R.string.hdd_xbox)) }
-      item {
-        Text(
-          stringResource(R.string.hdd_xbox_desc),
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          modifier = Modifier.padding(horizontal = 16.dp),
-        )
-      }
+      item { Hint(stringResource(R.string.hdd_xbox_desc)) }
       val cs = c.console
       items(ConsoleFiles.Kind.entries, key = { "k" + it.name }) { k ->
         val set = cs != null && k in cs.set
@@ -379,17 +341,15 @@ fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
   }
 
   confirm?.let { cf ->
-    AlertDialog(
-      onDismissRequest = { confirm = null },
-      title = { Text(stringResource(cf.title)) },
-      text = { Text(cf.text) },
-      confirmButton = {
-        TextButton(onClick = {
-          confirm = null
-          cf.action()
-        }) { Text(stringResource(R.string.hdd_confirm)) }
+    ConfirmDialog(
+      title = stringResource(cf.title),
+      text = cf.text,
+      confirm = stringResource(cf.confirm),
+      onConfirm = {
+        confirm = null
+        cf.action()
       },
-      dismissButton = { TextButton(onClick = { confirm = null }) { Text(stringResource(android.R.string.cancel)) } },
+      onDismiss = { confirm = null },
     )
   }
 
@@ -402,9 +362,9 @@ fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
       title = { Text(stringResource(R.string.hdd_backup_make)) },
       text = {
         Column {
-          CheckRow(stringResource(R.string.hdd_backup_states, size(u?.states ?: 0)), null, backupStates) { backupStates = it }
-          CheckRow(stringResource(R.string.hdd_backup_caches, size(u?.caches ?: 0)),
-                   stringResource(R.string.hdd_backup_caches_desc), backupCaches) { backupCaches = it }
+          CheckItem(stringResource(R.string.hdd_backup_states, size(u?.states ?: 0)), null, backupStates) { backupStates = it }
+          CheckItem(stringResource(R.string.hdd_backup_caches, size(u?.caches ?: 0)),
+                    stringResource(R.string.hdd_backup_caches_desc), backupCaches) { backupCaches = it }
         }
       },
       confirmButton = {
@@ -475,18 +435,8 @@ fun HddScreen(onBack: () -> Unit, vm: HddViewModel = viewModel()) {
   }
 }
 
-private class Confirm(val title: Int, val text: String, val action: () -> Unit)
-
-@Composable
-private fun CheckRow(label: String, desc: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
-  Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }, verticalAlignment = Alignment.CenterVertically) {
-    Checkbox(checked = checked, onCheckedChange = onChange)
-    Column {
-      Text(label)
-      desc?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-    }
-  }
-}
+/** A question before action: its title, its text, its button (what it does: Delete, by default). */
+private class Confirm(val title: Int, val text: String, val confirm: Int = R.string.common_delete, val action: () -> Unit)
 
 @Composable
 private fun UsageRow(label: String, value: String) {
@@ -496,26 +446,15 @@ private fun UsageRow(label: String, value: String) {
   }
 }
 
-@Composable
-private fun Empty(text: String) {
-  Text(
-    text,
-    style = MaterialTheme.typography.bodyMedium,
-    color = MaterialTheme.colorScheme.onSurfaceVariant,
-    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-  )
-}
-
 /** A title's or a save's .xbx image, or a blank square. */
 @Composable
 private fun XbxIcon(f: File?, small: Boolean = false) {
   val px = if (small) 32.dp else 40.dp
   val bmp = remember(f?.path) { HddStore.icon(f)?.asImageBitmap() }
-  val shape = RoundedCornerShape(6.dp)
   if (bmp != null) {
-    Image(bmp, contentDescription = null, modifier = Modifier.size(px).clip(shape))
+    Image(bmp, contentDescription = null, modifier = Modifier.size(px).clip(ThumbnailShape))
   } else {
-    Box(Modifier.size(px).clip(shape).background(MaterialTheme.colorScheme.surfaceVariant))
+    Box(Modifier.size(px).clip(ThumbnailShape).background(MaterialTheme.colorScheme.surfaceVariant))
   }
 }
 
@@ -560,19 +499,10 @@ private fun JobDialog(j: HddViewModel.Job, size: (Long) -> String, names: (Colle
               }
             }
           }
-          else -> {
-            LinearProgressIndicator(
-              progress = { if (j.total > 0) (j.done.toFloat() / j.total).coerceIn(0f, 1f) else 0f },
-              modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-              if (j.what.isNotEmpty()) j.what else "${size(j.done)} / ${size(j.total)}",
-              style = MaterialTheme.typography.bodySmall,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-          }
+          else -> ProgressBlock(
+            fractionOf(j.done, j.total),
+            if (j.what.isNotEmpty()) j.what else if (j.total > 0) "${size(j.done)} / ${size(j.total)}" else null,
+          )
         }
       }
     },

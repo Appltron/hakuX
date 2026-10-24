@@ -13,11 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,6 +33,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.rfandango.haku_x.R
 import com.rfandango.haku_x.data.SaveStateStore
+import com.rfandango.haku_x.ui.common.ConfirmDialog
+import com.rfandango.haku_x.ui.common.DeleteButton
+import com.rfandango.haku_x.ui.common.ThumbnailShape
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.Dispatchers
@@ -84,9 +83,7 @@ fun LoadStatesDialog(
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
               }
-              IconButton(onClick = { deleting = slot }) {
-                Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.state_delete))
-              }
+              DeleteButton(onClick = { deleting = slot })
             }
           }
         }
@@ -97,18 +94,16 @@ fun LoadStatesDialog(
   )
 
   deleting?.let { slot ->
-    AlertDialog(
-      onDismissRequest = { deleting = null },
-      title = { Text(stringResource(R.string.state_delete_title)) },
-      text = { Text(stringResource(R.string.state_delete_message, slot)) },
-      confirmButton = {
-        TextButton(onClick = {
-          store.delete(slot)
-          slots = store.saved()
-          deleting = null
-        }) { Text(stringResource(R.string.state_delete)) }
+    ConfirmDialog(
+      title = stringResource(R.string.state_delete_title),
+      text = stringResource(R.string.state_delete_message, slot),
+      confirm = stringResource(R.string.common_delete),
+      onConfirm = {
+        store.delete(slot)
+        slots = store.saved()
+        deleting = null
       },
-      dismissButton = { TextButton(onClick = { deleting = null }) { Text(stringResource(android.R.string.cancel)) } },
+      onDismiss = { deleting = null },
     )
   }
 }
@@ -124,16 +119,15 @@ private fun Thumbnail(store: SaveStateStore, slot: Int) {
       }
     }
   }
-  val shape = RoundedCornerShape(6.dp)
   val shown = bitmap
   if (shown != null) {
     Image(
       shown,
       contentDescription = null,
       contentScale = ContentScale.Crop,
-      modifier = Modifier.size(96.dp, 72.dp).clip(shape),
+      modifier = Modifier.size(96.dp, 72.dp).clip(ThumbnailShape),
     )
   } else {
-    Box(Modifier.size(96.dp, 72.dp).clip(shape).background(MaterialTheme.colorScheme.surfaceVariant))
+    Box(Modifier.size(96.dp, 72.dp).clip(ThumbnailShape).background(MaterialTheme.colorScheme.surfaceVariant))
   }
 }

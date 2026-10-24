@@ -35,6 +35,9 @@
   <string name="game_settings_on">On</string>
   <string name="game_settings_off">Off</string>
 
+  <string name="common_back">Back</string>
+  <string name="common_delete">Delete</string>
+
   <string name="settings_title">Settings</string>
 
   <string name="settings_gpu_driver_title">GPU driver</string>
@@ -54,7 +57,6 @@
   <string name="gpu_driver_delete">Delete driver</string>
   <string name="gpu_driver_delete_text">%1$s will be deleted from the phone.</string>
   <string name="gpu_driver_delete_text_in_use">%1$s will be deleted from the phone, and hakuX goes back to the system driver.</string>
-  <string name="gpu_driver_delete_confirm">Delete</string>
   <string name="gpu_driver_selected">%1$s selected. It takes effect at the next game start.</string>
   <string name="gpu_driver_system_selected">System driver selected. It takes effect at the next game start.</string>
   <string name="gpu_driver_added">%1$s added and selected. It takes effect at the next game start.</string>
@@ -347,6 +349,7 @@
   </plurals>
   <string name="hdd_cache_empty">Empty</string>
   <string name="hdd_cache_clear">Clear</string>
+  <string name="hdd_cache_clear_title">Clear this cache drive?</string>
   <string name="hdd_cache_clear_desc">Drive %1$s will be emptied. A savestate that uses it brings its copy back when it loads.</string>
   <string name="hdd_states">Savestates</string>
   <plurals name="hdd_states_count">
@@ -395,7 +398,7 @@
     <item quantity="one">%1$d entry was left out (a name the other side can\'t hold):\n%2$s</item>
     <item quantity="other">%1$d entries were left out (names the other side can\'t hold):\n%2$s</item>
   </plurals>
-  <string name="hdd_confirm">Continue</string>
+  <string name="hdd_import_replace">Replace</string>
   <string name="library_load_state_title">Load state: %1$s</string>
   <string name="controllers_title">Physical controllers</string>
   <string name="controllers_settings_desc">Which controller plays as which of the four players, and each controller\'s buttons.</string>
@@ -421,6 +424,7 @@
   <string name="controllers_own">Only this controller</string>
   <string name="controllers_own_desc">Give this controller buttons of its own instead of every controller of its model. Identical wired controllers can trade them when they are connected in another order.</string>
   <string name="controllers_reset">Reset</string>
+  <string name="controllers_reset_desc">Back to the default buttons, or to the model\'s mapping for this controller\'s own</string>
   <string name="controllers_swap_face">Swap A/B and X/Y</string>
   <string name="controllers_inputs">Xbox controller</string>
   <string name="controllers_unbound">Not set</string>

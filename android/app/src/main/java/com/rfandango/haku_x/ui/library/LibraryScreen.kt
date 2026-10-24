@@ -39,7 +39,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -91,6 +90,10 @@ import com.rfandango.haku_x.data.ModCatalog
 import com.rfandango.haku_x.data.SaveStateStore
 import com.rfandango.haku_x.data.Updates
 import com.rfandango.haku_x.data.XisoConverter
+import com.rfandango.haku_x.ui.common.ConfirmDialog
+import com.rfandango.haku_x.ui.common.ProgressBlock
+import com.rfandango.haku_x.ui.common.ThumbnailShape
+import com.rfandango.haku_x.ui.common.fractionOf
 import com.rfandango.haku_x.ui.update.UpdateDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -196,7 +199,7 @@ private fun GameList(
   val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
   val colors = MaterialTheme.colorScheme
   val shape = remember { RoundedCornerShape(12.dp) }
-  val iconShape = remember { RoundedCornerShape(10.dp) }
+  val iconShape = ThumbnailShape
   val titleStyle = MaterialTheme.typography.titleMedium.copy(color = colors.onSurface)
   val idStyle = SMALL_PRINT.copy(fontFamily = FontFamily.Monospace, color = colors.onSurfaceVariant)
   LazyVerticalGrid(
@@ -339,14 +342,12 @@ private fun ConversionDialog(c: Conversion, vm: LibraryViewModel) {
   val context = LocalContext.current
   val title = c.game.title
   when (c.phase) {
-    Conversion.Phase.CONFIRM -> AlertDialog(
-      onDismissRequest = vm::dismissConversion,
-      title = { Text(stringResource(R.string.library_convert_title)) },
-      text = {
-        Text(stringResource(R.string.library_convert_message, title, c.output, XisoConverter.ORIGINALS_FOLDER))
-      },
-      confirmButton = { TextButton(onClick = vm::startConversion) { Text(stringResource(R.string.library_convert_action)) } },
-      dismissButton = { TextButton(onClick = vm::dismissConversion) { Text(stringResource(android.R.string.cancel)) } },
+    Conversion.Phase.CONFIRM -> ConfirmDialog(
+      title = stringResource(R.string.library_convert_title),
+      text = stringResource(R.string.library_convert_message, title, c.output, XisoConverter.ORIGINALS_FOLDER),
+      confirm = stringResource(R.string.library_convert_action),
+      onConfirm = vm::startConversion,
+      onDismiss = vm::dismissConversion,
     )
     Conversion.Phase.RUNNING -> {
       // The screen stays on: leaving the app mid-conversion risks it being stopped.
@@ -363,21 +364,16 @@ private fun ConversionDialog(c: Conversion, vm: LibraryViewModel) {
           Column {
             Text(title, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(12.dp))
-            if (c.total > 0) {
-              LinearProgressIndicator(progress = { c.done.toFloat() / c.total }, modifier = Modifier.fillMaxWidth())
-              Spacer(Modifier.height(6.dp))
-              Text(
+            ProgressBlock(
+              fractionOf(c.done, c.total),
+              if (c.total > 0) {
                 stringResource(
                   R.string.library_convert_progress,
                   Formatter.formatShortFileSize(context, c.done),
                   Formatter.formatShortFileSize(context, c.total),
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-            } else {
-              LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
+                )
+              } else null,
+            )
           }
         },
         confirmButton = {},
@@ -496,20 +492,11 @@ private fun LoadingDialog(read: Int, toRead: Int) {
     properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
     title = { Text(stringResource(R.string.library_loading_games)) },
     text = {
-      Column {
-        if (toRead > 0) {
-          LinearProgressIndicator(progress = { read.toFloat() / toRead }, modifier = Modifier.fillMaxWidth())
-          Spacer(Modifier.height(6.dp))
-          Text(
-            stringResource(R.string.library_loading_discs, read, toRead),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-        } else {
-          // Listing the folder: how many discs there are isn't known yet.
-          LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        }
-      }
+      // Listing the folder: how many discs there are isn't known yet.
+      ProgressBlock(
+        fractionOf(read.toLong(), toRead.toLong()),
+        if (toRead > 0) stringResource(R.string.library_loading_discs, read, toRead) else null,
+      )
     },
     confirmButton = {},
   )

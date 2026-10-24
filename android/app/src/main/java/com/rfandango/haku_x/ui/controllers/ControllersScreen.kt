@@ -9,16 +9,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -28,12 +20,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
 import com.rfandango.haku_x.R
 import com.rfandango.haku_x.data.Controllers
 import com.rfandango.haku_x.data.PlayerSlot
-import com.rfandango.haku_x.ui.settings.ChoiceDialog
-import com.rfandango.haku_x.ui.settings.Section
+import com.rfandango.haku_x.ui.common.ChoiceDialog
+import com.rfandango.haku_x.ui.common.EmptyText
+import com.rfandango.haku_x.ui.common.Hint
+import com.rfandango.haku_x.ui.common.Section
+import com.rfandango.haku_x.ui.common.SubScreen
 
 /** The connected controllers, kept current while the screen shows. */
 @Composable
@@ -58,7 +52,6 @@ internal fun rememberControllers(): List<InputDevice> {
  * and each controller's mapping. Read when a game starts;
  * the game's menu (Controllers) changes the players during a game.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ControllersScreen(onBack: () -> Unit, onMap: (deviceId: Int) -> Unit) {
   val context = LocalContext.current
@@ -71,23 +64,9 @@ fun ControllersScreen(onBack: () -> Unit, onMap: (deviceId: Int) -> Unit) {
     config = c
   }
 
-  Scaffold(
-    topBar = {
-      TopAppBar(
-        title = { Text(stringResource(R.string.controllers_title)) },
-        navigationIcon = {
-          IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) }
-        },
-      )
-    },
-  ) { padding ->
+  SubScreen(title = stringResource(R.string.controllers_title), onBack = onBack) { padding ->
     Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
-      Text(
-        stringResource(R.string.controllers_desc),
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-      )
+      Hint(stringResource(R.string.controllers_desc))
       val assigned = config.assign(devices)
       val byId = devices.associateBy { it.id }
       Section(stringResource(R.string.controllers_players))
@@ -108,7 +87,7 @@ fun ControllersScreen(onBack: () -> Unit, onMap: (deviceId: Int) -> Unit) {
 
       Section(stringResource(R.string.controllers_connected))
       if (devices.isEmpty()) {
-        ListItem(headlineContent = { Text(stringResource(R.string.controllers_none)) })
+        EmptyText(stringResource(R.string.controllers_none))
       }
       for (d in devices) {
         val player = assigned[d.id]

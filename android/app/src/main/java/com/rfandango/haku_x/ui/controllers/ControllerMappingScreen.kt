@@ -13,25 +13,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -54,8 +45,11 @@ import com.rfandango.haku_x.data.PadProfile
 import com.rfandango.haku_x.data.PadState
 import com.rfandango.haku_x.data.XInput
 import com.rfandango.haku_x.input.InputCapture
-import com.rfandango.haku_x.ui.settings.Section
-import com.rfandango.haku_x.ui.settings.SwitchItem
+import com.rfandango.haku_x.ui.common.ActionItem
+import com.rfandango.haku_x.ui.common.EmptyText
+import com.rfandango.haku_x.ui.common.Section
+import com.rfandango.haku_x.ui.common.SubScreen
+import com.rfandango.haku_x.ui.common.SwitchItem
 import kotlinx.coroutines.delay
 
 private const val TEST_IDLE_MS = 4000L
@@ -118,7 +112,6 @@ private fun describe(o: PadOut): String {
  * controller model's (every controller of that model), or this controller's
  * own; the test line shows the Duke as the game will see it.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ControllerMappingScreen(deviceId: Int, onBack: () -> Unit) {
   val context = LocalContext.current
@@ -201,24 +194,10 @@ fun ControllerMappingScreen(deviceId: Int, onBack: () -> Unit) {
   BackHandler(enabled = capturing != null) { capturing = null }
 
   Box(Modifier.fillMaxSize()) {
-    Scaffold(
-      topBar = {
-        TopAppBar(
-          title = {
-            Column {
-              Text(stringResource(R.string.controllers_mapping_title))
-              Text(device?.name ?: "", style = MaterialTheme.typography.bodySmall)
-            }
-          },
-          navigationIcon = {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) }
-          },
-        )
-      },
-    ) { padding ->
+    SubScreen(title = stringResource(R.string.controllers_mapping_title), subtitle = device?.name, onBack = onBack) { padding ->
       Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
         if (device == null) {
-          ListItem(headlineContent = { Text(stringResource(R.string.controllers_gone)) })
+          EmptyText(stringResource(R.string.controllers_gone))
           return@Column
         }
         ListItem(
@@ -243,16 +222,13 @@ fun ControllerMappingScreen(deviceId: Int, onBack: () -> Unit) {
           checked = unit,
           onChange = { unit = it; store(profile, it) },
         )
-        Row(
-          Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-          OutlinedButton(onClick = { reset() }) {
-            Text(stringResource(R.string.controllers_reset))
-          }
-          OutlinedButton(onClick = { store(profile.swapFaceButtons()) }) {
-            Text(stringResource(R.string.controllers_swap_face))
-          }
+        ActionItem(
+          title = stringResource(R.string.controllers_reset),
+          summary = stringResource(R.string.controllers_reset_desc),
+          icon = null,
+        ) { reset() }
+        ActionItem(title = stringResource(R.string.controllers_swap_face), summary = null, icon = null) {
+          store(profile.swapFaceButtons())
         }
 
         Section(stringResource(R.string.controllers_inputs))

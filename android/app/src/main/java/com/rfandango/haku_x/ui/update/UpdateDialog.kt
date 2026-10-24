@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -31,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import com.rfandango.haku_x.R
 import com.rfandango.haku_x.data.Updates
+import com.rfandango.haku_x.ui.common.ProgressBlock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -69,16 +69,11 @@ fun UpdateDialog(release: Updates.Release, onDismiss: () -> Unit) {
           )
         }
         if (downloading) {
-          if (progress >= 0f) {
-            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
-          } else {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
-          }
-          Text(
+          ProgressBlock(
+            progress.takeIf { it >= 0f },
             if (progress >= 0f) stringResource(R.string.update_downloading_percent, (progress * 100).toInt())
             else stringResource(R.string.update_downloading),
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(top = 4.dp),
+            Modifier.padding(top = 12.dp),
           )
         }
         error?.let {
