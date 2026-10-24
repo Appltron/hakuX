@@ -97,6 +97,10 @@
   <!-- Compose settings screen -->
   <string name="settings_section_games">Games</string>
   <string name="settings_section_display">Display</string>
+  <string name="settings_theme">App theme</string>
+  <string name="settings_theme_system">Same as the phone</string>
+  <string name="settings_theme_light">Light</string>
+  <string name="settings_theme_dark">Dark</string>
   <string name="settings_section_graphics">Graphics</string>
   <string name="settings_section_logs">Logs</string>
   <string name="settings_export_logs">Export logs</string>

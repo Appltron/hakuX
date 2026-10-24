@@ -20,6 +20,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +49,8 @@ import com.rfandango.haku_x.ui.common.Section
 import com.rfandango.haku_x.ui.common.SubScreen
 import com.rfandango.haku_x.ui.common.SwitchItem
 import com.rfandango.haku_x.ui.common.notify
+import com.rfandango.haku_x.ui.theme.AppTheme
+import com.rfandango.haku_x.ui.theme.appInDarkTheme
 import com.rfandango.haku_x.ui.update.UpdateDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -102,6 +105,9 @@ fun SettingsScreen(
   var aspectDialog by remember { mutableStateOf(false) }
   val driver = remember { driverLabel(context) }       /* read again when back from its screen */
   var scaleDialog by remember { mutableStateOf(false) }
+  val theme by AppTheme.mode.collectAsState()
+  var themeDialog by remember { mutableStateOf(false) }
+  val dark = appInDarkTheme()
 
   val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
     val old = replacing
@@ -170,6 +176,11 @@ fun SettingsScreen(
       )
 
       Section(stringResource(R.string.settings_section_display))
+      ListItem(
+        headlineContent = { Text(stringResource(R.string.settings_theme)) },
+        supportingContent = { Text(stringResource(themeLabel(theme))) },
+        modifier = Modifier.clickable { themeDialog = true },
+      )
       SwitchItem(
         title = stringResource(R.string.settings_uncap),
         summary = stringResource(R.string.settings_uncap_desc) + " " +
@@ -371,7 +382,7 @@ fun SettingsScreen(
       onPick = { set ->
         clockDialog = false
         if (set) {
-          pickClock(context, System.currentTimeMillis() + (clockOffset ?: 0L)) {
+          pickClock(context, dark, System.currentTimeMillis() + (clockOffset ?: 0L)) {
             clockOffset = it - System.currentTimeMillis()
             prefs.clockOffset = clockOffset
           }
@@ -428,6 +439,15 @@ fun SettingsScreen(
       onDismiss = { scaleDialog = false },
     )
   }
+  if (themeDialog) {
+    ChoiceDialog(
+      title = stringResource(R.string.settings_theme),
+      options = THEMES.map { it to stringResource(themeLabel(it)) },
+      current = theme,
+      onPick = { AppTheme.set(context, it); themeDialog = false },
+      onDismiss = { themeDialog = false },
+    )
+  }
   removing?.let { f ->
     ConfirmDialog(
       title = stringResource(R.string.settings_games_folder_remove),
@@ -442,6 +462,15 @@ fun SettingsScreen(
       onDismiss = { removing = null },
     )
   }
+}
+
+/** The app's themes: the phone's, light, dark. */
+private val THEMES = listOf(AppPrefs.THEME_SYSTEM, AppPrefs.THEME_LIGHT, AppPrefs.THEME_DARK)
+
+private fun themeLabel(value: String) = when (value) {
+  AppPrefs.THEME_LIGHT -> R.string.settings_theme_light
+  AppPrefs.THEME_DARK -> R.string.settings_theme_dark
+  else -> R.string.settings_theme_system
 }
 
 /** The render scales: native, then 2x to 4x. */
@@ -496,12 +525,13 @@ private fun clockLabel(offset: Long?) =
 
 /**
  * The console's date (2001-2099), then its time, from the given moment (ms), in the phone's own
- * pickers (they fit a landscape screen); onSet gets the moment picked.
+ * pickers (they fit a landscape screen), light or dark as the app is; onSet gets the moment picked.
  */
-private fun pickClock(context: Context, from: Long, onSet: (Long) -> Unit) {
+private fun pickClock(context: Context, dark: Boolean, from: Long, onSet: (Long) -> Unit) {
   val c = Calendar.getInstance().apply { timeInMillis = from }
-  val date = DatePickerDialog(context, { _, year, month, day ->
-    TimePickerDialog(context, { _, hour, minute ->
+  val style = if (dark) android.R.style.Theme_Material_Dialog else android.R.style.Theme_Material_Light_Dialog
+  val date = DatePickerDialog(context, style, { _, year, month, day ->
+    TimePickerDialog(context, style, { _, hour, minute ->
       c.set(year, month, day, hour, minute, 0)
       c.set(Calendar.MILLISECOND, 0)
       onSet(c.timeInMillis)

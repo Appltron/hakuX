@@ -2,6 +2,7 @@ package com.rfandango.haku_x
 
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -11,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.SideEffect
 import com.rfandango.haku_x.data.AppPrefs
 import com.rfandango.haku_x.data.Game
 import com.rfandango.haku_x.data.PreviousVersion
@@ -19,7 +21,9 @@ import com.rfandango.haku_x.data.Storage
 import com.rfandango.haku_x.data.hdd.HddStore
 import com.rfandango.haku_x.input.InputCapture
 import com.rfandango.haku_x.ui.HakuXApp
+import com.rfandango.haku_x.ui.theme.AppTheme
 import com.rfandango.haku_x.ui.theme.HakuXTheme
+import com.rfandango.haku_x.ui.theme.appInDarkTheme
 import java.io.File
 
 /**
@@ -46,12 +50,18 @@ class LauncherActivity : ComponentActivity() {
       return
     }
 
-    enableEdgeToEdge(
-      statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
-      navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
-    )
+    AppTheme.load(this)
+    var windowDark = AppTheme.isDark(this)
+    windowTheme(windowDark)
     setContent {
-      HakuXTheme {
+      val dark = appInDarkTheme()
+      if (dark != windowDark) {
+        SideEffect {
+          windowDark = dark
+          windowTheme(dark)
+        }
+      }
+      HakuXTheme(dark) {
         HakuXApp(
           needsMigration = needsMigration,
           needsSetup = !folderReady,
@@ -72,6 +82,13 @@ class LauncherActivity : ComponentActivity() {
         )
       }
     }
+  }
+
+  /** The system bars' icons and the window behind Compose, light or dark as the app's theme is. */
+  private fun windowTheme(dark: Boolean) {
+    val bars = if (dark) SystemBarStyle.dark(Color.TRANSPARENT) else SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+    enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
+    window.setBackgroundDrawable(ColorDrawable(if (dark) DARK_WINDOW else Color.WHITE))
   }
 
   /** The core runs in its own process; this one is done until the next launch. */
@@ -127,6 +144,8 @@ class LauncherActivity : ComponentActivity() {
 
   companion object {
     private const val TAG = "hakuX-library"
+    /** The dark theme's background (ui/theme Theme.kt), behind Compose. */
+    private const val DARK_WINDOW = 0xFF121212.toInt()
     /** Set when a frontend launched the game (no library to go back to). */
     const val EXTRA_LAUNCHED_EXTERNALLY = "launched_externally"
   }

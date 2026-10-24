@@ -44,6 +44,7 @@ import com.rfandango.haku_x.data.SaveStateStore
 import com.rfandango.haku_x.data.XboxDisc
 import com.rfandango.haku_x.input.PadRouter
 import com.rfandango.haku_x.overlay.OverlayEditorBar
+import com.rfandango.haku_x.ui.theme.AppTheme
 import java.io.File
 import java.util.TimeZone
 import org.libsdl.app.SDLActivity
@@ -201,6 +202,10 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    /* the in-game menus (framework dialogs) light or dark, as the app's theme is */
+    if (AppTheme.isDark(this)) {
+      setTheme(R.style.Theme_HakuX_Game_Dark)
+    }
     discArg = openDisc()
     Logs.startGame(this, gameName(), when {
       intent.getBooleanExtra(EXTRA_RELAUNCH, false) -> "relaunched into another XBE"
