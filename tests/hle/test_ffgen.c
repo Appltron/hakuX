@@ -44,6 +44,45 @@ static void test_ui_quad(void)
     dump("ui", "frag");
 }
 
+/* no descriptor indexing: the bindless arrays as the draw set's places */
+static void test_fixed_slots(void)
+{
+    HleFfPsKey pk = { .nstages = 1 };
+    pk.st[0] = (HleFfStage){ .colorop = 4, .colorarg1 = 2, .colorarg2 = 0,
+                             .alphaop = 4, .alphaarg1 = 2, .alphaarg2 = 0, .resultarg = 1,
+                             .texture = 1 };
+    size_t n = hle_ff_ps_glsl(&pk, buf, sizeof(buf));
+    HT_CHECK(n > 0 && strstr(buf, "nonuniformEXT(") != NULL);
+    size_t m = hle_glsl_fixed_slots(buf, sizeof(buf));
+    HT_CHECK(m > 0 && m == strlen(buf));
+    HT_CHECK(strstr(buf, "nonuniform") == NULL);
+    HT_CHECK(strstr(buf, "uniform texture2D uTex2D[4];") != NULL);
+    HT_CHECK(strstr(buf, "uniform sampler uSmp[5];") != NULL);
+    HT_CHECK(strstr(buf, "uTex2D[(pc.tex[0] & 0xFFFFu)]") != NULL);
+    dump("fixed", "frag");
+    /* a cap it doesn't fit in: 0, the text as it was */
+    char small[64] = "nonuniformEXT(x) uTex2D[];";
+    HT_EQ_INT(hle_glsl_fixed_slots(small, 8), 0);
+    HT_EQ_STR(small, "nonuniformEXT(x) uTex2D[];");
+    HT_EQ_INT(hle_glsl_fixed_slots(small, sizeof(small)), strlen("(x) uTex2D[4];"));
+    HT_EQ_STR(small, "(x) uTex2D[4];");
+}
+
+/* no depthClamp: a z-clamped draw's vertices clamped in the vertex shader */
+static void test_zclamp(void)
+{
+    HleFfVsKey vk = { .fvf = 0x144, .ntex = 1, .zclamp = 1 };
+    HT_CHECK(hle_ff_vs_glsl(&vk, buf, sizeof(buf)) > 0);
+    HT_CHECK(strstr(buf, "clamp(gl_Position.z") == NULL);    /* the rasterizer's, by default */
+    g_hle_glsl_zclamp = true;
+    HT_CHECK(hle_ff_vs_glsl(&vk, buf, sizeof(buf)) > 0);
+    HT_CHECK(strstr(buf, HLE_ZCLAMP_GLSL) != NULL);
+    vk.zclamp = 0;
+    HT_CHECK(hle_ff_vs_glsl(&vk, buf, sizeof(buf)) > 0);
+    HT_CHECK(strstr(buf, "clamp(gl_Position.z") == NULL);
+    g_hle_glsl_zclamp = false;
+}
+
 /* transformed XYZ, no texture: diffuse only, PS SELECTARG1 DIFFUSE */
 static void test_xyz_untextured(void)
 {
@@ -280,6 +319,8 @@ static void test_overflow(void)
 int main(void)
 {
     HT_RUN(test_ui_quad);
+    HT_RUN(test_fixed_slots);
+    HT_RUN(test_zclamp);
     HT_RUN(test_xyz_untextured);
     HT_RUN(test_lighting);
     HT_RUN(test_blend);

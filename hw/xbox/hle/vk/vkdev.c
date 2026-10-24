@@ -170,7 +170,8 @@ static void caps_override(HleCaps *c)
         { "bc", offsetof(HleCaps, bc) },             { "vids", offsetof(HleCaps, vids) },
         { "push", offsetof(HleCaps, push) },         { "pushdesc", offsetof(HleCaps, push_desc) },
         { "cbc", offsetof(HleCaps, cbc) },           { "d24s8", offsetof(HleCaps, d24s8) },
-        { "4444", offsetof(HleCaps, x4444) },
+        { "4444", offsetof(HleCaps, x4444) },        { "bindless", offsetof(HleCaps, bindless) },
+        { "dclamp", offsetof(HleCaps, depth_clamp) },
         { "bda", offsetof(HleCaps, bda) },           { "ahb", offsetof(HleCaps, ahb) },
         { "fbfetch", offsetof(HleCaps, fbfetch) },   { "vk13", offsetof(HleCaps, vk13) },
         { "dynrender", offsetof(HleCaps, dyn_render) }, { "sync2", offsetof(HleCaps, sync2) },
@@ -442,15 +443,12 @@ int hle_vk_init(void)
     need(c, v->qfam != UINT32_MAX, "graphics queue");
     c->wide_lines = q.features.wideLines;
     need(c, q.features.largePoints, "largePoints");
-    need(c, q.features.depthClamp, "depthClamp");
+    c->depth_clamp = q.features.depthClamp;
     need(c, ok_tl, "timelineSemaphore");
-    need(c, ok_rda, "runtimeDescriptorArray");
-    need(c, ok_pb, "partiallyBound");
-    need(c, ok_uab, "sampledImageUAB");
-    /* the shaders index the texture and sampler arrays nonuniformEXT */
-    need(c, ok_nui, "sampledImageNonUniformIndexing");
-    need(c, l_img >= 3 * HLE_MAX_IMAGES && l_set_img >= 3 * HLE_MAX_IMAGES &&
-            l_smp >= HLE_MAX_SAMPLERS && l_set_smp >= HLE_MAX_SAMPLERS, "bindless limits");
+    /* the bindless set: its arrays indexed nonuniformEXT, written while bound */
+    c->bindless = ok_rda && ok_pb && ok_uab && ok_nui &&
+                  l_img >= 3 * HLE_MAX_IMAGES && l_set_img >= 3 * HLE_MAX_IMAGES &&
+                  l_smp >= HLE_MAX_SAMPLERS && l_set_smp >= HLE_MAX_SAMPLERS;
     need(c, v->props.limits.maxBoundDescriptorSets >= 4, "4 descriptor sets");
     if (v13) {                          /* both required of a 1.3 driver */
         need(c, q13.synchronization2, "synchronization2");
@@ -529,6 +527,9 @@ int hle_vk_init(void)
     caps_override(c);
     c->fbfetch = c->fbfetch && c->dyn_render;  /* local read is dynamic rendering's */
     c->cbc_any = c->cbc_any && c->cbc;
+    if (!c->bindless) {                 /* the draw sets' arrays, by the push block's index */
+        need(c, q.features.shaderSampledImageArrayDynamicIndexing, "sampledImageDynamicIndexing");
+    }
     if (!c->floor_ok) {
         hle_log("hakuX-hle-back", "vk: floor not met on \"%s\": missing %s",
                 v->props.deviceName, c->missing);
@@ -608,7 +609,9 @@ int hle_vk_init(void)
     VkPhysicalDevicePipelineCreationCacheControlFeatures f_pcc = {
         .sType = q_pcc.sType, .pipelineCreationCacheControl = VK_TRUE };
     f.features.wideLines = c->wide_lines;
-    f.features.largePoints = f.features.depthClamp = VK_TRUE;
+    f.features.largePoints = VK_TRUE;
+    f.features.depthClamp = c->depth_clamp;
+    f.features.shaderSampledImageArrayDynamicIndexing = !c->bindless;
     f.features.logicOp = q.features.logicOp;
     f.features.dualSrcBlend = q.features.dualSrcBlend;
     f.features.textureCompressionBC = q.features.textureCompressionBC;
@@ -619,7 +622,7 @@ int hle_vk_init(void)
     tail = v13 ? (VkBaseOutStructure *)&f13 : (VkBaseOutStructure *)&f;
     if (!v13) {
         chain(&tail, &f_tl);
-        chain(&tail, &f_di);
+        if (c->bindless) chain(&tail, &f_di);
         if (c->bda) chain(&tail, &f_bda);
         if (c->host_query_reset) chain(&tail, &f_hqr);
         if (c->sync2) chain(&tail, &f_s2);
@@ -643,7 +646,7 @@ int hle_vk_init(void)
     if (!v13) {
         if (!v12) {                     /* core in 1.2 */
             exts[nx++] = VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME;
-            exts[nx++] = VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME;
+            if (c->bindless) exts[nx++] = VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME;
             if (c->bda) exts[nx++] = VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME;
             if (c->host_query_reset) exts[nx++] = VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME;
         }
@@ -716,9 +719,9 @@ int hle_vk_init(void)
             c->local_read, c->fbfetch, c->cache_control, c->swapchain);
     hle_log("hakuX-hle-back", "vk: bc=%d vids=%d push=%d push_desc=%d cbc=%d cbc_any=%d "
             "x4444=%d d24s8=%d bda=%d ahb=%d vk13=%d dyn_render=%d sync2=%d eds1=%d eds2=%d "
-            "(0: the substitute runs)", c->bc, c->vids, c->push, c->push_desc, c->cbc,
-            c->cbc_any, c->x4444, c->d24s8, c->bda, c->ahb, c->vk13, c->dyn_render, c->sync2,
-            c->eds1, c->eds2);
+            "bindless=%d depth_clamp=%d (0: the substitute runs)", c->bc, c->vids, c->push,
+            c->push_desc, c->cbc, c->cbc_any, c->x4444, c->d24s8, c->bda, c->ahb, c->vk13,
+            c->dyn_render, c->sync2, c->eds1, c->eds2, c->bindless, c->depth_clamp);
     hle_quirks_init(v->phys);           /* what this driver needs worked around */
     return 0;
 }

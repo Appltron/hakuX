@@ -1,4 +1,5 @@
 #include "hw/xbox/hle/shader/psh.h"
+#include "hw/xbox/hle/shader/ff.h"
 #include "hle_test.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +68,13 @@ static void test_modulate(void)
     k.specular = 1;                                     /* SPECULARENABLE: v1 + r0 */
     HT_CHECK(hle_psh_glsl(&k, buf, sizeof(buf), NULL) > 0);
     HT_CHECK(strstr(buf, "clamp(v1.rgb + r0.rgb, 0.0, 1.0), fogf)") != NULL);
+    /* no descriptor indexing: every array sized, nothing nonuniform */
+    HT_CHECK(hle_glsl_fixed_slots(buf, sizeof(buf)) == strlen(buf));
+    HT_CHECK(strstr(buf, "nonuniform") == NULL && strstr(buf, "[]") == NULL);
+    HT_CHECK(strstr(buf, "uniform textureCube uTexCube[4];") != NULL);
+    HT_CHECK(strstr(buf, "uniform texture3D uTex3D[4];") != NULL);
+    HT_CHECK(strstr(buf, "uTex2D[(ti)]") != NULL);
+    dump("psh_fixed");
 }
 
 /* fog through the final combiner: xfc fog.a, r0, fog.rgb, zero, zero, zero, r0.a;

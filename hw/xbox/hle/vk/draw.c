@@ -126,11 +126,38 @@ typedef struct HlePipe {
 enum { EM_PIPE, EM_SET1, EM_PC, EM_VI, EM_VB, EM_VP, EM_SC, EM_DYN, EM_FB, EM_N };
 static const char *const k_em_names[EM_N] = { "pipe", "set1", "pc", "vi", "vb", "vp", "sc", "dyn", "fb" };
 
+/* Without descriptor indexing (caps.bindless off): a slot as the bindless set
+ * would hold it (write_slot_layout3): its 2D, cube and 3D views (the white
+ * textures where it has none) and their layouts */
+typedef struct FixedImg {
+    VkImageView v[3];
+    uint32_t layout[3];
+} FixedImg;
+
+/* A draw's own set (fixed_bind): its stages' slots and samplers */
+typedef struct FixedKey {
+    FixedImg img[HLE_FF_STAGES];
+    VkSampler smp[HLE_FF_STAGES];
+} FixedKey;
+
+#define FX_POOLS 16                     /* a command buffer's pools of draw sets */
+#define FX_SETS  1024                   /* sets a pool */
+
 static struct {
     bool ready;
-    VkDescriptorSetLayout dsl;
+    VkDescriptorSetLayout dsl;          /* caps.bindless off: the draws' own sets' */
     VkDescriptorPool pool;
     VkDescriptorSet set;
+    /* caps.bindless off: the slots (write_slot_layout3), and the draws' sets,
+     * made from pools per command buffer in flight (hle_draw_slot) */
+    FixedImg *mirror;
+    struct {
+        VkDescriptorPool pool[FX_POOLS];
+        unsigned npool, cur;
+        GHashTable *sets;               /* FixedKey -> VkDescriptorSet */
+    } fx[HLE_FRAMES];
+    unsigned fxslot;
+    uint64_t fx_sets;                   /* made */
     VkPipelineLayout layout;
     uint32_t next_slot;
     HleVkTex tex[HLE_MAX_TEX];
@@ -287,6 +314,13 @@ static void write_slot_layout3(uint32_t slot, VkImageView view, VkImageView cube
           .imageLayout = cube ? layout : ro },
         { .imageView = vol ? vol : g_dr.white_3d.view, .imageLayout = vol ? layout : ro },
     };
+    if (!g_hvk.caps.bindless) {         /* the draws' sets take them from here (fixed_bind) */
+        for (unsigned i = 0; i < 3 && slot < HLE_MAX_IMAGES; i++) {
+            g_dr.mirror[slot].v[i] = ii[i].imageView;
+            g_dr.mirror[slot].layout[i] = ii[i].imageLayout;
+        }
+        return;
+    }
     static const uint32_t k_binding[3] = { 0, 2, 3 };
     VkWriteDescriptorSet w[3];
     for (unsigned i = 0; i < 3; i++) {
@@ -463,6 +497,116 @@ static void push_block(VkCommandBuffer cb, const HleFfPush *pc)
                               1, &off);
 }
 
+static guint fx_hash(gconstpointer k)
+{
+    const uint8_t *b = k;
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < sizeof(FixedKey); i++) {
+        h = (h ^ b[i]) * 16777619u;
+    }
+    return h;
+}
+
+static gboolean fx_equal(gconstpointer a, gconstpointer b)
+{
+    return memcmp(a, b, sizeof(FixedKey)) == 0;
+}
+
+/* caps.bindless off: set 0 is a draw's own (fixed_bind): its stages' images
+ * at bindings 0, 2 and 3 (2D, cube, 3D, as the bindless set's), binding 1 the
+ * first sampler and the stages' */
+static bool fixed_init(void)
+{
+    VkDescriptorSetLayoutBinding b[4] = {
+        { 0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, HLE_FF_STAGES, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+        { 1, VK_DESCRIPTOR_TYPE_SAMPLER, 1 + HLE_FF_STAGES, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+        { 2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, HLE_FF_STAGES, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+        { 3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, HLE_FF_STAGES, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+    };
+    VkDescriptorSetLayoutCreateInfo dci = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 4, .pBindings = b };
+    if (T.vkCreateDescriptorSetLayout(g_hvk.dev, &dci, NULL, &g_dr.dsl) != VK_SUCCESS) {
+        return false;
+    }
+    g_dr.mirror = g_new0(FixedImg, HLE_MAX_IMAGES);
+    for (unsigned i = 0; i < HLE_FRAMES; i++) {
+        g_dr.fx[i].sets = g_hash_table_new_full(fx_hash, fx_equal, g_free, NULL);
+    }
+    hle_log("hakuX-hle-back", "no descriptor indexing: each draw's textures in a set of its "
+            "own (%u a pool, up to %u pools a command buffer)", FX_SETS, FX_POOLS);
+    return true;
+}
+
+/* k's set in the current command buffer's pools, made the first time */
+static VkDescriptorSet fixed_set(const FixedKey *k)
+{
+    __typeof__(g_dr.fx[0]) *f = &g_dr.fx[g_dr.fxslot];
+    VkDescriptorSet set = (VkDescriptorSet)g_hash_table_lookup(f->sets, k);
+    if (set) {
+        return set;
+    }
+    for (;;) {
+        if (f->cur == f->npool) {
+            VkDescriptorPoolSize ps[2] = {
+                { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3 * HLE_FF_STAGES * FX_SETS },
+                { VK_DESCRIPTOR_TYPE_SAMPLER, (1 + HLE_FF_STAGES) * FX_SETS },
+            };
+            VkDescriptorPoolCreateInfo pci = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = FX_SETS,
+                .poolSizeCount = 2, .pPoolSizes = ps };
+            if (f->npool == FX_POOLS ||
+                T.vkCreateDescriptorPool(g_hvk.dev, &pci, NULL, &f->pool[f->npool]) != VK_SUCCESS) {
+                static bool s_said;
+                if (!s_said) {
+                    s_said = true;
+                    hle_log("hakuX-hle-back", "draw sets: a command buffer's %u are used up: its "
+                            "later draws keep the last textures (logged once)", FX_POOLS * FX_SETS);
+                }
+                return VK_NULL_HANDLE;
+            }
+            f->npool++;
+        }
+        VkDescriptorSetAllocateInfo ai = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = f->pool[f->cur], .descriptorSetCount = 1, .pSetLayouts = &g_dr.dsl };
+        VkResult r = T.vkAllocateDescriptorSets(g_hvk.dev, &ai, &set);
+        if (r == VK_SUCCESS) {
+            break;
+        }
+        if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) {
+            hle_vk_check(r, "vkAllocateDescriptorSets (draw set)");
+            return VK_NULL_HANDLE;
+        }
+        f->cur++;                       /* this pool is full: the next */
+    }
+    VkDescriptorImageInfo ii[3][HLE_FF_STAGES], si[1 + HLE_FF_STAGES];
+    for (unsigned s = 0; s < HLE_FF_STAGES; s++) {
+        for (unsigned v = 0; v < 3; v++) {
+            ii[v][s] = (VkDescriptorImageInfo){ .imageView = k->img[s].v[v],
+                                                .imageLayout = (VkImageLayout)k->img[s].layout[v] };
+        }
+        si[1 + s] = (VkDescriptorImageInfo){ .sampler = k->smp[s] };
+    }
+    si[0] = (VkDescriptorImageInfo){ .sampler = g_dr.smp[0].s };
+    static const uint32_t k_binding[3] = { 0, 2, 3 };
+    VkWriteDescriptorSet w[4];
+    for (unsigned v = 0; v < 3; v++) {
+        w[v] = (VkWriteDescriptorSet){
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
+            .dstBinding = k_binding[v], .descriptorCount = HLE_FF_STAGES,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = ii[v] };
+    }
+    w[3] = (VkWriteDescriptorSet){
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1,
+        .descriptorCount = 1 + HLE_FF_STAGES, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+        .pImageInfo = si };
+    T.vkUpdateDescriptorSets(g_hvk.dev, 4, w, 0, NULL);
+    g_hash_table_insert(f->sets, g_memdup2(k, sizeof(*k)), set);
+    g_dr.fx_sets++;
+    return set;
+}
+
 void hle_draw_slot(unsigned slot)
 {
     g_dr.pbase = (slot % HLE_FRAMES) * PUSH_PART_BYTES;
@@ -471,6 +615,14 @@ void hle_draw_slot(unsigned slot)
     memset(&g_dr.fblast, 0, sizeof(g_dr.fblast));
     if (g_dr.fb_pooled && g_dr.fbpool[g_dr.fbslot]) {
         T.vkResetDescriptorPool(g_hvk.dev, g_dr.fbpool[g_dr.fbslot], 0);
+    }
+    if (!g_hvk.caps.bindless && g_dr.mirror) {  /* its previous recording has completed */
+        __typeof__(g_dr.fx[0]) *f = &g_dr.fx[g_dr.fxslot = slot % HLE_FRAMES];
+        g_hash_table_remove_all(f->sets);
+        for (unsigned i = 0; i < f->npool; i++) {
+            T.vkResetDescriptorPool(g_hvk.dev, f->pool[i], 0);
+        }
+        f->cur = 0;
     }
 }
 
@@ -495,9 +647,6 @@ int hle_draw_init(void)
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bfi,
         .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
         .bindingCount = 4, .pBindings = b };
-    if (T.vkCreateDescriptorSetLayout(g_hvk.dev, &dci, NULL, &g_dr.dsl) != VK_SUCCESS) {
-        return -1;
-    }
     VkDescriptorPoolSize ps[2] = {
         { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3 * HLE_MAX_IMAGES },
         { VK_DESCRIPTOR_TYPE_SAMPLER, HLE_MAX_SAMPLERS },
@@ -506,14 +655,23 @@ int hle_draw_init(void)
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT, .maxSets = 1,
         .poolSizeCount = 2, .pPoolSizes = ps };
-    if (T.vkCreateDescriptorPool(g_hvk.dev, &pci, NULL, &g_dr.pool) != VK_SUCCESS) {
-        return -1;
-    }
-    VkDescriptorSetAllocateInfo ai = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = g_dr.pool, .descriptorSetCount = 1, .pSetLayouts = &g_dr.dsl };
-    if (T.vkAllocateDescriptorSets(g_hvk.dev, &ai, &g_dr.set) != VK_SUCCESS) {
-        return -1;
+    if (!g_hvk.caps.bindless) {         /* each draw's textures a set of its own */
+        if (!fixed_init()) {
+            return -1;
+        }
+    } else {
+        if (T.vkCreateDescriptorSetLayout(g_hvk.dev, &dci, NULL, &g_dr.dsl) != VK_SUCCESS) {
+            return -1;
+        }
+        if (T.vkCreateDescriptorPool(g_hvk.dev, &pci, NULL, &g_dr.pool) != VK_SUCCESS) {
+            return -1;
+        }
+        VkDescriptorSetAllocateInfo ai = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = g_dr.pool, .descriptorSetCount = 1, .pSetLayouts = &g_dr.dsl };
+        if (T.vkAllocateDescriptorSets(g_hvk.dev, &ai, &g_dr.set) != VK_SUCCESS) {
+            return -1;
+        }
     }
     /* set 1: vertex-program constants, a dynamic window on the arena */
     VkDescriptorSetLayoutBinding cb = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1,
@@ -554,6 +712,8 @@ int hle_draw_init(void)
     HLE_BUILD_BUG_ON(sizeof(HleFfPush) != HLE_PUSH_BYTES);
     g_hle_push_ssbo = !g_hvk.caps.push;     /* before any shader is made */
     g_hle_glsl_zw = hle_quirk(HLE_QUIRK_Z_EQ_W);
+    g_hle_glsl_zclamp = !g_hvk.caps.depth_clamp;
+    g_hle_glsl_fixed = !g_hvk.caps.bindless;
     if (g_hle_push_ssbo && !push_ring_init()) {
         hle_log("hakuX-hle-back", "push blocks: no storage buffer ring");
         return -1;
@@ -616,6 +776,13 @@ int hle_draw_init(void)
     if (!make_image(&g_dr.white_3d, &wf, VK_IMAGE_USAGE_SAMPLED_BIT |
                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
         return -1;
+    }
+    for (uint32_t i = 0; g_dr.mirror && i < HLE_MAX_IMAGES; i++) {
+        /* every slot the white textures until written (all a set's must be) */
+        g_dr.mirror[i] = (FixedImg){
+            { g_dr.white.view, g_dr.white_cube.cube_view, g_dr.white_3d.view },
+            { VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } };
     }
     {   /* DXT in 3D images (volumes are decoded on the CPU otherwise) */
         VkImageFormatProperties fp;
@@ -1492,12 +1659,14 @@ static uint32_t sampler_index(const uint32_t *tss, uint32_t lod_down)
     g_dr.smp[i].key = key;
     g_dr.smp[i].key2 = key2;
     g_dr.smp[i].s = s;
-    VkDescriptorImageInfo ii = { .sampler = s };
-    VkWriteDescriptorSet w = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_dr.set,
-        .dstBinding = 1, .dstArrayElement = i, .descriptorCount = 1,
-        .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &ii };
-    T.vkUpdateDescriptorSets(g_hvk.dev, 1, &w, 0, NULL);
+    if (g_hvk.caps.bindless) {          /* else the draws' sets take it from smp[] */
+        VkDescriptorImageInfo ii = { .sampler = s };
+        VkWriteDescriptorSet w = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_dr.set,
+            .dstBinding = 1, .dstArrayElement = i, .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &ii };
+        T.vkUpdateDescriptorSets(g_hvk.dev, 1, &w, 0, NULL);
+    }
     return i;
 }
 
@@ -1874,6 +2043,10 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
                 k->psh ? "combiners" : "stages", k->vs.fvf, (unsigned long long)k->vsh);
         return HLE_PB_FAILED;
     }
+    if (g_hle_glsl_fixed && !hle_glsl_fixed_slots(fsrc, SRC_MAX)) {
+        hle_log("hakuX-hle-pipe", "pixel shader: too long for the draw set's places");
+        return HLE_PB_FAILED;
+    }
     if (unsup && !cache_only) {
         hle_log("hakuX-hle-pipe", "pixel shader: texture modes %x sampled as PROJECT2D "
                 "(modes 0x%05x)", unsup, k->pk.tex_modes);
@@ -1914,7 +2087,8 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
             .viewportCount = 1, .scissorCount = 1 };
         VkPipelineRasterizationStateCreateInfo rs = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            .depthClampEnable = k->vsh ? k->vk.zclamp : k->vs.zclamp,
+            /* without depthClamp the vertex shader clamps (HLE_ZCLAMP_GLSL) */
+            .depthClampEnable = (k->vsh ? k->vk.zclamp : k->vs.zclamp) && g_hvk.caps.depth_clamp,
             .polygonMode = VK_POLYGON_MODE_FILL, .lineWidth = 1.0f };
         VkPipelineMultisampleStateCreateInfo ms = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -2977,6 +3151,7 @@ static void drop(int why, const HleCmdDraw *c, uint32_t rt_id, uint32_t ds_id)
 static struct {
     bool valid;
     VkPipeline pipe;
+    VkDescriptorSet set0;               /* caps.bindless off: the draw's own (fixed_bind) */
     VkDescriptorSet set1;
     uint32_t set1_off;
     VkViewport vp;
@@ -3024,6 +3199,28 @@ void hle_draw_state_lost(void)
 }
 
 /* A strip batch bound its own index buffer (batch.c). */
+/* caps.bindless off: the draw's textures (pc's slots and samplers) bound as
+ * set 0, a set of the draw's own: stage s's images at s, its sampler at 1 + s
+ * (0: the first sampler, for the shaders' size queries). pc.tex then names
+ * those places, the same for every draw (hle_glsl_fixed_slots). */
+static void fixed_bind(VkCommandBuffer cb, HleFfPush *pc)
+{
+    FixedKey k;
+    memset(&k, 0, sizeof(k));
+    for (unsigned s = 0; s < HLE_FF_STAGES; s++) {
+        uint32_t slot = pc->tex[s] & 0xFFFFu, smp = pc->tex[s] >> 16;
+        k.img[s] = g_dr.mirror[MIN(slot, HLE_MAX_IMAGES - 1u)];
+        k.smp[s] = g_dr.smp[smp < g_dr.nsmp ? smp : 0].s;
+        pc->tex[s] = s | (1u + s) << 16;
+    }
+    VkDescriptorSet set = fixed_set(&k);
+    if (set && (!g_rec.valid || g_rec.set0 != set)) {
+        g_rec.set0 = set;
+        T.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_dr.layout, 0, 1, &set,
+                                  0, NULL);
+    }
+}
+
 void hle_draw_ibuf_lost(void)
 {
     g_rec.ibuf = VK_NULL_HANDLE;
@@ -3663,8 +3860,10 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
         g_rec.bc_lost |= !k.cfmt && hle_quirk(HLE_QUIRK_BLEND_CONST_RESET);
     }
     if (!g_rec.valid) {                 /* the bindless set never changes */
-        T.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_dr.layout, 0, 1,
-                                  &g_dr.set, 0, NULL);
+        if (g_hvk.caps.bindless) {
+            T.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_dr.layout, 0, 1,
+                                      &g_dr.set, 0, NULL);
+        }
         if (g_hvk.caps.eds2) {
             T.vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);  /* on only inside strip batches */
         }
@@ -3744,6 +3943,9 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
      * (always scaled); antialiased: texel edges as they are (ff.h) */
     pc.flags |= MIN(rs, 255u) << 16 | MIN(g_hle_rscale, 255u) << 24 |
                 (aax > 1.0f || aay > 1.0f ? HLE_TEXEL_EDGE_FLAG : 0u) | (g_snap_trunc ? HLE_SNAP_TRUNC_FLAG : 0u);
+    if (!g_hvk.caps.bindless) {
+        fixed_bind(cb, &pc);            /* the textures a set of the draw's own */
+    }
     if (!g_rec.valid || memcmp(&g_rec.pc, &pc, sizeof(pc))) {
         g_rec.pc = pc;
         if (g_hle_push_ssbo) {

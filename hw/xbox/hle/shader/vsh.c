@@ -352,6 +352,9 @@ static void tail(Buf *bp, const HleVshKey *k, bool fogw)
      * minimap at z far below 0), so the clip z only keeps w >= 0. */
     put(&b, "  gl_Position = vec4(ndc * w, %s, w);\n",
         k->wbuf || k->zfree ? "0.0" : "oPos.z * pc.zscale * w");
+    if (k->zclamp && g_hle_glsl_zclamp) {
+        put(&b, HLE_ZCLAMP_GLSL);
+    }
     if (g_hle_glsl_zw) {
         put(&b, HLE_ZW_NUDGE_GLSL);
     }

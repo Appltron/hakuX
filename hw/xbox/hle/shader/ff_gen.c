@@ -11,6 +11,7 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "hw/xbox/hle/shader/ff.h"
 
@@ -36,6 +37,44 @@ static void put(Buf *b, const char *fmt, ...)
 
 bool g_hle_push_ssbo;                   /* ff.h */
 bool g_hle_glsl_zw;                     /* ff.h */
+bool g_hle_glsl_zclamp;                 /* ff.h */
+bool g_hle_glsl_fixed;                  /* ff.h */
+
+size_t hle_glsl_fixed_slots(char *src, size_t cap)
+{
+    _Static_assert(HLE_FF_STAGES == 4, "the sizes below");
+    static const struct { const char *from, *to; } k_rw[] = {
+        { "#extension GL_EXT_nonuniform_qualifier : require\n", "" },
+        { "nonuniformEXT(", "(" },
+        { "uTex2D[];", "uTex2D[4];" }, { "uTexCube[];", "uTexCube[4];" },
+        { "uTex3D[];", "uTex3D[4];" }, { "uSmp[];", "uSmp[5];" },
+    };
+    const size_t nrw = sizeof(k_rw) / sizeof(k_rw[0]);
+    size_t n = strlen(src), o = 0;
+    char *out = malloc(cap);
+    if (!out) {
+        return 0;
+    }
+    for (size_t i = 0; i < n;) {
+        size_t j = 0;
+        while (j < nrw && strncmp(src + i, k_rw[j].from, strlen(k_rw[j].from))) {
+            j++;
+        }
+        const char *rep = j < nrw ? k_rw[j].to : src + i;
+        size_t len = j < nrw ? strlen(k_rw[j].to) : 1;
+        if (o + len >= cap) {
+            free(out);
+            return 0;
+        }
+        memcpy(out + o, rep, len);
+        o += len;
+        i += j < nrw ? strlen(k_rw[j].from) : 1;
+    }
+    out[o] = 0;
+    memcpy(src, out, o + 1);
+    free(out);
+    return o;
+}
 
 /* Material colour source s (0 material, 1 vertex diffuse, 2 vertex specular)
  * for material slot m. Without COLORVERTEX or the vertex colour, the
@@ -285,6 +324,9 @@ size_t hle_ff_vs_glsl(const HleFfVsKey *k, char *buf, size_t cap)
                 HLE_TEXEL_EDGE_GLSL("q")
                 "      s = q * c.w; }\n"
                 "    gl_Position = vec4(s * pc.vp + vec2(-1.0, 1.0) * c.w, c.z, c.w); }\n");
+    }
+    if (k->zclamp && g_hle_glsl_zclamp) {
+        put(&b, HLE_ZCLAMP_GLSL);
     }
     if (g_hle_glsl_zw) {
         put(&b, HLE_ZW_NUDGE_GLSL);

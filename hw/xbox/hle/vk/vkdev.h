@@ -54,6 +54,12 @@ typedef struct HleCaps {
     bool x4444;                 /* A4R4G4B4 sampled (VK_EXT_4444_formats, core in 1.3; not
                                    on Mali's r26), else 4444 textures expand to A8R8G8B8
                                    on the way into the arena (pb/pbres.c) */
+    bool bindless;              /* descriptor indexing (the bindless set, its limits), else
+                                   each draw's textures in a set of their own at fixed
+                                   places (vk/draw.c fixed_bind: Mali's Bifrost, PowerVR's
+                                   Rogue) */
+    bool depth_clamp;           /* depthClamp, else a z-clamped draw's vertex shader clamps
+                                   z to the depth range (shader/ff.h HLE_ZCLAMP_GLSL) */
     bool d24s8;                 /* D24_UNORM_S8_UINT a sampled, filtered depth attachment,
                                    else D32_SFLOAT_S8_UINT (vk/surf.c) */
     bool bda;                   /* bufferDeviceAddress (the guest RAM import asks for it) */
@@ -105,8 +111,7 @@ extern HleVk g_hvk;
 
 /* 0 = ready; -1 = no Vulkan; -2 = floor not met (g_hvk.caps.missing).
  * Vulkan 1.1 is the floor's version: 1.2's and 1.3's parts come from their
- * extensions (timeline semaphores and descriptor indexing required) or
- * vk/compat.c. */
+ * extensions (timeline semaphores required) or vk/compat.c. */
 int hle_vk_init(void);
 /* The back end is up (hle_back_start done): other threads may use g_hvk. */
 bool hle_vk_ready(void);

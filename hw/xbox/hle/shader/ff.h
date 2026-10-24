@@ -207,6 +207,23 @@ extern bool g_hle_push_ssbo;
 extern bool g_hle_glsl_zw;
 #define HLE_ZW_NUDGE_GLSL "  if (gl_Position.z == gl_Position.w) gl_Position.z *= 0.999999;\n"
 
+/* No depthClamp (vk/vkdev.h HleCaps.depth_clamp off: Mali's Bifrost): a
+ * z-clamped draw's vertices (the key's zclamp) are clamped to the depth range
+ * instead, so the near and far planes don't clip them; depth across a
+ * primitive that crosses them comes from its clamped corners. */
+extern bool g_hle_glsl_zclamp;
+#define HLE_ZCLAMP_GLSL \
+    "  if (gl_Position.w > 0.0) gl_Position.z = clamp(gl_Position.z, 0.0, gl_Position.w);\n"
+
+/* No descriptor indexing (HleCaps.bindless off: Mali's Bifrost, PowerVR's
+ * Rogue): a pixel shader's bindless arrays become the draw's own set (vk/draw.c
+ * fixed_bind): sized (each stage's images, then the default sampler and each
+ * stage's), indexed without nonuniformEXT (the push block's indices, the same
+ * for the whole draw). g_hle_glsl_fixed: hle_glsl_fixed_slots rewrites the
+ * generated text; its new length, 0 if it doesn't fit in cap. */
+extern bool g_hle_glsl_fixed;
+size_t hle_glsl_fixed_slots(char *src, size_t cap);
+
 static inline const char *hle_push_glsl(void)
 {
     return g_hle_push_ssbo ? HLE_PUSH_SSBO_GLSL : HLE_PUSH_GLSL;
