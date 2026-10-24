@@ -58,6 +58,8 @@
   <string name="settings_show_fps">Show FPS counter</string>
 
   <string name="settings_show_fps_desc">Frame rate and frame time overlay while playing.</string>
+  <string name="settings_show_hitches">Show stutter monitor</string>
+  <string name="settings_show_hitches_desc">Debug builds: stutters, hangs and dropped frames with their causes, under the FPS counter.</string>
 
   <!-- System Files -->
   <string name="settings_games_folder_title">Games Folder</string>

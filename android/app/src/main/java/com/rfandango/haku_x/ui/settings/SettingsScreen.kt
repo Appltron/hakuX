@@ -49,6 +49,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import com.rfandango.haku_x.BuildConfig
 import com.rfandango.haku_x.GpuDriverHelper
 import com.rfandango.haku_x.NativeCoreActivity
 import com.rfandango.haku_x.R
@@ -89,6 +90,7 @@ fun SettingsScreen(
   var asyncShaders by remember { mutableStateOf(prefs.asyncShaders) }
   var prebuildShaders by remember { mutableStateOf(prefs.prebuildShaders) }
   var showFps by remember { mutableStateOf(prefs.showFps) }
+  var showHitches by remember { mutableStateOf(prefs.showHitches) }
   var scale by remember { mutableIntStateOf(prefs.renderScale) }
   var aspect by remember { mutableStateOf(prefs.aspectRatio) }
   var fxaa by remember { mutableStateOf(prefs.fxaa) }
@@ -231,6 +233,14 @@ fun SettingsScreen(
         checked = showFps,
         onChange = { showFps = it; prefs.showFps = it },
       )
+      if (BuildConfig.DEBUG) {
+        SwitchItem(
+          title = stringResource(R.string.settings_show_hitches),
+          summary = stringResource(R.string.settings_show_hitches_desc),
+          checked = showHitches,
+          onChange = { showHitches = it; prefs.showHitches = it },
+        )
+      }
 
       Section(stringResource(R.string.settings_section_console))
       ListItem(

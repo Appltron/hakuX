@@ -60,18 +60,21 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var onScreenController: OnScreenController? = null
   private var fpsView: TextView? = null
   private var hitchView: TextView? = null
+  /* the settings' overlays, read as the game comes back (onResume) */
+  private var fpsOn = false
+  private var hitchesOn = false
   private val fpsHandler = Handler(Looper.getMainLooper())
   private val fpsRunnable = object : Runnable {
     override fun run() {
       val s = nativeGetFrameStats()
-      if (s != null && s.size >= 3) {
+      if (fpsOn && s != null && s.size >= 3) {
         var text = "FPS: %.0f  |  %.1fms avg  /  %.1fms last".format(s[0], s[1], s[2])
         if (s[1] > 0f && s[2] > 2f * s[1]) {
           text += " *" /* the last frame took over twice the average */
         }
         fpsView?.text = text
       }
-      hitchView?.let { v ->
+      hitchView?.takeIf { hitchesOn }?.let { v ->
         val hitches = nativeGetHleHitches()
         if (hitches.isNotEmpty()) {
           v.text = hitches
@@ -320,11 +323,13 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     activityPaused = false
     syncPause() /* where it stopped (onPause), unless the menu is open */
     hideSystemBars()
-    val show = getSharedPreferences("x1box_prefs", Context.MODE_PRIVATE).getBoolean("show_fps", true)
-    fpsView?.visibility = if (show) View.VISIBLE else View.GONE
-    if (!show) hitchView?.visibility = View.GONE
+    val prefs = getSharedPreferences("x1box_prefs", Context.MODE_PRIVATE)
+    fpsOn = prefs.getBoolean("show_fps", true)
+    hitchesOn = BuildConfig.DEBUG && prefs.getBoolean(PREF_SHOW_HITCHES, true)
+    fpsView?.visibility = if (fpsOn) View.VISIBLE else View.GONE
+    if (!hitchesOn) hitchView?.visibility = View.GONE
     fpsHandler.removeCallbacks(fpsRunnable)
-    if (show) {
+    if (fpsOn || hitchesOn) {
       fpsHandler.postDelayed(fpsRunnable, FPS_INTERVAL_MS)
     }
     fpsHandler.removeCallbacks(fatalRunnable)
@@ -433,8 +438,9 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   /**
    * The title's frame rate and pacing, top left ("show_fps"), and under it,
-   * in debug builds, the HLE GPU's stutter and hang monitor: counts, the
-   * ongoing or last hang and the last stutter, with their causes.
+   * in debug builds, the HLE GPU's stutter and hang monitor ("show_hitches"):
+   * counts, the ongoing or last hang and the last stutter, with their causes.
+   * Each has its own switch; the monitor takes the top with the FPS off.
    */
   private fun setupFpsOverlay() {
     val fps = TextView(this).apply {
@@ -478,6 +484,7 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     ).apply {
       addRule(RelativeLayout.BELOW, fps.id)
       addRule(RelativeLayout.ALIGN_PARENT_START)
+      alignWithParent = true            /* the top when the FPS counter is gone */
       topMargin = 4
     }
     mLayout?.addView(hitch, hitchParams)
@@ -990,6 +997,7 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     const val PREF_UNCAP = "uncap_fps"
     const val PREF_ASYNC_SHADERS = "async_shaders"
     const val PREF_PREBUILD_SHADERS = "prebuild_shaders"
+    const val PREF_SHOW_HITCHES = "show_hitches"
     const val PREF_SCALE = "render_scale"
     const val DEFAULT_SCALE = 1
     const val PREF_ASPECT = "aspect_ratio"
