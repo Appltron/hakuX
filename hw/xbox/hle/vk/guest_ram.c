@@ -81,7 +81,7 @@ int hle_vk_guest_ram_init(void)
 {
     AHardwareBuffer *ahb = hle_uma_ahb();
     g_hram.size = hle_ram_size();
-    g_hram.zero_copy = ahb && (import(ahb, true) || import(ahb, false));
+    g_hram.zero_copy = ahb && ((g_hvk.caps.bda && import(ahb, true)) || import(ahb, false));
     if (!g_hram.zero_copy) {
         hle_log("hakuX-hle-back", "guest RAM not imported (%s): copy fallback",
                 ahb ? "import failed" : "RAM is not an AHB");

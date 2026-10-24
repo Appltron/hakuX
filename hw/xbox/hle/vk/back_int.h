@@ -142,6 +142,9 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
                        uint32_t ds_id, const HleCmdViewport *vp);
 /* A recording starts (back.c cb_get, outside any pass). */
 void hle_draw_rec_begin(VkCommandBuffer cb);
+/* It is frame slot's (its last submission has completed): the per-slot push
+ * blocks and fbfetch sets (caps.push / caps.push_desc off) start over. */
+void hle_draw_slot(unsigned slot);
 /* The command buffer's pipeline / dynamic state is no longer what the draws
  * recorded: a new command buffer, or another pipeline bound into it. */
 void hle_draw_state_lost(void);

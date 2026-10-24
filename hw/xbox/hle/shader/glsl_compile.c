@@ -13,6 +13,8 @@
 #define GLSL_LOG(...) fprintf(stderr, __VA_ARGS__)
 #endif
 
+bool g_hle_glsl_vk11;
+
 /* Resource limits: data copied verbatim from hw/xbox/nv2a/pgraph/vk/glsl.c
  * (resource_limits) so HLE does not depend on the LLE renderer. */
 static const glslang_resource_t k_hle_glsl_limits = {
@@ -178,9 +180,10 @@ uint32_t *hle_glsl_compile(HleShaderStage stage, const char *src,
         .language = GLSLANG_SOURCE_GLSL,
         .stage = st,
         .client = GLSLANG_CLIENT_VULKAN,
-        .client_version = GLSLANG_TARGET_VULKAN_1_3,
+        .client_version = g_hle_glsl_vk11 ? GLSLANG_TARGET_VULKAN_1_1 : GLSLANG_TARGET_VULKAN_1_3,
         .target_language = GLSLANG_TARGET_SPV,
-        .target_language_version = GLSLANG_TARGET_SPV_1_6,
+        .target_language_version = g_hle_glsl_vk11 ? GLSLANG_TARGET_SPV_1_3
+                                                   : GLSLANG_TARGET_SPV_1_6,
         .code = src,
         .default_version = 450,
         .default_profile = GLSLANG_NO_PROFILE,

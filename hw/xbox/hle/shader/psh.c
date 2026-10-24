@@ -276,8 +276,9 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
     Buf b = { buf, cap, 0, false };
     const char *interp = k->flat ? "flat " : "";
     unsigned unsup = 0;
-    put(&b, "#version 450\n#extension GL_EXT_nonuniform_qualifier : require\n" HLE_PUSH_GLSL
-            "layout(set = 0, binding = 0) uniform texture2D uTex2D[];\n"
+    put(&b, "#version 450\n#extension GL_EXT_nonuniform_qualifier : require\n%s",
+        hle_push_glsl());
+    put(&b, "layout(set = 0, binding = 0) uniform texture2D uTex2D[];\n"
             "layout(set = 0, binding = 1) uniform sampler uSmp[];\n"
             "layout(set = 0, binding = 2) uniform textureCube uTexCube[];\n"
             "layout(set = 0, binding = 3) uniform texture3D uTex3D[];\n"

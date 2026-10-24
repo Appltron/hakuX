@@ -76,6 +76,7 @@ static struct {
     bool opt_async, opt_prebuild;   /* the app's settings */
     bool async, prebuild, nocache;  /* in effect */
     size_t key_size;
+    const char *variant;            /* the record's name suffix (hle_pipe_init) */
     HlePipeBuildFn build;
 
     HleMutex mu;
@@ -120,9 +121,10 @@ void hle_pipe_set_options(bool async, bool prebuild)
     g_pa.opt_prebuild = prebuild;
 }
 
-void hle_pipe_init(size_t key_size, HlePipeBuildFn build)
+void hle_pipe_init(size_t key_size, HlePipeBuildFn build, const char *variant)
 {
     g_pa.key_size = key_size;
+    g_pa.variant = variant;
     g_pa.build = build;
     int a = debug_switch("HAKUX_HLE_ASYNCPIPE", "debug.hakux.asyncpipe");
     int p = debug_switch("HAKUX_HLE_PREBUILD", "debug.hakux.prebuild");
@@ -408,7 +410,7 @@ void hle_pipe_title(uint32_t title_id, uint32_t timedate)
     }
     g_autofree char *dir = g_strdup_printf("%shle_pipelines", hle_host_base_path());
     g_mkdir_with_parents(dir, 0755);
-    g_pa.path = g_strdup_printf("%s/%08x-%08x.bin", dir, title_id, timedate);
+    g_pa.path = g_strdup_printf("%s/%08x-%08x%s.bin", dir, title_id, timedate, g_pa.variant);
 
     g_autofree gchar *data = NULL;
     gsize n = 0;

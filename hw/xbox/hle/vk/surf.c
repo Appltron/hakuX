@@ -135,8 +135,8 @@ static VkFormat surf_format(uint32_t xfmt, VkImageAspectFlags *aspect, uint32_t 
     case HLE_XFMT_D24S8: case HLE_XFMT_LIN_D24S8:
         *aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
         *bytes = 4;
-        return attach_ok(VK_FORMAT_D24_UNORM_S8_UINT, true) ? VK_FORMAT_D24_UNORM_S8_UINT
-                                                           : VK_FORMAT_D32_SFLOAT_S8_UINT;
+        /* D32S8 where D24S8 is no attachment (Xclipse) or can't be filtered (vkdev.c) */
+        return g_hvk.caps.d24s8 ? VK_FORMAT_D24_UNORM_S8_UINT : VK_FORMAT_D32_SFLOAT_S8_UINT;
     case HLE_XFMT_F24S8: case HLE_XFMT_LIN_F24S8:
         *aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
         *bytes = 4;

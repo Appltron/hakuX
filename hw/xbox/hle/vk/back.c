@@ -291,7 +291,7 @@ static void gput_collect(unsigned slot)
 
 static void gput_begin(VkCommandBuffer cb, unsigned slot)
 {
-    if (!g_hle_prof_on || g_gput.failed) {
+    if (!g_hle_prof_on || g_gput.failed || hle_quirk(HLE_QUIRK_NO_TIMESTAMPS)) {
         return;
     }
     if (!g_gput.pool) {
@@ -354,7 +354,7 @@ static struct {
 static void pt_slot_begin(VkCommandBuffer cb, unsigned slot)
 {
     g_pt.n[slot] = 0;
-    if (!g_hle_prof_on || g_pt.failed) {
+    if (!g_hle_prof_on || g_pt.failed || hle_quirk(HLE_QUIRK_NO_TIMESTAMPS)) {
         return;
     }
     if (!g_pt.pool) {
@@ -496,6 +496,7 @@ static VkCommandBuffer cb_get(void)
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
         T.vkBeginCommandBuffer(f->cb, &bi);
         hle_batch_slot(g_back.cur);     /* this slot's indices: its last use has completed */
+        hle_draw_slot(g_back.cur);      /* and its push blocks and fbfetch sets */
         {   /* Earlier submissions' writes before this one's commands: a frame
              * split by a kick resumes its pass here and loads the attachments
              * the last submission stored. Submission order orders execution,
@@ -560,16 +561,21 @@ static bool open_pass(bool lrz_off)
     VkRenderingAttachmentInfo da = ca, sa = ca;
     uint32_t w = rt ? rt->w : ds->w, h = rt ? rt->h : ds->h;
     if (rt) {
+        /* nothing written yet and no clear: zeros, not what an attachment
+         * compressor left (quirks.h) */
+        const bool cfresh = rt->layout == VK_IMAGE_LAYOUT_UNDEFINED && !(pf & HLE_CLEAR_TARGET) &&
+                            hle_quirk(HLE_QUIRK_FRESH_CLEAR);
         hle_surf_transition(cb, rt, rt->local_read ? VK_IMAGE_LAYOUT_RENDERING_LOCAL_READ_KHR
                                                    : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         hle_surf_written(rt);           /* HLE_OP_ZWRITE compares it with a depth buffer's */
         ca.imageView = rt->view;
         ca.imageLayout = rt->layout;    /* GENERAL for texture levels / faces */
-        ca.loadOp = (pf & HLE_CLEAR_TARGET) ? VK_ATTACHMENT_LOAD_OP_CLEAR
-                                            : VK_ATTACHMENT_LOAD_OP_LOAD;
+        ca.loadOp = (pf & HLE_CLEAR_TARGET) || cfresh ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                                                      : VK_ATTACHMENT_LOAD_OP_LOAD;
         ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        ca.clearValue.color = g_back.pend_color;
+        ca.clearValue.color = cfresh ? (VkClearColorValue){ .float32 = { 0 } } : g_back.pend_color;
     }
+    VkImageAspectFlags in_pass_clear = 0;   /* HLE_QUIRK_DS_SAME_LOAD */
     bool stencil = ds && (ds->aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
     if (ds) {
         w = MIN(w, ds->w);
@@ -623,6 +629,12 @@ static bool open_pass(bool lrz_off)
         sa = da;
         sa.loadOp = (pf & HLE_CLEAR_STENCIL) ? VK_ATTACHMENT_LOAD_OP_CLEAR
                                              : VK_ATTACHMENT_LOAD_OP_LOAD;
+        if (stencil && da.loadOp != sa.loadOp && hle_quirk(HLE_QUIRK_DS_SAME_LOAD)) {
+            /* both loaded, the cleared aspect cleared once the pass begins */
+            in_pass_clear = da.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                                     : VK_IMAGE_ASPECT_STENCIL_BIT;
+            da.loadOp = sa.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        }
     }
     VkRenderingInfo ri = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -631,6 +643,12 @@ static bool open_pass(bool lrz_off)
         .pDepthAttachment = ds ? &da : NULL, .pStencilAttachment = stencil ? &sa : NULL };
     pt_pass_begin(cb, w, h, rt ? (int)rt->fmt : -1, ds != NULL, pf);
     T.vkCmdBeginRendering(cb, &ri);
+    if (in_pass_clear) {
+        VkClearAttachment za = { .aspectMask = in_pass_clear,
+                                 .clearValue.depthStencil = { g_back.pend_z, g_back.pend_s } };
+        VkClearRect zr = { .rect = ri.renderArea, .baseArrayLayer = 0, .layerCount = 1 };
+        T.vkCmdClearAttachments(cb, 1, &za, 1, &zr);
+    }
     g_back.pass_open = true;
     g_back.zeq_wgen = 0;
     g_back.pend_clear = false;
@@ -2560,11 +2578,24 @@ int hle_back_start(void)
     }
     int r = hle_vk_init();
     if (r) {
+        if (r == -1 && !g_hle_unavailable[0]) {
+            snprintf(g_hle_unavailable, sizeof(g_hle_unavailable),
+                     "%s can't create a Vulkan device", g_hvk.props.deviceName[0] ?
+                     g_hvk.props.deviceName : "this GPU");
+        }
         return r;
     }
-    if (hle_vk_guest_ram_init() || hle_vk_arena_init(32u << 20) || hle_vk_land_init(16u << 20) ||
-        hle_fe_init() || hle_tl_init(on_complete) || hle_draw_init()) {
-        hle_log("hakuX-hle-back", "back end init failed");
+    /* DXT decoded on the way in (no BC: pbres.c) takes four to eight times the bytes */
+    const char *what = hle_vk_guest_ram_init() ? "guest RAM" :
+                       hle_vk_arena_init(g_hvk.caps.bc ? 32u << 20 : 64u << 20) ? "the upload arena" :
+                       hle_vk_land_init(16u << 20) ? "the readback buffer" :
+                       hle_fe_init() ? "the front end" :
+                       hle_tl_init(on_complete) ? "the timeline" :
+                       hle_draw_init() ? "the draw state" : NULL;
+    if (what) {
+        hle_log("hakuX-hle-back", "back end init failed: %s", what);
+        snprintf(g_hle_unavailable, sizeof(g_hle_unavailable), "%s can't set up %s",
+                 g_hvk.props.deviceName, what);
         return -3;
     }
     /* before the render thread and the game: the pipeline table is this

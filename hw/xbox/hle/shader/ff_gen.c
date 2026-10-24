@@ -34,7 +34,8 @@ static void put(Buf *b, const char *fmt, ...)
     b->len += (size_t)n;
 }
 
-static const char k_push[] = HLE_PUSH_GLSL;
+bool g_hle_push_ssbo;                   /* ff.h */
+bool g_hle_glsl_zw;                     /* ff.h */
 
 /* Material colour source s (0 material, 1 vertex diffuse, 2 vertex specular)
  * for material slot m. Without COLORVERTEX or the vertex colour, the
@@ -62,7 +63,7 @@ size_t hle_ff_vs_glsl(const HleFfVsKey *k, char *buf, size_t cap)
     bool ubo = hle_ff_vs_needs_ubo(k) && (pos != HLE_FVF_XYZRHW || k->points);
     bool xf = ubo && pos != HLE_FVF_XYZRHW;
     bool normal = (k->fvf & HLE_FVF_NORMAL) != 0;
-    put(&b, "#version 450\n%s", k_push);
+    put(&b, "#version 450\n%s", hle_push_glsl());
     if (ubo) {
         put(&b, "layout(set = 1, binding = 0, std140) uniform FfConst { vec4 f[%u]; };\n",
             HLE_FFU_COUNT);
@@ -285,6 +286,9 @@ size_t hle_ff_vs_glsl(const HleFfVsKey *k, char *buf, size_t cap)
                 "      s = q * c.w; }\n"
                 "    gl_Position = vec4(s * pc.vp + vec2(-1.0, 1.0) * c.w, c.z, c.w); }\n");
     }
+    if (g_hle_glsl_zw) {
+        put(&b, HLE_ZW_NUDGE_GLSL);
+    }
     put(&b, "%s}\n", k->wbuf ? "  vW = gl_Position.w;\n" : "");
     return b.overflow ? 0 : b.len;
 }
@@ -445,7 +449,7 @@ size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
 {
     Buf b = { buf, cap, 0, false };
     const char *interp = k->flat ? "flat " : "";
-    put(&b, "#version 450\n#extension GL_EXT_nonuniform_qualifier : require\n%s", k_push);
+    put(&b, "#version 450\n#extension GL_EXT_nonuniform_qualifier : require\n%s", hle_push_glsl());
     put(&b, "layout(set = 0, binding = 0) uniform texture2D uTex2D[];\n"
             "layout(set = 0, binding = 1) uniform sampler uSmp[];\n");
     put(&b, "layout(location = 0) %sin vec4 vDiffuse;\n", interp);

@@ -33,6 +33,33 @@ static bool mesa_turnip(const HleDriver *d)
     return d->drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
 }
 
+static bool arm_proprietary(const HleDriver *d)
+{
+    return d->drv.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
+}
+
+/* Mali hardware, any driver (vendor 0x13B5: Arm's, PanVK) */
+static bool mali(const HleDriver *d)
+{
+    return d->props.vendorID == 0x13B5;
+}
+
+static bool not_adreno(const HleDriver *d)
+{
+    return !qualcomm_proprietary(d) && !mesa_turnip(d);
+}
+
+/* PowerVR (vendor 0x1010) before driver 0x00582558 (ARMSX2's and PPSSPP's bound) */
+static bool powervr_old(const HleDriver *d)
+{
+    return d->props.vendorID == 0x1010 && d->props.driverVersion < 0x00582558u;
+}
+
+static bool mali_g615(const HleDriver *d)
+{
+    return mali(d) && strstr(d->props.deviceName, "Mali-G615") != NULL;
+}
+
 /* Seen on (driver, version, what showed it). */
 static const HleQuirk k_quirks[] = {
     /* Adreno 840 stock driver 0x8034a02c: Forza's menu text picks its glyph
@@ -54,6 +81,18 @@ static const HleQuirk k_quirks[] = {
      * dropped out on the frames whose post pass shared a command buffer with
      * its depth-only shadow pass, and the scene flickered (2026-10-23). */
     { HLE_QUIRK_BLEND_CONST_RESET, "blend_const_reset", mesa_turnip },
+    /* ARMSX2 (GSDeviceVK.cpp): "Arm's Mali blob crashes in
+     * vkCmdPushDescriptorSetKHR even where it advertises the extension" */
+    { HLE_QUIRK_NO_PUSH_DESC, "no_push_desc", arm_proprietary },
+    /* ARMSX2 after PPSSPP: depth vs stencil load ops that differ corrupt on Mali */
+    { HLE_QUIRK_DS_SAME_LOAD, "ds_same_load", mali },
+    /* ARMSX2 (tfx.glsl GPU_PROFILE_MALI) after PPSSPP's EQUAL_WZ_CORRUPTS_DEPTH */
+    { HLE_QUIRK_Z_EQ_W, "z_eq_w", mali },
+    { HLE_QUIRK_FRESH_CLEAR, "fresh_clear", not_adreno },
+    /* ARMSX2 (VKSwapChain.cpp) after PPSSPP: older PowerVR swapchain widths */
+    { HLE_QUIRK_SWAP_W32, "swap_w32", powervr_old },
+    /* ARMSX2: "Mali-G615's timestamp queries never resolve" */
+    { HLE_QUIRK_NO_TIMESTAMPS, "no_timestamps", mali_g615 },
 };
 
 static uint32_t g_defaults;

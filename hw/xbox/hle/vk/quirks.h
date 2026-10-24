@@ -46,6 +46,30 @@ enum {
      * draw after such a pipeline sets other constants before its own
      * (vk/draw.c). */
     HLE_QUIRK_BLEND_CONST_RESET = 1u << 4,
+    /* From ARMSX2 (pcsx2/GS/Renderers/Vulkan GSDeviceVK, VKSwapChain), most of
+     * them PPSSPP's first, for the drivers other than Adreno's. */
+    /* vkCmdPushDescriptorSetKHR crashes even where the extension is listed
+     * (Arm's driver): fbfetch's set 2 comes from a pool (vk/draw.c). Read
+     * when the back end starts. */
+    HLE_QUIRK_NO_PUSH_DESC = 1u << 5,
+    /* A packed depth/stencil attachment whose depth and stencil load ops
+     * differ corrupts (Mali): such a pass loads both and clears the other
+     * aspect in it (back.c open_pass). */
+    HLE_QUIRK_DS_SAME_LOAD = 1u << 6,
+    /* A clip-space z equal to w corrupts the depth buffer (Mali): the vertex
+     * shaders move such a vertex a hair inside (shader/ff.h). Read when the
+     * back end starts: it changes the shaders. */
+    HLE_QUIRK_Z_EQ_W = 1u << 7,
+    /* A colour target's first pass loads its undefined contents (no clear
+     * pending): zeros on Adreno, anything on GPUs that compress their
+     * attachments (Mali's AFBC, Xclipse's DCC): it clears to zero there. */
+    HLE_QUIRK_FRESH_CLEAR = 1u << 8,
+    /* Older PowerVR drivers corrupt the output unless the swapchain is a
+     * multiple of 32 pixels wide: its width is rounded down to one. */
+    HLE_QUIRK_SWAP_W32 = 1u << 9,
+    /* Timestamp queries never resolve (Mali-G615): the GPU time profile
+     * (debug) is off. */
+    HLE_QUIRK_NO_TIMESTAMPS = 1u << 10,
 };
 
 extern uint32_t g_hle_quirks;

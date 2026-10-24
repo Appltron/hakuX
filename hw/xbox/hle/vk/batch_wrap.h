@@ -37,6 +37,12 @@ static VKAPI_ATTR void VKAPI_CALL w_vkCmdBindVertexBuffers(VkCommandBuffer comma
     R.vkCmdBindVertexBuffers(commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
 }
 
+static VKAPI_ATTR void VKAPI_CALL w_vkCmdBindVertexBuffers2(VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* pBuffers, const VkDeviceSize* pOffsets, const VkDeviceSize* pSizes, const VkDeviceSize* pStrides)
+{
+    batch_before(commandBuffer);
+    R.vkCmdBindVertexBuffers2(commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets, pSizes, pStrides);
+}
+
 static VKAPI_ATTR void VKAPI_CALL w_vkCmdBlitImage2(VkCommandBuffer commandBuffer, const VkBlitImageInfo2* pBlitImageInfo)
 {
     batch_before(commandBuffer);
@@ -59,6 +65,12 @@ static VKAPI_ATTR void VKAPI_CALL w_vkCmdClearDepthStencilImage(VkCommandBuffer 
 {
     batch_before(commandBuffer);
     R.vkCmdClearDepthStencilImage(commandBuffer, image, imageLayout, pDepthStencil, rangeCount, pRanges);
+}
+
+static VKAPI_ATTR void VKAPI_CALL w_vkCmdCopyBuffer(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferCopy* pRegions)
+{
+    batch_before(commandBuffer);
+    R.vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, regionCount, pRegions);
 }
 
 static VKAPI_ATTR void VKAPI_CALL w_vkCmdCopyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkBufferImageCopy* pRegions)
@@ -273,6 +285,9 @@ static void wrap_table(struct VolkDeviceTable *t)
     if (t->vkCmdBindVertexBuffers) {
         t->vkCmdBindVertexBuffers = w_vkCmdBindVertexBuffers;
     }
+    if (t->vkCmdBindVertexBuffers2) {
+        t->vkCmdBindVertexBuffers2 = w_vkCmdBindVertexBuffers2;
+    }
     if (t->vkCmdBlitImage2) {
         t->vkCmdBlitImage2 = w_vkCmdBlitImage2;
     }
@@ -284,6 +299,9 @@ static void wrap_table(struct VolkDeviceTable *t)
     }
     if (t->vkCmdClearDepthStencilImage) {
         t->vkCmdClearDepthStencilImage = w_vkCmdClearDepthStencilImage;
+    }
+    if (t->vkCmdCopyBuffer) {
+        t->vkCmdCopyBuffer = w_vkCmdCopyBuffer;
     }
     if (t->vkCmdCopyBufferToImage) {
         t->vkCmdCopyBufferToImage = w_vkCmdCopyBufferToImage;

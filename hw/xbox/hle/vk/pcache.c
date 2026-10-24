@@ -1,7 +1,8 @@
 /*
  * hakuX HLE GPU — on-disk shader and pipeline caches (P3 Task 13).
  * - SPIR-V: <base>/hle_spirv/<fnv64 of the GLSL>-<stage>.spv, a header with
- *   the source length and a second hash so a collision reads as a miss.
+ *   the source length and a second hash so a collision reads as a miss
+ *   (hle_spirv-vk11/: SPIR-V 1.3, for a device below Vulkan 1.3).
  * - Pipelines: <base>/hle_pipeline_cache/<title id>.bin, the title's
  *   VkPipelineCache blob (the driver rejects a blob from another device or
  *   driver version), written by a worker thread: the blob is megabytes and
@@ -58,7 +59,8 @@ void hle_pcache_init(void)
     gchar *data = NULL;
     gsize len = 0;
     if (!hle_pipe_nocache()) {      /* else neither read nor written (pipeasync.h) */
-        g_pc.dir = g_strdup_printf("%shle_spirv", base);
+        /* SPIR-V 1.3 for a device below Vulkan 1.3 apart */
+        g_pc.dir = g_strdup_printf("%shle_spirv%s", base, g_hle_glsl_vk11 ? "-vk11" : "");
         g_autofree char *pdir = g_strdup_printf("%shle_pipeline_cache", base);
         g_pc.blob = g_strdup_printf("%s/%08x.bin", pdir, g_hle.title.xbe.title_id);
         g_mkdir_with_parents(g_pc.dir, 0700);

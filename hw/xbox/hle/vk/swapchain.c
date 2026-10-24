@@ -31,7 +31,9 @@
 #include "hw/xbox/hle/hle.h"
 #include "hw/xbox/hle/shader/glsl_compile.h"
 #include "hw/xbox/hle/vk/back_int.h"
+#include "hw/xbox/hle/vk/compat.h"
 #include "hw/xbox/hle/vk/display.h"
+#include "hw/xbox/hle/vk/quirks.h"
 #include "hw/xbox/hle/vk/swapchain.h"
 
 #include <android/native_window.h>
@@ -368,6 +370,7 @@ static VkPipeline pipeline(VkShaderModule fs, VkFormat fmt)
 static bool init(void)
 {
     volkLoadDeviceTable(&g_ps.t, g_hvk.dev);
+    hle_compat_install(&g_ps.t);        /* below 1.3: as the back end's table */
     VkSemaphoreTypeCreateInfo tci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
                                       .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE };
     VkSemaphoreCreateInfo tsi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &tci };
@@ -556,6 +559,9 @@ static bool make_swapchain(uint32_t w, uint32_t h)
     }
     w = MIN(MAX(w, caps.minImageExtent.width), caps.maxImageExtent.width);
     h = MIN(MAX(h, caps.minImageExtent.height), caps.maxImageExtent.height);
+    if (hle_quirk(HLE_QUIRK_SWAP_W32) && (w & ~31u) >= MAX(caps.minImageExtent.width, 32u)) {
+        w &= ~31u;                      /* older PowerVR drivers (quirks.h) */
+    }
     VkCompositeAlphaFlagBitsKHR ca = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
                                          ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
                                          : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;

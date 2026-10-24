@@ -98,6 +98,8 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
         fatalShown = true
         val kind = nativeGetFatalKind()
         val driver = kind == FATAL_DRIVER
+        /* another driver can be chosen on Adreno only (Turnip); elsewhere the system's */
+        val custom = GpuDriverHelper.supportsCustomDriverLoading()
         AlertDialog.Builder(this@NativeCoreActivity)
           .setTitle(
             when (kind) {
@@ -110,9 +112,10 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
           )
           .setMessage(
             when {
-              driver -> getString(R.string.native_fatal_gpu, why)
+              driver -> getString(if (custom) R.string.native_fatal_gpu else R.string.native_fatal_gpu_system, why)
               kind == FATAL_STATE -> why
-              kind == FATAL_GPU_LOST -> getString(R.string.native_gpu_lost, why)
+              kind == FATAL_GPU_LOST ->
+                getString(if (custom) R.string.native_gpu_lost else R.string.native_gpu_lost_system, why)
               kind == FATAL_BOOT -> getString(R.string.native_boot_failed, why)
               else -> getString(R.string.native_incompatible)
             }

@@ -30,8 +30,10 @@ typedef HlePbResult (*HlePipeBuildFn)(const void *key, const uint32_t *tok, uint
 /* The app's settings, before the back end starts. */
 void hle_pipe_set_options(bool async, bool prebuild);
 /* draw.c's init: the key size and the build function; the debug overrides
- * (debug.hakux.asyncpipe, debug.hakux.prebuild, debug.hakux.nocache) read. */
-void hle_pipe_init(size_t key_size, HlePipeBuildFn build);
+ * (debug.hakux.asyncpipe, debug.hakux.prebuild, debug.hakux.nocache) read.
+ * variant: a suffix of the record's name for keys of another kind (the
+ * vertex layout in them: "-vi"), so either kind keeps its own; "" none. */
+void hle_pipe_init(size_t key_size, HlePipeBuildFn build, const char *variant);
 /* The asynchronous branch is on. */
 bool hle_pipe_async(void);
 /* No disk caches this run: SPIR-V, the pipeline cache and the record are

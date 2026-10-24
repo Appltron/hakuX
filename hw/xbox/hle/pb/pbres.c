@@ -159,6 +159,17 @@ static void dxt_volume(uint32_t xfmt, const uint8_t *s, uint32_t w, uint32_t h, 
     }
 }
 
+/* A4R4G4B4 -> A8R8G8B8 (bytes B, G, R, A), each 4-bit value n as n * 17, for a
+ * GPU without the 4444 formats (Mali's r26: HleCaps.x4444 off) */
+static void expand_4444(const uint16_t *s, size_t n, uint32_t *out)
+{
+    for (size_t i = 0; i < n; i++) {
+        uint32_t c = s[i];
+        uint32_t x = (c & 0xF) | (c & 0xF0) << 4 | (c & 0xF00) << 8 | (c & 0xF000) << 12;
+        out[i] = x | x << 4;
+    }
+}
+
 static uint8_t clip8(int v)
 {
     return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v;
@@ -282,11 +293,20 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
     if (!src) {
         return false;
     }
-    /* P8 (and DXT in a volume: dxt_volume) expands to A8R8G8B8 on the way
-     * into the arena; a volume's levels are depth slices (3D swizzle, or DXT
+    /* P8 expands to A8R8G8B8 on the way into the arena, and so does DXT in a
+     * volume (dxt_volume) or on a GPU without BC (Mali, PowerVR's B-Series:
+     * one slice); a volume's levels are depth slices (3D swizzle, or DXT
      * blocks in groups of four slices), depth halving per level */
-    bool vol = d.kind == HLE_RK_VOLUME, dxtv = vol && (fi->flags & HLE_FI_DXT);
-    const HleFmtInfo *ofi = p8 || dxtv ? hle_fmt_info(HLE_XFMT_A8R8G8B8) : fi;
+    bool vol = d.kind == HLE_RK_VOLUME;
+    bool dxtd = (fi->flags & HLE_FI_DXT) && (vol || !g_hvk.caps.bc);
+    /* A4R4G4B4 on a GPU without the 4444 formats: A8R8G8B8 as well (expand_4444),
+     * a linear texture a linear one */
+    bool x4444 = (d.fmt == HLE_XFMT_A4R4G4B4 || d.fmt == HLE_XFMT_LIN_A4R4G4B4) &&
+                 !g_hvk.caps.x4444;
+    uint32_t oxfmt = p8 || dxtd ? HLE_XFMT_A8R8G8B8 :
+                     x4444 ? (d.fmt == HLE_XFMT_LIN_A4R4G4B4 ? HLE_XFMT_LIN_A8R8G8B8
+                                                            : HLE_XFMT_A8R8G8B8) : d.fmt;
+    const HleFmtInfo *ofi = hle_fmt_info(oxfmt);
     uint32_t faces = d.kind == HLE_RK_CUBE ? 6 : 1, levels = MAX(ri.levels, 1u), total = 0;
     uint32_t depth = vol ? MAX(d.d, 1u) : 1;
     for (uint32_t l = 0; l < levels; l++) {
@@ -312,8 +332,18 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
             uint32_t sw, sh, bo;
             hle_res_level(&d, l, &sw, &sh, &bo);
             HleXgRect img = { bo, bo, w, h };
-            if (vol) {
-                if (dxtv) {
+            /* x4444: the 16-bit texels to a scratch copy first, expanded below */
+            uint8_t *out = dst + pos;
+            uint32_t orow = row;
+            g_autofree uint8_t *t16 = NULL;
+            if (x4444) {
+                orow = w * 2;
+                out = t16 = g_malloc((size_t)orow * h * dd);
+            }
+            if (dxtd && !vol) {
+                dxt_volume(d.fmt, s, w, h, 1, (uint32_t *)(dst + pos));
+            } else if (vol) {
+                if (dxtd) {
                     dxt_volume(d.fmt, s, w, h, dd, (uint32_t *)(dst + pos));
                 } else if (p8) {
                     g_autofree uint8_t *idx = g_malloc((size_t)w * h * dd);
@@ -323,20 +353,23 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
                         o32[i] = pal[idx[i]];
                     }
                 } else {
-                    hle_xg_unswizzle_box(s, w, h, dd, NULL, dst + pos, row, row * h, 0, 0, 0,
+                    hle_xg_unswizzle_box(s, w, h, dd, NULL, out, orow, orow * h, 0, 0, 0,
                                          fi->bpp / 8);
                 }
             } else if (p8) {
                 hle_xg_unswizzle_rect_p8(s, sw, sh, &img, pal, dst + pos, row, 0, 0);
             } else if (fi->flags & HLE_FI_SWZ) {
-                hle_xg_unswizzle_rect(s, sw, sh, &img, dst + pos, row, 0, 0, fi->bpp / 8);
+                hle_xg_unswizzle_rect(s, sw, sh, &img, out, orow, 0, 0, fi->bpp / 8);
             } else if (fi->flags & HLE_FI_DXT) {
                 memcpy(dst + pos, s, n);
             } else {
-                uint32_t sp = pitch ? pitch : row;
+                uint32_t sp = pitch ? pitch : orow;
                 for (uint32_t y = 0; y < h; y++) {
-                    memcpy(dst + pos + y * row, s + y * sp, row);
+                    memcpy(out + y * orow, s + y * sp, orow);
                 }
+            }
+            if (x4444) {
+                expand_4444((const uint16_t *)t16, (size_t)w * h * dd, (uint32_t *)(dst + pos));
             }
             pos += n;
         }
@@ -359,8 +392,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
         if (want == id) {
             want = -1;
             g_autofree char *p = g_strdup_printf("%shle_shadow/tex_%u_f%x_%ux%u_l%u.bin",
-                                                 hle_host_base_path(), id,
-                                                 p8 ? HLE_XFMT_A8R8G8B8 : d.fmt, d.w, d.h,
+                                                 hle_host_base_path(), id, oxfmt, d.w, d.h,
                                                  levels);
             g_file_set_contents(p, (const char *)dst, total, NULL);
             hle_log("hakuX-hle-front", "texdump %s (%u bytes)", p, total);
@@ -368,7 +400,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
     }
     HleCmdTex *c = hle_fe_begin(HLE_OP_TEX, sizeof(*c));
     c->id = id;
-    c->xfmt = p8 || dxtv ? HLE_XFMT_A8R8G8B8 : d.fmt;
+    c->xfmt = oxfmt;
     c->w = d.w;
     c->h = d.h;
     c->d = depth;

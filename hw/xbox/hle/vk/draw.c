@@ -31,8 +31,6 @@
 #include "hw/xbox/hle/vk/pipeasync.h"
 
 #define T (g_hvk.t)
-#define HLE_MAX_IMAGES   4096
-#define HLE_MAX_SAMPLERS 256
 #define HLE_MAX_TEX      2048
 #define HLE_MAX_PIPES    8192   /* kept for the session: Halo 2 makes ~600 in one level; the
                                    prebuild fills at most half (hle_draw_prebuild) */
@@ -152,6 +150,22 @@ static struct {
     VkDescriptorPool cpool;
     VkDescriptorSet cset;
     VkDescriptorSet fset;               /* set 1 for FF draws: the FF uniform block */
+    /* Push constants smaller than the block (caps.push off: Xclipse): set 3,
+     * the blocks in a host-visible ring of storage buffer windows, a part per
+     * command buffer in flight (hle_draw_slot); set 2 empty without fbfetch */
+    VkDescriptorSetLayout pdsl, edsl;
+    VkDescriptorPool ppool;
+    VkDescriptorSet pset;
+    VkBuffer pbuf;
+    VkDeviceMemory pmem;
+    uint8_t *pmap;
+    uint32_t pbase, ppos;               /* the current part's start, its next free byte */
+    /* fbfetch without push descriptors (caps.push_desc off, or Mali's driver:
+     * HLE_QUIRK_NO_PUSH_DESC): set 2 from a pool per command buffer in flight */
+    bool fb_pooled;
+    VkDescriptorPool fbpool[HLE_FRAMES];
+    unsigned fbslot;
+    struct { VkImageView rt, z; VkImageLayout rl, zl; VkDescriptorSet set; } fblast;
     struct { uint64_t hash; uint32_t nslots; uint32_t *tok; } prog[HLE_MAX_PROGS];
     uint32_t nprog;
     int8_t vfmt[256];                   /* vertex-buffer support: 0 unknown, 1 yes, -1 no */
@@ -221,7 +235,8 @@ static bool tex_format(uint32_t x, TexFmt *o)
         o->fmt = VK_FORMAT_A1R5G5B5_UNORM_PACK16; o->sw.a = VK_COMPONENT_SWIZZLE_ONE;
         return true;
     case HLE_XFMT_A4R4G4B4: case HLE_XFMT_LIN_A4R4G4B4:
-        o->fmt = VK_FORMAT_A4R4G4B4_UNORM_PACK16_EXT; return true;
+        /* else the front end sends them as A8R8G8B8 (pb/pbres.c) */
+        o->fmt = VK_FORMAT_A4R4G4B4_UNORM_PACK16_EXT; return g_hvk.caps.x4444;
     case HLE_XFMT_L8: case HLE_XFMT_LIN_L8: {
         VkComponentMapping m = SW(R, R, R, ONE);
         o->fmt = VK_FORMAT_R8_UNORM; o->sw = m; return true;
@@ -368,6 +383,97 @@ static bool make_image(HleVkTex *t, const TexFmt *tf, VkImageUsageFlags usage)
 
 static void pipe_async_init(void);
 
+#define PUSH_PART_BYTES (4u << 20)      /* a command buffer's push blocks: 16384 */
+#define FB_SETS         1024            /* a command buffer's pooled fbfetch sets */
+
+/* caps.push off: the push blocks' set (3) and ring (hle_draw_push) */
+static bool push_ring_init(void)
+{
+    VkDescriptorSetLayoutBinding b = { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1,
+                                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                       NULL };
+    VkDescriptorSetLayoutCreateInfo lci = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1, .pBindings = &b };
+    VkDescriptorSetLayoutCreateInfo eci = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1 };
+    VkDescriptorPoolCreateInfo pci = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+        .poolSizeCount = 1, .pPoolSizes = &ps };
+    if (T.vkCreateDescriptorSetLayout(g_hvk.dev, &lci, NULL, &g_dr.pdsl) != VK_SUCCESS ||
+        T.vkCreateDescriptorSetLayout(g_hvk.dev, &eci, NULL, &g_dr.edsl) != VK_SUCCESS ||
+        T.vkCreateDescriptorPool(g_hvk.dev, &pci, NULL, &g_dr.ppool) != VK_SUCCESS) {
+        return false;
+    }
+    VkDescriptorSetAllocateInfo ai = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = g_dr.ppool, .descriptorSetCount = 1, .pSetLayouts = &g_dr.pdsl };
+    const VkDeviceSize size = (VkDeviceSize)HLE_FRAMES * PUSH_PART_BYTES;
+    VkBufferCreateInfo bci = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE };
+    if (T.vkAllocateDescriptorSets(g_hvk.dev, &ai, &g_dr.pset) != VK_SUCCESS ||
+        T.vkCreateBuffer(g_hvk.dev, &bci, NULL, &g_dr.pbuf) != VK_SUCCESS) {
+        return false;
+    }
+    VkMemoryRequirements req;
+    T.vkGetBufferMemoryRequirements(g_hvk.dev, g_dr.pbuf, &req);
+    VkMemoryPropertyFlags hv = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    int mt = hle_vk_memtype(req.memoryTypeBits, hv | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+    if (mt < 0) {
+        mt = hle_vk_memtype(req.memoryTypeBits, hv, 0);
+    }
+    VkMemoryAllocateInfo mai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = req.size, .memoryTypeIndex = (uint32_t)mt };
+    if (mt < 0 || T.vkAllocateMemory(g_hvk.dev, &mai, NULL, &g_dr.pmem) != VK_SUCCESS) {
+        return false;
+    }
+    T.vkBindBufferMemory(g_hvk.dev, g_dr.pbuf, g_dr.pmem, 0);
+    T.vkMapMemory(g_hvk.dev, g_dr.pmem, 0, size, 0, (void **)&g_dr.pmap);
+    VkDescriptorBufferInfo bi = { g_dr.pbuf, 0, HLE_PUSH_BYTES };
+    VkWriteDescriptorSet w = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_dr.pset, .dstBinding = 0,
+        .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+        .pBufferInfo = &bi };
+    T.vkUpdateDescriptorSets(g_hvk.dev, 1, &w, 0, NULL);
+    hle_log("hakuX-hle-back", "push constants %u bytes < %u: the draws' block in a storage "
+            "buffer (%u KiB a command buffer)", g_hvk.props.limits.maxPushConstantsSize,
+            HLE_PUSH_BYTES, PUSH_PART_BYTES >> 10);
+    return g_dr.pmap != NULL;
+}
+
+/* A draw's push block in the ring, bound as set 3 (caps.push off). */
+static void push_block(VkCommandBuffer cb, const HleFfPush *pc)
+{
+    if (g_dr.ppos + HLE_PUSH_BYTES > PUSH_PART_BYTES) {
+        static bool s_said;
+        if (!s_said) {
+            s_said = true;
+            hle_log("hakuX-hle-back", "push blocks: a command buffer's %u KiB are used up: "
+                    "its later draws keep the last block (logged once)", PUSH_PART_BYTES >> 10);
+        }
+        return;
+    }
+    uint32_t off = g_dr.pbase + g_dr.ppos;
+    memcpy(g_dr.pmap + off, pc, sizeof(*pc));
+    g_dr.ppos += HLE_PUSH_BYTES;
+    T.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_dr.layout, 3, 1, &g_dr.pset,
+                              1, &off);
+}
+
+void hle_draw_slot(unsigned slot)
+{
+    g_dr.pbase = (slot % HLE_FRAMES) * PUSH_PART_BYTES;
+    g_dr.ppos = 0;
+    g_dr.fbslot = slot % HLE_FRAMES;
+    memset(&g_dr.fblast, 0, sizeof(g_dr.fblast));
+    if (g_dr.fb_pooled && g_dr.fbpool[g_dr.fbslot]) {
+        T.vkResetDescriptorPool(g_hvk.dev, g_dr.fbpool[g_dr.fbslot], 0);
+    }
+}
+
 int hle_draw_init(void)
 {
     VkDescriptorSetLayoutBinding b[4] = {
@@ -445,32 +551,52 @@ int hle_draw_init(void)
                       offsetof(HleFfPush, bumpl) != 100 || offsetof(HleFfPush, alpha_ref) != 112 ||
                       offsetof(HleFfPush, fog) != 128 || offsetof(HleFfPush, bump) != 240 ||
                       sizeof(HleFfPush) != 256);
-    if (sizeof(HleFfPush) > g_hvk.props.limits.maxPushConstantsSize) {
-        hle_log("hakuX-hle-back", "push constants: %zu bytes > device limit %u",
-                sizeof(HleFfPush), g_hvk.props.limits.maxPushConstantsSize);
+    HLE_BUILD_BUG_ON(sizeof(HleFfPush) != HLE_PUSH_BYTES);
+    g_hle_push_ssbo = !g_hvk.caps.push;     /* before any shader is made */
+    g_hle_glsl_zw = hle_quirk(HLE_QUIRK_Z_EQ_W);
+    if (g_hle_push_ssbo && !push_ring_init()) {
+        hle_log("hakuX-hle-back", "push blocks: no storage buffer ring");
         return -1;
     }
     VkPushConstantRange pr = { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(HleFfPush) };
     /* set 2 (devices with fbfetch): the colour target and the depth buffer
-     * as input attachments */
+     * as input attachments, pushed, or from a pool where push descriptors
+     * can't be used (Arm's driver crashes in them: ARMSX2) */
+    g_dr.fb_pooled = !g_hvk.caps.push_desc || hle_quirk(HLE_QUIRK_NO_PUSH_DESC);
     if (g_hvk.caps.fbfetch) {
         VkDescriptorSetLayoutBinding fb[2] = {
             { 0, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
             { 1, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL } };
         VkDescriptorSetLayoutCreateInfo fci = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
+            .flags = g_dr.fb_pooled ? 0 : VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
             .bindingCount = 2, .pBindings = fb };
         if (T.vkCreateDescriptorSetLayout(g_hvk.dev, &fci, NULL, &g_dr.fbdsl) != VK_SUCCESS) {
             g_hvk.caps.fbfetch = false;
         }
+        VkDescriptorPoolSize fps = { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 2 * FB_SETS };
+        VkDescriptorPoolCreateInfo fpi = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = FB_SETS,
+            .poolSizeCount = 1, .pPoolSizes = &fps };
+        for (unsigned i = 0; g_hvk.caps.fbfetch && g_dr.fb_pooled && i < HLE_FRAMES; i++) {
+            if (T.vkCreateDescriptorPool(g_hvk.dev, &fpi, NULL, &g_dr.fbpool[i]) != VK_SUCCESS) {
+                g_hvk.caps.fbfetch = false;
+            }
+        }
+        if (g_hvk.caps.fbfetch && g_dr.fb_pooled) {
+            hle_log("hakuX-hle-back", "fbfetch: input attachments from pooled sets (%s)",
+                    g_hvk.caps.push_desc ? "the driver's push descriptors are avoided" :
+                    "no push descriptors");
+        }
     }
-    VkDescriptorSetLayout sets[3] = { g_dr.dsl, g_dr.cdsl, g_dr.fbdsl };
+    VkDescriptorSetLayout sets[4] = { g_dr.dsl, g_dr.cdsl,
+                                      g_hvk.caps.fbfetch ? g_dr.fbdsl : g_dr.edsl, g_dr.pdsl };
     VkPipelineLayoutCreateInfo lci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = g_hvk.caps.fbfetch ? 3 : 2,
-        .pSetLayouts = sets, .pushConstantRangeCount = 1, .pPushConstantRanges = &pr };
+        .setLayoutCount = g_hle_push_ssbo ? 4 : g_hvk.caps.fbfetch ? 3 : 2,
+        .pSetLayouts = sets, .pushConstantRangeCount = g_hle_push_ssbo ? 0 : 1,
+        .pPushConstantRanges = &pr };
     if (T.vkCreatePipelineLayout(g_hvk.dev, &lci, NULL, &g_dr.layout) != VK_SUCCESS) {
         return -1;
     }
@@ -1000,6 +1126,43 @@ unsigned hle_draw_zeq(const HleCmdDraw *c, uint32_t ds_id)
     }
 }
 
+/* fbfetch's set 2 without push descriptors: a set from the command buffer's
+ * pool, the last one again while the attachments are the same */
+static void fb_bind_pooled(VkCommandBuffer cb, HleVkSurf *rt, VkImageView zv,
+                           const VkDescriptorImageInfo *ii, VkWriteDescriptorSet *w, unsigned nw)
+{
+    VkImageView rv = rt ? ii[0].imageView : VK_NULL_HANDLE;
+    VkImageLayout rl = rt ? ii[0].imageLayout : VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout zl = zv ? ii[nw - 1].imageLayout : VK_IMAGE_LAYOUT_UNDEFINED;
+    VkDescriptorSet set = g_dr.fblast.set;
+    if (!set || g_dr.fblast.rt != rv || g_dr.fblast.z != zv || g_dr.fblast.rl != rl ||
+        g_dr.fblast.zl != zl) {
+        VkDescriptorSetAllocateInfo ai = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = g_dr.fbpool[g_dr.fbslot], .descriptorSetCount = 1,
+            .pSetLayouts = &g_dr.fbdsl };
+        if (T.vkAllocateDescriptorSets(g_hvk.dev, &ai, &set) != VK_SUCCESS) {
+            static bool s_said;
+            if (!s_said) {
+                s_said = true;
+                hle_log("hakuX-hle-back", "fbfetch: a command buffer's %u sets are used up: its "
+                        "later draws keep the last (logged once)", FB_SETS);
+            }
+            return;
+        }
+        for (unsigned i = 0; i < nw; i++) {
+            w[i].dstSet = set;
+        }
+        T.vkUpdateDescriptorSets(g_hvk.dev, nw, w, 0, NULL);
+        g_dr.fblast.rt = rv;
+        g_dr.fblast.z = zv;
+        g_dr.fblast.rl = rl;
+        g_dr.fblast.zl = zl;
+        g_dr.fblast.set = set;
+    }
+    T.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_dr.layout, 2, 1, &set, 0, NULL);
+}
+
 void hle_draw_fb_bind(VkCommandBuffer cb, HleVkSurf *rt, HleVkSurf *ds, VkImageView zv,
                       bool zbar)
 {
@@ -1047,7 +1210,11 @@ void hle_draw_fb_bind(VkCommandBuffer cb, HleVkSurf *rt, HleVkSurf *ds, VkImageV
         nw++;
     }
     g_dr.fb_draws += rt != NULL;
-    T.vkCmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_dr.layout, 2, nw, w);
+    if (g_dr.fb_pooled) {
+        fb_bind_pooled(cb, rt, zv, ii, w, nw);
+    } else {
+        T.vkCmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_dr.layout, 2, nw, w);
+    }
     g_dr.emits[EM_FB]++;
 }
 
@@ -1293,8 +1460,20 @@ static uint32_t sampler_index(const uint32_t *tss, uint32_t lod_down)
     memcpy(&bias, &bias_bits, 4);
     bias = isfinite(bias) ? MAX(MIN(bias, 15.0f), -15.0f) : 0.0f;
     bias -= lod_down / 16.0f;
+    const float lim = g_hvk.caps.max_lod_bias;          /* 15 on PowerVR */
+    bias = MAX(MIN(bias, lim), -lim);
+    /* Without format-less custom border colours for every sampler (PowerVR's
+     * B-Series), or any (Mali's r26): the nearest of Vulkan's three */
+    VkBorderColor border = VK_BORDER_COLOR_FLOAT_CUSTOM_EXT;
+    if (!g_hvk.caps.cbc_any) {
+        const float *f = cbc.customBorderColor.float32;
+        border = f[3] < 0.5f ? VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK :
+                 f[0] + f[1] + f[2] < 1.5f ? VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK :
+                                             VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    }
     VkSamplerCreateInfo sci = {
-        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .pNext = &cbc,
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .pNext = g_hvk.caps.cbc_any ? &cbc : NULL,
         .magFilter = lin_mag ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
         .minFilter = lin_min ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
         .mipmapMode = mip >= 2 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
@@ -1303,7 +1482,7 @@ static uint32_t sampler_index(const uint32_t *tss, uint32_t lod_down)
         .addressModeW = addr_mode(tss[TSS_ADDRESSW]),
         .mipLodBias = bias, .minLod = (float)base,
         .maxLod = mip ? VK_LOD_CLAMP_NONE : base + 0.25f,
-        .borderColor = VK_BORDER_COLOR_FLOAT_CUSTOM_EXT };
+        .borderColor = border };
     VkSampler s;
     if (T.vkCreateSampler(g_hvk.dev, &sci, NULL, &s) != VK_SUCCESS) {
         return 0;
@@ -1410,6 +1589,28 @@ static const uint32_t *prog_find(uint64_t hash, uint32_t *nslots)
     return NULL;
 }
 
+/* Without VK_EXT_vertex_input_dynamic_state (caps.vids off: Mali before
+ * r49, PowerVR's BXM): the draw's vertex layout, built into its pipeline;
+ * the strides stay dynamic (VERTEX_INPUT_BINDING_STRIDE) */
+typedef struct ViKey {
+    _Alignas(8) uint8_t nbind, nattr;
+    uint8_t loc[HLE_DRAW_ATTRS], bind[HLE_DRAW_ATTRS];
+    uint16_t off[HLE_DRAW_ATTRS];
+    uint32_t fmt[HLE_DRAW_ATTRS];
+} ViKey;
+
+/* Without extended dynamic state (caps.eds1 / eds2 off: Vulkan 1.1 drivers):
+ * the state the draws record elsewhere, built into their pipelines; a field
+ * whose state is dynamic stays 0 */
+typedef struct DsKey {
+    /* eds1: */
+    _Alignas(8) uint8_t topo, cull, ff, zt, zw, zop, stn;
+    uint8_t sop[4];                     /* fail, pass, depth fail, compare */
+    uint16_t stride[HLE_DRAW_MAX_BIND]; /* caps.vids off too */
+    /* eds2: */
+    uint8_t bias;
+} DsKey;
+
 typedef struct PipeKey {
     HleFfVsKey vs;
     HleFfPsKey ps;
@@ -1419,7 +1620,16 @@ typedef struct PipeKey {
     HleVshKey vk;
     uint32_t psh;                       /* 1 = register combiners (pk), else FF stages */
     HlePshKey pk;
+    /* Last, 8-aligned: on a device with dynamic vertex input the key ends
+     * before it (g_key_bytes), its bytes, hash and record as they were */
+    ViKey vi;
+    /* After it, 8-aligned: there only without extended dynamic state */
+    DsKey ds;
 } PipeKey;
+
+/* The key's bytes hashed, compared and recorded: up to vi, up to ds (caps.vids
+ * off), or all of it (caps.eds1 or eds2 off) */
+static size_t g_key_bytes = offsetof(PipeKey, vi);
 
 /* Pipeline key hash, a word at a time (the key is ~450 bytes, hashed on every
  * state change). */
@@ -1581,10 +1791,10 @@ static VkPipeline pipeline(const PipeKey *k, HleVkSurf *target, bool *pending)
         pipe_collect();
         target_note(target);
     }
-    if (last_ok && memcmp(k, &last, sizeof(*k)) == 0) {
+    if (last_ok && memcmp(k, &last, g_key_bytes) == 0) {
         return last_p;
     }
-    uint64_t h = key_hash(k, sizeof(*k));
+    uint64_t h = key_hash(k, g_key_bytes);
     int i = pipe_lookup(h);
     VkPipeline p;
     if (i >= 0) {
@@ -1611,6 +1821,28 @@ static VkPipeline pipeline(const PipeKey *k, HleVkSurf *target, bool *pending)
     last_p = p;
     last_ok = i >= 0 || g_dr.npipes >= HLE_MAX_PIPES || pipe_lookup(h) >= 0;
     return p;
+}
+
+/* d stays dynamic: extended dynamic state's only with it (else k->ds) */
+static bool dyn_kept(VkDynamicState d)
+{
+    switch (d) {
+    case VK_DYNAMIC_STATE_CULL_MODE:
+    case VK_DYNAMIC_STATE_FRONT_FACE:
+    case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY:
+    case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE:
+    case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE:
+    case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP:
+    case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE:
+    case VK_DYNAMIC_STATE_STENCIL_OP:
+    case VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE:
+        return g_hvk.caps.eds1;
+    case VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE:
+    case VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE:
+        return g_hvk.caps.eds2;
+    default:
+        return true;
+    }
 }
 
 /* key's pipeline: GLSL from the key (and the vertex program's tokens),
@@ -1719,6 +1951,59 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
         VkPipelineDynamicStateCreateInfo dy = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
             .dynamicStateCount = ARRAY_SIZE(dyn), .pDynamicStates = dyn };
+        /* no dynamic vertex input: the key's layout, the strides dynamic
+         * (k->vi is only there then: the key ends before it, g_key_bytes) */
+        VkVertexInputBindingDescription vb[HLE_DRAW_MAX_BIND];
+        VkVertexInputAttributeDescription va[HLE_DRAW_ATTRS];
+        VkPipelineVertexInputStateCreateInfo vis = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .pVertexBindingDescriptions = vb, .pVertexAttributeDescriptions = va };
+        if (!g_hvk.caps.vids) {
+            vis.vertexBindingDescriptionCount = MIN(k->vi.nbind, (uint32_t)HLE_DRAW_MAX_BIND);
+            vis.vertexAttributeDescriptionCount = MIN(k->vi.nattr, (uint32_t)HLE_DRAW_ATTRS);
+            for (uint32_t i = 0; i < vis.vertexBindingDescriptionCount; i++) {
+                vb[i] = (VkVertexInputBindingDescription){ i, 0, VK_VERTEX_INPUT_RATE_VERTEX };
+            }
+            for (uint32_t i = 0; i < vis.vertexAttributeDescriptionCount; i++) {
+                va[i] = (VkVertexInputAttributeDescription){
+                    k->vi.loc[i], k->vi.bind[i], (VkFormat)k->vi.fmt[i], k->vi.off[i] };
+            }
+            for (size_t i = 0; i < ARRAY_SIZE(dyn); i++) {
+                if (dyn[i] == VK_DYNAMIC_STATE_VERTEX_INPUT_EXT) {
+                    dyn[i] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
+                }
+            }
+        }
+        /* no extended dynamic state: the key's (k->ds, there only then) */
+        if (!g_hvk.caps.eds1 || !g_hvk.caps.eds2) {
+            uint32_t n = 0;
+            for (size_t i = 0; i < ARRAY_SIZE(dyn); i++) {
+                if (dyn_kept(dyn[i])) {
+                    dyn[n++] = dyn[i];
+                }
+            }
+            dy.dynamicStateCount = n;
+        }
+        if (!g_hvk.caps.eds1) {
+            const DsKey *d = &k->ds;
+            ia.topology = (VkPrimitiveTopology)d->topo;
+            rs.cullMode = d->cull;
+            rs.frontFace = (VkFrontFace)d->ff;
+            ds.depthTestEnable = d->zt;
+            ds.depthWriteEnable = d->zw;
+            ds.depthCompareOp = (VkCompareOp)d->zop;
+            ds.stencilTestEnable = d->stn;
+            ds.front.failOp = ds.back.failOp = (VkStencilOp)d->sop[0];
+            ds.front.passOp = ds.back.passOp = (VkStencilOp)d->sop[1];
+            ds.front.depthFailOp = ds.back.depthFailOp = (VkStencilOp)d->sop[2];
+            ds.front.compareOp = ds.back.compareOp = (VkCompareOp)d->sop[3];
+            for (uint32_t i = 0; !g_hvk.caps.vids && i < vis.vertexBindingDescriptionCount; i++) {
+                vb[i].stride = d->stride[i];
+            }
+        }
+        if (!g_hvk.caps.eds2) {
+            rs.depthBiasEnable = k->ds.bias;    /* primitive restart off: no strip batches */
+        }
         VkFormat cf = (VkFormat)k->cfmt, df = (VkFormat)k->dfmt;
         bool stencil = df == VK_FORMAT_D24_UNORM_S8_UINT || df == VK_FORMAT_D32_SFLOAT_S8_UINT;
         VkPipelineRenderingCreateInfo ri = {
@@ -1729,6 +2014,7 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
         VkGraphicsPipelineCreateInfo gci = {
             .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri,
             .stageCount = 2, .pStages = st, .pInputAssemblyState = &ia,
+            .pVertexInputState = g_hvk.caps.vids ? NULL : &vis,
             .pViewportState = &vp, .pRasterizationState = &rs, .pMultisampleState = &ms,
             .pDepthStencilState = &ds, .pColorBlendState = &cb, .pDynamicState = &dy,
             .layout = g_dr.layout };
@@ -1753,7 +2039,7 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
     }
     hle_log("hakuX-hle-pipe", "pipeline %016llx fvf=0x%x vsh=%016llx in=%x %s=%u %s in %.1f ms "
             "(spirv %.1f)%s",
-            (unsigned long long)key_hash(k, sizeof(*k)), k->vs.fvf, (unsigned long long)k->vsh,
+            (unsigned long long)key_hash(k, g_key_bytes), k->vs.fvf, (unsigned long long)k->vsh,
             k->vk.in_mask, k->psh ? "combiners" : "stages",
             k->psh ? k->pk.count & 0xFF : k->ps.nstages, p ? "ok" : "FAILED",
             (g_get_monotonic_time() - t0) / 1000.0, (t1 - t0) / 1000.0,
@@ -1776,7 +2062,22 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
 
 static void pipe_async_init(void)
 {
-    hle_pipe_init(sizeof(PipeKey), pipeline_build);
+    /* the record's key size too, and its own record (a device's keys are
+     * one kind, unless debug.hakux.caps changes it) */
+    HLE_BUILD_BUG_ON(_Alignof(ViKey) != 8);
+    HLE_BUILD_BUG_ON(_Alignof(DsKey) != 8);
+    /* up to vi: the key as it was before vi (8-aligned for its uint64_t) */
+    HLE_BUILD_BUG_ON(offsetof(PipeKey, vi) !=
+                     ((offsetof(PipeKey, pk) + sizeof(HlePshKey) + 7) & ~(size_t)7));
+    /* up to ds: the key as it was before ds */
+    HLE_BUILD_BUG_ON(offsetof(PipeKey, ds) != offsetof(PipeKey, vi) + sizeof(ViKey));
+    const HleCaps *c = &g_hvk.caps;
+    g_key_bytes = !c->eds1 || !c->eds2 ? sizeof(PipeKey)
+                  : c->vids ? offsetof(PipeKey, vi) : offsetof(PipeKey, ds);
+    static char variant[16];
+    snprintf(variant, sizeof(variant), "%s%s%s", c->vids ? "" : "-vi", c->eds1 ? "" : "-e1",
+             c->eds2 ? "" : "-e2");
+    hle_pipe_init(g_key_bytes, pipeline_build, variant);
 }
 
 /* A prebuilt pipeline into the table (the boot thread, before the render thread) */
@@ -2092,6 +2393,39 @@ static bool decl_attrs(const HleCmdDraw *c, bool prog, VkVertexInputAttributeDes
     *ints = g_decl.ints;
     *cmps = g_decl.cmps;
     return g_decl.ok;
+}
+
+static uint32_t imm_attrs(uint32_t fvf, VkVertexInputAttributeDescription2EXT *a);
+
+/* caps.vids off: the vertex layout the draw records (hle_draw_cmd_draw: the
+ * program's declaration, else the FVF's, with the current diffuse on binding
+ * 1), into its pipeline key */
+static void vi_key(ViKey *v, const HleCmdDraw *c, uint32_t key_fvf, bool cur_diffuse,
+                   const VkVertexInputAttributeDescription2EXT *decl, uint32_t ndecl)
+{
+    VkVertexInputAttributeDescription2EXT a[HLE_DRAW_ATTRS + 1];
+    uint32_t na = ndecl, nb = 1;
+    if (c->nbind) {
+        nb = MIN(c->nbind, (uint32_t)HLE_DRAW_MAX_BIND);
+        memcpy(a, decl, ndecl * sizeof(a[0]));
+    } else {
+        na = c->imm ? imm_attrs(key_fvf, a) : fvf_attrs(c->fvf, a);
+        if (cur_diffuse) {
+            a[na++] = (VkVertexInputAttributeDescription2EXT){
+                .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT,
+                .location = 2, .binding = 1, .format = VK_FORMAT_R32G32B32A32_SFLOAT };
+            nb = 2;
+        }
+    }
+    na = MIN(na, (uint32_t)HLE_DRAW_ATTRS);
+    v->nbind = (uint8_t)nb;
+    v->nattr = (uint8_t)na;
+    for (uint32_t i = 0; i < na; i++) {
+        v->loc[i] = (uint8_t)a[i].location;
+        v->bind[i] = (uint8_t)a[i].binding;
+        v->off[i] = (uint16_t)a[i].offset;
+        v->fmt[i] = (uint32_t)a[i].format;
+    }
 }
 
 /* Immediate-mode vertices: 8 float4 registers at locations 0..7; only the
@@ -3260,6 +3594,54 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
         memcpy(&pc.psc[19], bias ? &zslope : &(float){ 0.0f }, 4);
         bias = false;
     }
+    if (!g_hvk.caps.vids) {
+        vi_key(&k.vi, c, k.vs.fvf, cur_diffuse, ad, na);
+    }
+    /* raster, depth and stencil state: recorded (extended dynamic state),
+     * else the pipeline's (k.ds) */
+    uint32_t cull = s->rs[RS_CULLMODE], ff = s->rs[RS_FRONTFACE];
+    if (dbgf & 32) {
+        cull = 0;                       /* debug: culling off */
+    }
+    const uint32_t cullv = cull == 0 ? VK_CULL_MODE_NONE :
+                           cull == ff ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
+    const uint32_t ffv = ff == 0x901 ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+    const uint32_t zwv = zt && s->rs[RS_ZWRITEENABLE];
+    uint32_t zopv = eq_tol ? VK_COMPARE_OP_LESS_OR_EQUAL : cmp_op(s->rs[RS_ZFUNC]);
+    if (g_probe.zop && g_probe.nvsh) {  /* debug: the probed programs' depth test */
+        for (unsigned i = 0; i < g_probe.nvsh; i++) {
+            if (c->vsh == g_probe.vsh[i]) {
+                zopv = g_probe.zop - 1;
+            }
+        }
+    }
+    const bool stn = ds && s->rs[RS_STENCILENABLE] && (ds->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) &&
+                     !(dbgf & 1);
+    const uint32_t sraw[4] = { s->rs[RS_STENCILFAIL], s->rs[RS_STENCILPASS],
+                               s->rs[RS_STENCILZFAIL], s->rs[RS_STENCILFUNC] };
+    if (!g_hvk.caps.eds1) {
+        DsKey *d = &k.ds;
+        d->topo = (uint8_t)c->prim;
+        d->cull = (uint8_t)cullv;
+        d->ff = (uint8_t)ffv;
+        d->zt = zt;
+        d->zw = (uint8_t)zwv;
+        d->zop = (uint8_t)zopv;
+        d->stn = stn;
+        for (unsigned i = 0; i < 3; i++) {
+            d->sop[i] = (uint8_t)stencil_op(sraw[i]);
+        }
+        d->sop[3] = (uint8_t)cmp_op(sraw[3]);
+        if (!g_hvk.caps.vids) {         /* the strides recorded below (binding 1: 0) */
+            uint32_t nb = c->nbind ? MIN(c->nbind, (uint32_t)HLE_DRAW_MAX_BIND) : 1;
+            for (uint32_t i = 0; i < nb; i++) {
+                d->stride[i] = (uint16_t)MIN(c->nbind ? c->bind_stride[i] : c->stride, 0xFFFFu);
+            }
+        }
+    }
+    if (!g_hvk.caps.eds2) {
+        k.ds.bias = bias;
+    }
     bool pending;
     VkPipeline p = pipeline(&k, rt ? rt : ds, &pending);
     if (!p) {
@@ -3283,7 +3665,9 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
     if (!g_rec.valid) {                 /* the bindless set never changes */
         T.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_dr.layout, 0, 1,
                                   &g_dr.set, 0, NULL);
-        T.vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);  /* on only inside strip batches */
+        if (g_hvk.caps.eds2) {
+            T.vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);  /* on only inside strip batches */
+        }
     }
     if (prog || ff_ubo) {
         VkDescriptorSet s1 = prog ? g_dr.cset : g_dr.fset;
@@ -3362,50 +3746,43 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
                 (aax > 1.0f || aay > 1.0f ? HLE_TEXEL_EDGE_FLAG : 0u) | (g_snap_trunc ? HLE_SNAP_TRUNC_FLAG : 0u);
     if (!g_rec.valid || memcmp(&g_rec.pc, &pc, sizeof(pc))) {
         g_rec.pc = pc;
-        T.vkCmdPushConstants(cb, g_dr.layout,
-                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                             sizeof(pc), &pc);
+        if (g_hle_push_ssbo) {
+            push_block(cb, &pc);
+        } else {
+            T.vkCmdPushConstants(cb, g_dr.layout,
+                                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                 sizeof(pc), &pc);
+        }
         g_dr.emits[EM_PC]++;
     }
-    /* raster / depth / stencil */
-    uint32_t cull = s->rs[RS_CULLMODE], ff = s->rs[RS_FRONTFACE];
-    if (dbgf & 32) {
-        cull = 0;                       /* debug: culling off */
-    }
-    if (REC_CHANGED(cull, cull == 0 ? VK_CULL_MODE_NONE :
-                          cull == ff ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT)) {
+    /* raster / depth / stencil (computed above; tracked without extended
+     * dynamic state too: what the draw writes, below) */
+    const bool eds1 = g_hvk.caps.eds1, eds2 = g_hvk.caps.eds2;
+    if (REC_CHANGED(cull, cullv) && eds1) {
         T.vkCmdSetCullMode(cb, g_rec.cull);
         g_dr.emits[EM_DYN]++;
     }
-    if (REC_CHANGED(ff, ff == 0x901 ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE)) {
+    if (REC_CHANGED(ff, ffv) && eds1) {
         T.vkCmdSetFrontFace(cb, (VkFrontFace)g_rec.ff);
         g_dr.emits[EM_DYN]++;
     }
-    if (REC_CHANGED(topo, c->prim)) {
+    if (REC_CHANGED(topo, c->prim) && eds1) {
         T.vkCmdSetPrimitiveTopology(cb, (VkPrimitiveTopology)c->prim);
         g_dr.emits[EM_DYN]++;
     }
-    if (REC_CHANGED(zt, zt)) {
+    if (REC_CHANGED(zt, zt) && eds1) {
         T.vkCmdSetDepthTestEnable(cb, zt);
         g_dr.emits[EM_DYN]++;
     }
-    if (REC_CHANGED(zw, zt && s->rs[RS_ZWRITEENABLE])) {
+    if (REC_CHANGED(zw, zwv) && eds1) {
         T.vkCmdSetDepthWriteEnable(cb, g_rec.zw);
         g_dr.emits[EM_DYN]++;
     }
-    uint32_t zopv = eq_tol ? VK_COMPARE_OP_LESS_OR_EQUAL : cmp_op(s->rs[RS_ZFUNC]);
-    if (g_probe.zop && g_probe.nvsh) {  /* debug: the probed programs' depth test */
-        for (unsigned i = 0; i < g_probe.nvsh; i++) {
-            if (c->vsh == g_probe.vsh[i]) {
-                zopv = g_probe.zop - 1;
-            }
-        }
-    }
-    if (REC_CHANGED(zop, zopv)) {
+    if (REC_CHANGED(zop, zopv) && eds1) {
         T.vkCmdSetDepthCompareOp(cb, (VkCompareOp)g_rec.zop);
         g_dr.emits[EM_DYN]++;
     }
-    if (REC_CHANGED(bias_en, bias)) {
+    if (REC_CHANGED(bias_en, bias) && eds2) {
         T.vkCmdSetDepthBiasEnable(cb, bias);
         g_dr.emits[EM_DYN]++;
     }
@@ -3417,21 +3794,17 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
             g_dr.emits[EM_DYN]++;
         }
     }
-    bool stn = ds && s->rs[RS_STENCILENABLE] && (ds->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) &&
-               !(dbgf & 1);
-    if (REC_CHANGED(stn, stn)) {
+    if (REC_CHANGED(stn, stn) && eds1) {
         T.vkCmdSetStencilTestEnable(cb, stn);
         g_dr.emits[EM_DYN]++;
     }
-    {
-        uint32_t raw[4] = { s->rs[RS_STENCILFAIL], s->rs[RS_STENCILPASS], s->rs[RS_STENCILZFAIL],
-                            s->rs[RS_STENCILFUNC] };
-        if (!g_rec.valid || memcmp(g_rec.sraw, raw, sizeof(raw))) {
-            memcpy(g_rec.sraw, raw, sizeof(raw));
-            uint32_t so[4] = { stencil_op(raw[0]), stencil_op(raw[1]), stencil_op(raw[2]),
-                               cmp_op(raw[3]) };
-            if (!g_rec.valid || memcmp(g_rec.sop, so, sizeof(so))) {
-                memcpy(g_rec.sop, so, sizeof(so));
+    if (!g_rec.valid || memcmp(g_rec.sraw, sraw, sizeof(sraw))) {
+        memcpy(g_rec.sraw, sraw, sizeof(sraw));
+        uint32_t so[4] = { stencil_op(sraw[0]), stencil_op(sraw[1]), stencil_op(sraw[2]),
+                           cmp_op(sraw[3]) };
+        if (!g_rec.valid || memcmp(g_rec.sop, so, sizeof(so))) {
+            memcpy(g_rec.sop, so, sizeof(so));
+            if (eds1) {
                 T.vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, (VkStencilOp)so[0],
                                     (VkStencilOp)so[1], (VkStencilOp)so[2], (VkCompareOp)so[3]);
                 g_dr.emits[EM_DYN]++;
@@ -3535,13 +3908,30 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
             .inputRate = VK_VERTEX_INPUT_RATE_VERTEX, .divisor = 1 };
     }
     uint32_t vfirst = g_norec & 2 ? 0 : first_vertex(nb, strides, offs);
-    if (rec_vertex_input(nb, bd, na, ad)) {
-        T.vkCmdSetVertexInputEXT(cb, nb, bd, na, ad);
-        g_dr.emits[EM_VI]++;
-    }
-    if (rec_vertex_buffers(nb, bufs, offs)) {
-        T.vkCmdBindVertexBuffers(cb, 0, nb, bufs, offs);
-        g_dr.emits[EM_VB]++;
+    if (!g_hvk.caps.vids) {
+        /* the layout is the pipeline's (k.vi): only the buffers and strides */
+        bool vi = rec_vertex_input(nb, bd, na, ad);
+        if (rec_vertex_buffers(nb, bufs, offs) || vi) {
+            VkDeviceSize st[HLE_DRAW_MAX_BIND];
+            for (uint32_t i = 0; i < nb; i++) {
+                st[i] = strides[i];
+            }
+            if (eds1) {
+                T.vkCmdBindVertexBuffers2(cb, 0, nb, bufs, offs, NULL, st);
+            } else {                    /* the strides are the pipeline's too (k.ds) */
+                T.vkCmdBindVertexBuffers(cb, 0, nb, bufs, offs);
+            }
+            g_dr.emits[EM_VB]++;
+        }
+    } else {
+        if (rec_vertex_input(nb, bd, na, ad)) {
+            T.vkCmdSetVertexInputEXT(cb, nb, bd, na, ad);
+            g_dr.emits[EM_VI]++;
+        }
+        if (rec_vertex_buffers(nb, bufs, offs)) {
+            T.vkCmdBindVertexBuffers(cb, 0, nb, bufs, offs);
+            g_dr.emits[EM_VB]++;
+        }
     }
     /* Merge potential (counted, not done yet): a non-indexed list draw that
      * recorded no state and nothing else since the previous one, and whose

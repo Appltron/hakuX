@@ -178,6 +178,10 @@ void hle_batch_init(void)
         hle_log("hakuX-hle-back", "strip batching %s", g_b.buf ? "on" : "off");
         return;
     }
+    if (!g_hvk.caps.eds2) {             /* restart is the pipelines' then, off (vk/draw.c) */
+        hle_log("hakuX-hle-back", "strip batching off: no dynamic primitive restart");
+        return;
+    }
     const VkDeviceSize size = (VkDeviceSize)SLOTS * SLOT_INDICES * 4;
     VkBufferCreateInfo bci = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,

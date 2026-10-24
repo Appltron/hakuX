@@ -46,8 +46,10 @@
   <string name="settings_gpu_driver_system_choice">System driver</string>
   <string name="native_fatal_title">This game can\'t run with this GPU driver</string>
   <string name="native_fatal_gpu">The graphics driver %1$s, which hakuX\'s Xbox GPU needs.\n\nChoose a Turnip driver in Settings → GPU Driver and start the game again.</string>
+  <string name="native_fatal_gpu_system">The graphics driver %1$s, which hakuX\'s Xbox GPU needs.\n\nA system update may bring a newer driver.</string>
   <string name="native_gpu_lost_title">The GPU driver stopped</string>
   <string name="native_gpu_lost">The graphics driver %1$s, so the game can\'t go on.\n\nStart the game again. If it keeps happening, try another GPU driver in Settings → GPU Driver.</string>
+  <string name="native_gpu_lost_system">The graphics driver %1$s, so the game can\'t go on.\n\nStart the game again.</string>
   <string name="native_boot_failed_title">This game can\'t start</string>
   <string name="native_boot_failed">%1$s\n\nSettings → Export logs saves the details, to report it.</string>
   <string name="native_incompatible_title">This game isn\'t compatible yet</string>

@@ -53,6 +53,10 @@ hle_test(test_ffhw)
 hle_test(test_psh)
 hle_test(test_apu_hrtf)
 hle_test(test_cheats)
+hle_test(test_vkcompat)
+# vk/compat_map.h: the Khronos headers alone (SDL3's copy)
+target_include_directories(test_vkcompat PRIVATE ${NC_DEPS}/SDL3/src/video/khronos)
+target_compile_definitions(test_vkcompat PRIVATE VK_NO_PROTOTYPES)
 
 # The shader generators live in the local tools/ (not versioned).
 if(EXISTS ${REPO_ROOT}/tools/hle/scan/hle_vshgen.c)
