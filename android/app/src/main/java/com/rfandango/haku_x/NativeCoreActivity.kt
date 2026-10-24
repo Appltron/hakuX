@@ -868,13 +868,15 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   /*
    * The system's back (the navigation button, the back swipe, a keyboard's
-   * key) arrives as KEYCODE_BACK before any callback: SDL took it, and its
-   * native side's manualBackButton called Activity.onBackPressed past ours,
-   * closing the game. It opens the menu here first. A gamepad's own back
-   * button stays the game's (the Xbox Back button).
+   * key, a handheld's Back key: the RP5's is its built-in controller's) arrives
+   * as KEYCODE_BACK before any callback: SDL took it, and its native side's
+   * manualBackButton called Activity.onBackPressed past ours, closing the game.
+   * It opens the menu here first. A controller's back key its mapping binds
+   * stays the game's (the Xbox Back button of a controller whose select sends
+   * it: Controllers.defaults).
    */
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-    if (event.keyCode == KeyEvent.KEYCODE_BACK && !Controllers.isGameController(event.device)) {
+    if (event.keyCode == KeyEvent.KEYCODE_BACK && router?.bindsKey(event) != true) {
       if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) {
         onBack()
       }

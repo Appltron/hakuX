@@ -241,6 +241,9 @@ object Controllers {
    * Android controllers (the RP5's own), RX / RY on others; the triggers
    * LTRIGGER / RTRIGGER, else BRAKE / GAS; the d-pad a hat or keys. As the
    * SDL gamepad the core read before: the shoulders are white and black.
+   * Back is the select button, and the back key only on a controller without
+   * one (whose select sends it): a controller with both (the RP5's own Back,
+   * beside its select) keeps its back key for the menu (NativeCoreActivity).
    */
   fun defaults(d: InputDevice?): PadProfile {
     fun has(axis: Int) = d?.getMotionRange(axis) != null
@@ -259,6 +262,7 @@ object Controllers {
     }
     fun key(vararg codes: Int) = codes.map { Binding.Key(it) }
     val hat = has(MotionEvent.AXIS_HAT_X)
+    val select = d?.hasKeys(KeyEvent.KEYCODE_BUTTON_SELECT)?.firstOrNull() == true
     fun dpad(axis: Int, dir: Int, code: Int) =
       if (hat) listOf(Binding.Axis(axis, dir), Binding.Key(code)) else key(code)
     return PadProfile(
@@ -270,7 +274,8 @@ object Controllers {
         XInput.BLACK to key(KeyEvent.KEYCODE_BUTTON_R1),
         XInput.WHITE to key(KeyEvent.KEYCODE_BUTTON_L1),
         XInput.START to key(KeyEvent.KEYCODE_BUTTON_START),
-        XInput.BACK to key(KeyEvent.KEYCODE_BUTTON_SELECT, KeyEvent.KEYCODE_BACK),
+        XInput.BACK to if (select) key(KeyEvent.KEYCODE_BUTTON_SELECT)
+                       else key(KeyEvent.KEYCODE_BUTTON_SELECT, KeyEvent.KEYCODE_BACK),
         XInput.LTHUMB to key(KeyEvent.KEYCODE_BUTTON_THUMBL),
         XInput.RTHUMB to key(KeyEvent.KEYCODE_BUTTON_THUMBR),
         XInput.DPAD_UP to dpad(MotionEvent.AXIS_HAT_Y, -1, KeyEvent.KEYCODE_DPAD_UP),

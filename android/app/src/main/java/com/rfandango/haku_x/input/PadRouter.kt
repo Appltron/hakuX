@@ -64,6 +64,13 @@ class PadRouter(
 
   private fun profile(d: InputDevice) = profiles.getOrPut(d.id) { config.profileFor(d) }
 
+  /** The key is a controller's that its mapping binds to an Xbox button. */
+  fun bindsKey(e: KeyEvent): Boolean {
+    val d = e.device ?: return false
+    if (!Controllers.isGameController(d)) return false
+    return profile(d).bind.values.any { l -> l.any { it is Binding.Key && it.code == e.keyCode } }
+  }
+
   /** A controller's key: true when it is the controller's (the activity passes it on otherwise). */
   fun onKey(e: KeyEvent): Boolean {
     val d = e.device ?: return false
