@@ -37,25 +37,44 @@
 
   <string name="settings_title">Settings</string>
 
-  <string name="settings_gpu_driver_title">GPU Driver</string>
-  <string name="settings_gpu_driver_system">Active driver: System default</string>
-  <string name="settings_gpu_driver_active">Active driver: %1$s</string>
-  <string name="settings_gpu_driver_not_supported">Custom GPU driver loading is not supported on this device.</string>
-  <string name="settings_gpu_driver_install">Install Driver from ZIP</string>
-  <string name="settings_gpu_driver_select_title">Select a GPU Driver</string>
-  <string name="settings_gpu_driver_system_choice">System driver</string>
+  <string name="settings_gpu_driver_title">GPU driver</string>
+  <string name="settings_gpu_driver_system">System driver</string>
+  <string name="settings_gpu_driver_custom">Custom driver</string>
+  <string name="settings_gpu_driver_active_version">%1$s (%2$s)</string>
+  <string name="settings_gpu_driver_not_supported">System driver. Other drivers can only be loaded on phones with an Adreno GPU.</string>
+  <string name="gpu_driver_desc">The Vulkan driver hakuX draws the Xbox\'s graphics with. A Turnip driver (Mesa\'s driver for Adreno GPUs) can be more accurate and faster than the one that came with the phone. A change takes effect at the next game start.</string>
+  <string name="gpu_driver_section">Drivers</string>
+  <string name="gpu_driver_system_choice">System driver</string>
+  <string name="gpu_driver_system_desc">The driver that came with the phone</string>
+  <string name="gpu_driver_version">Version %1$s</string>
+  <string name="gpu_driver_by">by %1$s</string>
+  <string name="gpu_driver_no_package">In use. Its package isn\'t on this phone anymore.</string>
+  <string name="gpu_driver_add">Add a driver</string>
+  <string name="gpu_driver_add_desc">A driver package: a ZIP with a meta.json, such as a Turnip release. A package with the same file name is replaced.</string>
+  <string name="gpu_driver_delete">Delete driver</string>
+  <string name="gpu_driver_delete_text">%1$s will be deleted from the phone.</string>
+  <string name="gpu_driver_delete_text_in_use">%1$s will be deleted from the phone, and hakuX goes back to the system driver.</string>
+  <string name="gpu_driver_delete_confirm">Delete</string>
+  <string name="gpu_driver_selected">%1$s selected. It takes effect at the next game start.</string>
+  <string name="gpu_driver_system_selected">System driver selected. It takes effect at the next game start.</string>
+  <string name="gpu_driver_added">%1$s added and selected. It takes effect at the next game start.</string>
+  <string name="gpu_driver_deleted">%1$s deleted.</string>
+  <string name="gpu_driver_deleted_in_use">%1$s deleted. The system driver is in use again.</string>
+  <string name="gpu_driver_err_unreadable">That file couldn\'t be read.</string>
+  <string name="gpu_driver_err_not_driver">That file isn\'t a driver package: it has no meta.json.</string>
+  <string name="gpu_driver_err_no_library">That package doesn\'t contain the driver library its meta.json names.</string>
+  <string name="gpu_driver_err_api">That driver needs Android API level %1$d. This phone has %2$d.</string>
+  <string name="gpu_driver_err_unpack">%1$s couldn\'t be unpacked. The driver in use stays.</string>
   <string name="native_fatal_title">This game can\'t run with this GPU driver</string>
-  <string name="native_fatal_gpu">The graphics driver %1$s, which hakuX\'s Xbox GPU needs.\n\nChoose a Turnip driver in Settings → GPU Driver and start the game again.</string>
+  <string name="native_fatal_gpu">The graphics driver %1$s, which hakuX\'s Xbox GPU needs.\n\nChoose a Turnip driver in Settings → GPU driver and start the game again.</string>
   <string name="native_fatal_gpu_system">The graphics driver %1$s, which hakuX\'s Xbox GPU needs.\n\nA system update may bring a newer driver.</string>
   <string name="native_gpu_lost_title">The GPU driver stopped</string>
-  <string name="native_gpu_lost">The graphics driver %1$s, so the game can\'t go on.\n\nStart the game again. If it keeps happening, try another GPU driver in Settings → GPU Driver.</string>
+  <string name="native_gpu_lost">The graphics driver %1$s, so the game can\'t go on.\n\nStart the game again. If it keeps happening, try another GPU driver in Settings → GPU driver.</string>
   <string name="native_gpu_lost_system">The graphics driver %1$s, so the game can\'t go on.\n\nStart the game again.</string>
   <string name="native_boot_failed_title">This game can\'t start</string>
   <string name="native_boot_failed">%1$s\n\nSettings → Export logs saves the details, to report it.</string>
   <string name="native_incompatible_title">This game isn\'t compatible yet</string>
   <string name="native_incompatible">hakuX doesn\'t support this game yet, so it can\'t run.</string>
-  <string name="settings_gpu_driver_installed">Driver installed successfully. Applied on next game launch.</string>
-  <string name="settings_gpu_driver_install_failed">Failed to install driver. The ZIP may be invalid or incompatible.</string>
 
   <string name="settings_show_fps">Show FPS counter</string>
 

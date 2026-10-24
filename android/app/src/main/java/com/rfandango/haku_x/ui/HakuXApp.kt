@@ -18,6 +18,7 @@ import com.rfandango.haku_x.data.Updates
 import com.rfandango.haku_x.ui.controllers.ControllerMappingScreen
 import com.rfandango.haku_x.ui.controllers.ControllersScreen
 import com.rfandango.haku_x.ui.controls.ControlsEditorScreen
+import com.rfandango.haku_x.ui.driver.GpuDriverScreen
 import com.rfandango.haku_x.ui.hdd.HddScreen
 import com.rfandango.haku_x.ui.library.LibraryScreen
 import com.rfandango.haku_x.ui.mods.ModsScreen
@@ -36,6 +37,7 @@ private object Routes {
   const val CONTROLS = "controls"
   const val CONTROLLERS = "controllers"
   const val HDD = "hdd"
+  const val GPU_DRIVER = "gpu_driver"
   /** One controller's mapping: its input device id. */
   const val MAPPING = "mapping/{id}"
 
@@ -121,8 +123,12 @@ fun HakuXApp(
         onEditControls = { nav.navigate(Routes.CONTROLS) },
         onControllers = { nav.navigate(Routes.CONTROLLERS) },
         onHardDisk = { nav.navigate(Routes.HDD) },
+        onGpuDriver = { nav.navigate(Routes.GPU_DRIVER) },
         onMigrate = { nav.navigate(Routes.MIGRATE_AGAIN) },
       )
+    }
+    composable(Routes.GPU_DRIVER) {
+      GpuDriverScreen(onBack = { nav.popBackStack() })
     }
     composable(Routes.MIGRATE_AGAIN) {
       MigrateScreen(onDone = { nav.popBackStack() })

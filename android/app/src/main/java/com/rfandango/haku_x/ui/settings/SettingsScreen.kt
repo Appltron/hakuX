@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -62,7 +61,6 @@ import com.rfandango.haku_x.ui.update.UpdateDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.Calendar
 import java.util.GregorianCalendar
 
@@ -74,6 +72,7 @@ fun SettingsScreen(
   onEditControls: () -> Unit,
   onControllers: () -> Unit,
   onHardDisk: () -> Unit,
+  onGpuDriver: () -> Unit,
   /** The first-start screen again: the xemu-based release's data brought over. */
   onMigrate: () -> Unit,
 ) {
@@ -111,9 +110,8 @@ fun SettingsScreen(
   var formatDialog by remember { mutableStateOf(false) }
   var cableDialog by remember { mutableStateOf(false) }
   var aspectDialog by remember { mutableStateOf(false) }
-  var driver by remember { mutableStateOf(driverLabel(context)) }
+  val driver = remember { driverLabel(context) }       /* read again when back from its screen */
   var scaleDialog by remember { mutableStateOf(false) }
-  var driverDialog by remember { mutableStateOf(false) }
 
   val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
     val old = replacing
@@ -142,21 +140,6 @@ fun SettingsScreen(
       }
     }
   }
-  /* A driver ZIP picked from storage (Turnip builds: meta.json and the .so). */
-  val pickDriverZip = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-    if (uri != null) {
-      scope.launch {
-        val ok = withContext(Dispatchers.IO) { GpuDriverHelper.installDriverFromUri(context, uri) }
-        Toast.makeText(
-          context,
-          if (ok) R.string.settings_gpu_driver_installed else R.string.settings_gpu_driver_install_failed,
-          Toast.LENGTH_SHORT,
-        ).show()
-        driver = driverLabel(context)
-      }
-    }
-  }
-
   Scaffold(
     topBar = {
       TopAppBar(
@@ -354,16 +337,12 @@ fun SettingsScreen(
         checked = prebuildShaders,
         onChange = { prebuildShaders = it; prefs.prebuildShaders = it },
       )
+      // other drivers load on Qualcomm's GPU driver interface only (adrenotools): said, not offered, elsewhere
+      val customDrivers = remember { GpuDriverHelper.supportsCustomDriverLoading() }
       ListItem(
         headlineContent = { Text(stringResource(R.string.settings_gpu_driver_title)) },
         supportingContent = { Text(driver) },
-        modifier = Modifier.clickable {
-          if (GpuDriverHelper.supportsCustomDriverLoading()) {
-            driverDialog = true
-          } else {
-            Toast.makeText(context, R.string.settings_gpu_driver_not_supported, Toast.LENGTH_SHORT).show()
-          }
-        },
+        modifier = Modifier.clickable(enabled = customDrivers, onClick = onGpuDriver),
       )
 
       Section(stringResource(R.string.settings_section_updates))
@@ -479,16 +458,6 @@ fun SettingsScreen(
       current = scale,
       onPick = { scale = it; prefs.renderScale = it; scaleDialog = false },
       onDismiss = { scaleDialog = false },
-    )
-  }
-  if (driverDialog) {
-    DriverDialog(
-      onDismiss = { driverDialog = false },
-      onInstalled = { driver = driverLabel(context) },
-      onInstallZip = {
-        driverDialog = false
-        pickDriverZip.launch(arrayOf("application/zip", "application/octet-stream"))
-      },
     )
   }
   removing?.let { f ->
@@ -681,86 +650,13 @@ private fun ScaleDialog(current: Int, onPick: (Int) -> Unit, onDismiss: () -> Un
   )
 }
 
-/** One choice among the system's driver and the stored ones (the active one
- * marked), or installing another from a ZIP. The stored ZIPs stay, so going
- * back from the system driver is one tap. */
-@Composable
-private fun DriverDialog(onDismiss: () -> Unit, onInstalled: () -> Unit, onInstallZip: () -> Unit) {
-  val context = LocalContext.current
-  val scope = rememberCoroutineScope()
-  // each driver's ZIP opened for its metadata: off the main thread, listed when read
-  val drivers by produceState(emptyList<GpuDriverHelper.DriverMetadata>()) {
-    value = withContext(Dispatchers.IO) { GpuDriverHelper.getAvailableDrivers() }
-  }
-  val active = remember { GpuDriverHelper.getInstalledDriverName() }
-  AlertDialog(
-    onDismissRequest = onDismiss,
-    title = { Text(stringResource(R.string.settings_gpu_driver_select_title)) },
-    text = {
-      Column {
-        DriverChoice(
-          label = stringResource(R.string.settings_gpu_driver_system_choice),
-          description = null,
-          selected = active.isNullOrEmpty(),
-        ) {
-          GpuDriverHelper.installDefaultDriver()
-          onInstalled()
-          onDismiss()
-        }
-        for (d in drivers) {
-          DriverChoice(
-            label = d.name ?: File(d.path ?: "").nameWithoutExtension,
-            description = d.description,
-            selected = !active.isNullOrEmpty() && d.name == active,
-          ) {
-            onDismiss()
-            scope.launch {
-              val ok = withContext(Dispatchers.IO) { d.path?.let { GpuDriverHelper.installDriver(File(it)) } ?: false }
-              if (!ok) {
-                Toast.makeText(context, R.string.settings_gpu_driver_install_failed, Toast.LENGTH_SHORT).show()
-              }
-              onInstalled()
-            }
-          }
-        }
-        HorizontalDivider(Modifier.padding(vertical = 4.dp))
-        ListItem(
-          headlineContent = { Text(stringResource(R.string.settings_gpu_driver_install)) },
-          modifier = Modifier.clickable(onClick = onInstallZip),
-        )
-      }
-    },
-    confirmButton = {},
-    dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(android.R.string.cancel)) } },
-  )
-}
-
-@Composable
-private fun DriverChoice(label: String, description: String?, selected: Boolean, onPick: () -> Unit) {
-  Row(
-    Modifier
-      .fillMaxWidth()
-      .selectable(selected = selected, role = Role.RadioButton, onClick = onPick)
-      .padding(vertical = 4.dp),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    RadioButton(selected = selected, onClick = null)
-    Column(Modifier.padding(start = 12.dp)) {
-      Text(label)
-      if (!description.isNullOrEmpty()) {
-        Text(description, style = MaterialTheme.typography.bodySmall)
-      }
-    }
-  }
-}
-
+/** The driver in use, for the settings' GPU driver item (its version, when its package names one). */
 private fun driverLabel(context: android.content.Context): String {
   GpuDriverHelper.init(context)
-  val name = GpuDriverHelper.getInstalledDriverName()
-  return when {
-    !GpuDriverHelper.supportsCustomDriverLoading() -> context.getString(R.string.settings_gpu_driver_not_supported)
-    name.isNullOrEmpty() -> context.getString(R.string.settings_gpu_driver_system)
-    else -> context.getString(R.string.settings_gpu_driver_active, name) + ". " +
-      context.getString(R.string.settings_applies_next_start)
+  if (!GpuDriverHelper.supportsCustomDriverLoading()) {
+    return context.getString(R.string.settings_gpu_driver_not_supported)
   }
+  val d = GpuDriverHelper.getActiveDriver() ?: return context.getString(R.string.settings_gpu_driver_system)
+  val name = d.name ?: context.getString(R.string.settings_gpu_driver_custom)
+  return d.driverVersion?.let { context.getString(R.string.settings_gpu_driver_active_version, name, it) } ?: name
 }
