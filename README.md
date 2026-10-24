@@ -7,6 +7,16 @@ reimplementation of the Xbox kernel, and draws by decoding the push buffer
 the game's own Direct3D sends the NV2A into Vulkan. Audio is the MCPX APU,
 ported from xemu.
 
+## hakuX is free
+
+hakuX is free, and always will be. The only official download is
+[hakuX's GitHub releases](https://github.com/rfandango/hakuX/releases).
+
+If you paid for hakuX in any way, shape or form, you were scammed. That
+includes a store purchase, a subscription, an in-app unlock, a "premium"
+build, or an app that repackages it. Ask for a refund wherever you paid, and
+get hakuX here for free.
+
 ## Requirements
 
 - An arm64 Android device with Vulkan. Custom Turnip drivers can be loaded
