@@ -235,15 +235,25 @@ fun <T> ChoiceDialog(
   )
 }
 
-/** A question before something is done: its button names what (Delete, Remove, Convert…). */
+/**
+ * A question before something is done: its button names what (Delete, Remove, Convert…); the other
+ * button cancels (or says dismiss: Not now).
+ */
 @Composable
-fun ConfirmDialog(title: String, text: String, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+fun ConfirmDialog(
+  title: String,
+  text: String,
+  confirm: String,
+  onConfirm: () -> Unit,
+  onDismiss: () -> Unit,
+  dismiss: String = stringResource(android.R.string.cancel),
+) {
   AlertDialog(
     onDismissRequest = onDismiss,
     title = { Text(title) },
     text = { Text(text) },
     confirmButton = { TextButton(onClick = onConfirm) { Text(confirm) } },
-    dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(android.R.string.cancel)) } },
+    dismissButton = { TextButton(onClick = onDismiss) { Text(dismiss) } },
   )
 }
 

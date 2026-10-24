@@ -65,6 +65,11 @@ class AppPrefs(context: Context) {
     get() = sp.getBoolean(KEY_SHOW_FPS, true)
     set(value) = sp.edit { putBoolean(KEY_SHOW_FPS, value) }
 
+  /** The library's note recommending a Turnip driver was shown (once: GpuDriverHelper.turnipRecommended). */
+  var turnipNoteShown: Boolean
+    get() = sp.getBoolean(KEY_TURNIP_NOTE, false)
+    set(value) = sp.edit { putBoolean(KEY_TURNIP_NOTE, value) }
+
   /** The app's look: the phone's (light or dark as it is), light or dark (ui/theme AppTheme). */
   var theme: String
     get() = sp.getString(KEY_THEME, THEME_SYSTEM) ?: THEME_SYSTEM
@@ -188,6 +193,7 @@ class AppPrefs(context: Context) {
     private const val KEY_PREVIOUS_MIGRATED = "previous_version_migrated"
     private const val KEY_SHOW_FPS = "show_fps"
     private const val KEY_THEME = "app_theme"
+    private const val KEY_TURNIP_NOTE = "turnip_note_shown"
     const val THEME_SYSTEM = "system"
     const val THEME_LIGHT = "light"
     const val THEME_DARK = "dark"

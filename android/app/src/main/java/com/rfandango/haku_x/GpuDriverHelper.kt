@@ -1,6 +1,7 @@
 package com.rfandango.haku_x
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
@@ -38,6 +39,20 @@ object GpuDriverHelper {
   fun supportsCustomDriverLoading(): Boolean {
     return File("/dev/kgsl-3d0").exists()
   }
+
+  /**
+   * A Turnip driver is worth recommending: the phone can load one (Qualcomm), it runs on its own
+   * driver, and that is older than Vulkan 1.3 (games then run on the core's compatibility path,
+   * vk/compat.c).
+   */
+  fun turnipRecommended(context: Context): Boolean {
+    init(context)
+    return supportsCustomDriverLoading() && getActiveDriver() == null &&
+      !context.packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, VULKAN_1_3)
+  }
+
+  /** VK_API_VERSION_1_3, as FEATURE_VULKAN_HARDWARE_VERSION's versions are */
+  private const val VULKAN_1_3 = 0x00403000
 
   fun initializeDriver(customDriverName: String? = null) {
     nativeInitializeDriver(hookLibDir, driverInstallDir, customDriverName)
