@@ -931,8 +931,17 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
     NcFile *nf = NULL;
 
     if (dev == -2) {
-        nc_log("hakuX-native-io", "open %s: unknown device", path);
-        return STATUS_OBJECT_PATH_NOT_FOUND;
+        /* No such object. As the object manager's lookup has it, a name
+         * missing from an object directory (\, \??, \Device) is a missing
+         * name, one under a missing component a missing path. Titles tell
+         * them apart: GTA III probes a bare file name ("\??\x.dds" from
+         * CreateFile("x.dds")) and shows its bad-disc screen on a bad path. */
+        const char *last = strrchr(path, '\\');
+        const size_t at = last ? (size_t)(last - path) : 0;
+        const bool in_dir = at == 0 || (at == 3 && !strncmp(path, "\\??", 3)) ||
+                            (at == 7 && !strncasecmp(path, "\\Device", 7));
+        nc_log("hakuX-native-io", "open %s: unknown device (a missing %s)", path, in_dir ? "name" : "path");
+        return in_dir ? STATUS_OBJECT_NAME_NOT_FOUND : STATUS_OBJECT_PATH_NOT_FOUND;
     }
     if (dev == -1) {
         if (disposition != FILE_OPEN && disposition != FILE_OPEN_IF) {
