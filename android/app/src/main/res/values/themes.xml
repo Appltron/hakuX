@@ -16,11 +16,26 @@
     <item name="android:windowDisablePreview">true</item>
     <item name="android:windowAnimationStyle">@null</item>
     <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    <item name="android:colorPrimary">@color/hakux_green</item>
+    <item name="android:colorAccent">@color/hakux_green</item>
   </style>
   <style name="Theme.HakuX.Game.Dark" parent="android:Theme.Material.NoActionBar.Fullscreen">
     <item name="android:windowBackground">@android:color/black</item>
     <item name="android:windowDisablePreview">true</item>
     <item name="android:windowAnimationStyle">@null</item>
     <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    <item name="android:colorPrimary">@color/hakux_green_dark</item>
+    <item name="android:colorAccent">@color/hakux_green_dark</item>
+  </style>
+
+  <!-- The clock's date and time pickers (Settings → Console → Clock), light
+       or dark as the app is, in its green. -->
+  <style name="Theme.HakuX.Picker" parent="android:Theme.Material.Light.Dialog">
+    <item name="android:colorPrimary">@color/hakux_green</item>
+    <item name="android:colorAccent">@color/hakux_green</item>
+  </style>
+  <style name="Theme.HakuX.Picker.Dark" parent="android:Theme.Material.Dialog">
+    <item name="android:colorPrimary">@color/hakux_green_dark</item>
+    <item name="android:colorAccent">@color/hakux_green_dark</item>
   </style>
 </resources>

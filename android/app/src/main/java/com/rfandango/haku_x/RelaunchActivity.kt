@@ -15,6 +15,7 @@ import android.util.Log
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.ImageView
+import com.rfandango.haku_x.ui.theme.AppTheme
 import java.io.File
 
 /**
@@ -33,6 +34,10 @@ class RelaunchActivity : Activity() {
   private var loading: LoadingDialog? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    /* the savestate's loading dialog light or dark, as NativeCoreActivity's after it */
+    if (AppTheme.isDark(this)) {
+      setTheme(R.style.Theme_HakuX_Game_Dark)
+    }
     super.onCreate(savedInstanceState)
     setContentView(ImageView(this).apply {
       scaleType = ImageView.ScaleType.FIT_XY

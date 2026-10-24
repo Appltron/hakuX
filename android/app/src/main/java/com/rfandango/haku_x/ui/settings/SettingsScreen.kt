@@ -529,7 +529,7 @@ private fun clockLabel(offset: Long?) =
  */
 private fun pickClock(context: Context, dark: Boolean, from: Long, onSet: (Long) -> Unit) {
   val c = Calendar.getInstance().apply { timeInMillis = from }
-  val style = if (dark) android.R.style.Theme_Material_Dialog else android.R.style.Theme_Material_Light_Dialog
+  val style = if (dark) R.style.Theme_HakuX_Picker_Dark else R.style.Theme_HakuX_Picker
   val date = DatePickerDialog(context, style, { _, year, month, day ->
     TimePickerDialog(context, style, { _, hour, minute ->
       c.set(year, month, day, hour, minute, 0)
