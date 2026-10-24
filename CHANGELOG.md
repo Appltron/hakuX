@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.1.0
+
+GPUs beyond Adreno, and a reworked app.
+
+### GPUs
+- **Mali, Xclipse and PowerVR (experimental)** — hakuX runs on GPUs other than Adreno: features they lack are replaced (BC and 4444 textures decoded up front, standard border colours, the push block in a buffer, D32S8 depth), and known driver bugs are worked around (`hw/xbox/hle/vk/quirks.c`). Burnout 3 and Mercenaries run cleanly on a Pixel 8 (Mali-G715)
+- **Vulkan 1.1 drivers** — GPUs whose drivers stop at Vulkan 1.1 (Valhall Mali on older or vendor-capped drivers, Qualcomm's own older drivers, early Xclipse, PowerVR BXM) run through a compatibility layer (`hw/xbox/hle/vk/compat.c`)
+- **Older GPUs without descriptor indexing (experimental)** — Bifrost Mali (G71, G72, G76, G52) and PowerVR Rogue: each draw binds its own textures, and depth is clamped in the shader where the GPU can't
+- **Adreno** — unchanged: every replacement is off where the GPU has the feature. `debug.hakux.caps` turns them on for testing on any device
+
+### App
+- **GPU driver** — a screen of its own (Settings → GPU driver): the system driver and the stored packages in one list, with their versions and authors. Packages are checked when added and can be deleted (deleting the one in use goes back to the system driver)
+- **Turnip recommended** — a Qualcomm phone running its own driver older than Vulkan 1.3 suggests a Turnip driver once, from the library
+- **Back key** — the device's back key opens the in-game menu, from any input, including the Retroid Pocket 5's own Back. A controller with both Back and Select keeps Back for the menu; on one without a Select key, Back is the Xbox Back button
+- **Dark theme** — Settings → Display → App theme: the phone's, light or dark; the in-game menus follow it
+- **Consistent screens** — every screen uses the same top bar, rows, dialogs and progress bars. A confirmation's button names its action (Delete, Clear, Replace), a whole row toggles its switch or check box, and notices show as snackbars
+
+### Source
+- **FEX** — the FEX fork is a submodule (`external/fex`, github.com/rfandango/FEX), so the whole core's source is public
+
 ## v1.0.0
 
 A new core replaces xemu's QEMU-based one.
