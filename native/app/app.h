@@ -40,6 +40,10 @@ bool nc_present_shown(void);
  * front of the custom driver, its vkGetInstanceProcAddr returned in place of
  * the driver's (drv_gipa as it is otherwise, or without the layer). */
 void *nc_vk_layers(void *drv_gipa);
+/* vkdriver.c — "<driver dir>|<library>|<hook library dir>": the custom
+ * Vulkan driver (Turnip) loaded through adrenotools and handed to the HLE
+ * GPU (the system driver when it fails, or the build has no adrenotools). */
+void nc_vk_driver_load(const char *spec);
 
 /* vsync.c — the panel's vsyncs to the emulated display's vblank clock. */
 void nc_vsync_start(void);

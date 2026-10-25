@@ -31,11 +31,6 @@
 #include "native/dev/usb.h"
 #include "native/kernel/kernel.h"
 #include "native/state/save.h"
-
-#ifdef NC_ADRENOTOOLS
-#include <adrenotools/driver.h>
-#include <dlfcn.h>
-#endif
 #include "native/hle/hle_native.h"
 
 #include <SDL3/SDL.h>
@@ -579,34 +574,7 @@ EXPORT int SDL_main(int argc, char *argv[])
         /* vkdriver=<driver dir>|<library>|<hook library dir>: the custom
          * Vulkan driver chosen in the settings (Turnip), via adrenotools. */
         if (!strncmp(argv[i], "vkdriver=", 9)) {
-#ifdef NC_ADRENOTOOLS
-            /* Turnip's debug flags for A/B runs (debug.hakux.tu_debug, e.g.
-             * "sysmem"): read when the driver creates its device. */
-            char tu[PROP_VALUE_MAX] = "";
-            __system_property_get("debug.hakux.tu_debug", tu);
-            if (tu[0]) {
-                setenv("TU_DEBUG", tu, 1);
-                nc_log("hakuX-app", "TU_DEBUG=%s", tu);
-            }
-            char spec[1024];
-            snprintf(spec, sizeof(spec), "%s", argv[i] + 9);
-            char *lib = strchr(spec, '|');
-            char *hooks = lib ? strchr(lib + 1, '|') : NULL;
-            if (lib && hooks) {
-                *lib++ = 0;
-                *hooks++ = 0;
-                void *h = adrenotools_open_libvulkan(RTLD_NOW, ADRENOTOOLS_DRIVER_CUSTOM, NULL, hooks, spec, lib, NULL,
-                                                     NULL);
-                void *gipa = h ? dlsym(h, "vkGetInstanceProcAddr") : NULL;
-                if (gipa) {
-                    nc_hle_set_vk_loader(nc_vk_layers(gipa));
-                }
-                nc_log("hakuX-app", "Vulkan driver %s from %s: %s", lib, spec,
-                       gipa ? "loaded" : "failed, the system driver it is");
-            }
-#else
-            nc_log("hakuX-app", "Vulkan driver requested, but this build has no adrenotools");
-#endif
+            nc_vk_driver_load(argv[i] + 9);
         }
     }
     /* The console's video settings: what the title may show (widescreen,
