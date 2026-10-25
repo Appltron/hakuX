@@ -65,8 +65,20 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var fpsOn = false
   private var hitchesOn = false
   private val fpsHandler = Handler(Looper.getMainLooper())
+  /** The overlays' redraws and the game's GPU work (the controls' and the lines below). */
+  private val overlayPacer = OverlayPacer({ nativeGpuBusyMs() }, { nativeGpuGap() })
+  /** The FPS and stutter lines' update waiting on overlayPacer since (uptime ms), 0: none. */
+  private var linesWantedSince = 0L
   private val fpsRunnable = object : Runnable {
     override fun run() {
+      if (linesWantedSince == 0L) {
+        linesWantedSince = SystemClock.uptimeMillis()
+      }
+      if (!overlayPacer.mayDraw(linesWantedSince)) {
+        fpsHandler.postDelayed(this, LINES_RETRY_MS)
+        return
+      }
+      linesWantedSince = 0L
       val s = nativeGetFrameStats()
       if (fpsOn && s != null && s.size >= 3) {
         var text = "FPS: %.0f  |  %.1fms avg  /  %.1fms last".format(s[0], s[1], s[2])
@@ -583,7 +595,9 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     }
     overlay.setControllerListener(OverlayBridge())
     overlay.onMenuButtonTapped = { showMenu() }
+    overlay.drawGate = overlayPacer::mayDraw
     mLayout?.addView(overlay)
+    overlayPacer.attach(overlay)
     onScreenController = overlay
     updateControllerVisibility()
   }
@@ -997,6 +1011,8 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     private const val PAD_RTHUMB = 0x80
 
     private const val FPS_INTERVAL_MS = 500L
+    /** The FPS and stutter lines' update held back (OverlayPacer): tried again this soon. */
+    private const val LINES_RETRY_MS = 50L
     private const val STATE_POLL_MS = 500L
     private const val RUMBLE_INTERVAL_MS = 50L
     /** The relaunch's frame copy: how long it may take before the restart goes on without it. */
@@ -1051,6 +1067,14 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     /** The HLE GPU's stutter and hang monitor lines ("": nothing to show). */
     @JvmStatic
     external fun nativeGetHleHitches(): String
+
+    /** How long the GPU has been on the game's work without running out of it, in ms (0: out now). */
+    @JvmStatic
+    external fun nativeGpuBusyMs(): Int
+
+    /** A moment of idle GPU for a window frame waiting behind the game's work (OverlayPacer). */
+    @JvmStatic
+    external fun nativeGpuGap()
 
     /** The cached shaders' build before the game: {built, to build}, {0, 0} when none runs. */
     @JvmStatic

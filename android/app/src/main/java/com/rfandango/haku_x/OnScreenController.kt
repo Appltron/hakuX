@@ -9,6 +9,7 @@ import android.graphics.PointF
 import android.graphics.RectF
 import android.graphics.RenderNode
 import android.os.Build
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -67,6 +68,12 @@ class OnScreenController @JvmOverloads constructor(
   var onSelectionChanged: ((ControlId?) -> Unit)? = null
   /** Editing: a size, visibility or the opacity changed. */
   var onLayoutChanged: (() -> Unit)? = null
+  /**
+   * Playing: whether the controls may redraw now, wanted since the given
+   * uptime (ms); else they look as they did a while longer, the input already
+   * sent (OverlayPacer). Null: at once.
+   */
+  var drawGate: ((Long) -> Boolean)? = null
 
   private var listener: ControllerListener? = null
   private val painter = ControlPainter()
@@ -350,10 +357,36 @@ class OnScreenController @JvmOverloads constructor(
       val before = shown()
       playTouch(event)
       if (shown() != before) {
-        invalidate()
+        redrawWanted()
       }
     }
     return true
+  }
+
+  /* Playing: a look changed, drawn once the gate lets it (drawGate), tried
+   * again each display frame till then. */
+  private var wantedSince = 0L
+
+  private fun redrawWanted() {
+    if (wantedSince == 0L) {
+      wantedSince = SystemClock.uptimeMillis()
+    }
+    tryRedraw()
+  }
+
+  private val retryRedraw = Runnable { tryRedraw() }
+
+  private fun tryRedraw() {
+    if (wantedSince == 0L) {
+      return
+    }
+    removeCallbacks(retryRedraw)
+    if (drawGate?.invoke(wantedSince) == false) {
+      postOnAnimation(retryRedraw)
+      return
+    }
+    wantedSince = 0L
+    invalidate()
   }
 
   // ---------------------------------------------------------------- playing
@@ -487,6 +520,8 @@ class OnScreenController @JvmOverloads constructor(
   }
 
   override fun onDetachedFromWindow() {
+    removeCallbacks(retryRedraw)
+    wantedSince = 0L
     resetAllInputs()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       nodes.values.forEach { it.discardDisplayList() }

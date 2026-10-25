@@ -332,6 +332,24 @@ EXPORT JNIEXPORT jstring JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_n
     return (*env)->NewStringUTF(env, buf);
 }
 
+/* The window's overlays and the game's GPU work (NativeCoreActivity's
+ * OverlayPacer): how long the GPU has been on the game's work without
+ * running out of it, in ms (0: it's out now), and a moment of idle GPU for a
+ * frame of the window waiting on the GPU queue below the game's. */
+int64_t hle_tl_busy_ns(void);
+void hle_tl_gap(void);
+
+EXPORT JNIEXPORT jint JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeGpuBusyMs(JNIEnv *env, jclass cls)
+{
+    const int64_t ms = hle_tl_busy_ns() / 1000000;
+    return (jint)(ms > INT32_MAX ? INT32_MAX : ms);
+}
+
+EXPORT JNIEXPORT void JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeGpuGap(JNIEnv *env, jclass cls)
+{
+    hle_tl_gap();
+}
+
 /* The start screen's "Building shaders n / N" line: the pipeline prebuild's
  * progress, {built, to build} ({0, 0} when none runs). */
 EXPORT JNIEXPORT jintArray JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeGetShaderBuild(JNIEnv *env,
