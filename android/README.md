@@ -33,7 +33,7 @@ libraries in, then build the APK.
 | `spirv_reflect` | vulkan-sdk-1.4.328.0 |
 | `vma` | v3.3.0 |
 | `SDL3` | release-3.4.18 |
-| `adrenotools` | 8fae8ce |
+| `adrenotools` | 8fae8ce, with `tools/native/adrenotools-kgsl-context-priority.patch` applied (`git apply`): the KGSL draw context priority hook |
 | `root/subprojects/nv2a_vsh_cpu` | 561fe80 |
 
 ## Steps

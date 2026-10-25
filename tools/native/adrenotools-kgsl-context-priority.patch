@@ -1,0 +1,187 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 16c6092..6ccf812 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -30,7 +30,7 @@ endif()
+ if (${GEN_INSTALL_TARGET})
+   configure_file(adrenotools.pc.in adrenotools.pc @ONLY)
+   install(FILES ${CMAKE_BINARY_DIR}/adrenotools.pc DESTINATION lib/pkgconfig)
+-  install(TARGETS adrenotools main_hook file_redirect_hook gsl_alloc_hook hook_impl)
++  install(TARGETS adrenotools main_hook file_redirect_hook gsl_alloc_hook kgsl_context_hook hook_impl)
+   install(DIRECTORY include/
+           DESTINATION include
+           FILES_MATCHING PATTERN "*.h*")
+diff --git a/include/adrenotools/driver.h b/include/adrenotools/driver.h
+index f81e8fe..4823eb5 100644
+--- a/include/adrenotools/driver.h
++++ b/include/adrenotools/driver.h
+@@ -66,6 +66,16 @@ bool adrenotools_validate_gpu_mapping(void *handle);
+  */
+ void adrenotools_set_turbo(bool turbo);
+ 
++/**
++ * @brief Sets the KGSL priority of the draw contexts a driver opened with ADRENOTOOLS_DRIVER_KGSL_CONTEXT_PRIORITY creates afterwards
++ * @remark KGSL runs contexts on one of four ringbuffers by priority (priority / 4) and preempts a lower ringbuffer's work for a
++ * higher one's; a driver that leaves the priority unset (Turnip on KGSL) gets the kernel's default, 8, below SurfaceFlinger's GPU
++ * composition. On the compositor's ringbuffer neither preempts the other, and the lowest priority there lets the dispatcher run the
++ * compositor's work first.
++ * @param priority 1 (the highest) to 15 (the lowest), or -1 to leave the driver's own choice (the default)
++ */
++void adrenotools_set_kgsl_context_priority(int priority);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/include/adrenotools/priv.h b/include/adrenotools/priv.h
+index 742d24f..6f54d63 100644
+--- a/include/adrenotools/priv.h
++++ b/include/adrenotools/priv.h
+@@ -12,6 +12,7 @@ enum {
+     ADRENOTOOLS_DRIVER_CUSTOM = 1 << 0,
+     ADRENOTOOLS_DRIVER_FILE_REDIRECT = 1 << 1,
+     ADRENOTOOLS_DRIVER_GPU_MAPPING_IMPORT = 1 << 2,
++    ADRENOTOOLS_DRIVER_KGSL_CONTEXT_PRIORITY = 1 << 3, //!< The driver's KGSL draw contexts get the priority set with adrenotools_set_kgsl_context_priority
+ };
+ 
+ #define ADRENOTOOLS_GPU_MAPPING_SUCCEEDED_MAGIC 0xDEADBEEF
+diff --git a/src/driver.cpp b/src/driver.cpp
+index 4ddee4a..d6ab465 100644
+--- a/src/driver.cpp
++++ b/src/driver.cpp
+@@ -16,6 +16,8 @@
+ #include <adrenotools/driver.h>
+ #include <unistd.h>
+ 
++static int kgslContextPriority{-1}; //!< See adrenotools_set_kgsl_context_priority
++
+ void *adrenotools_open_libvulkan(int dlopenFlags, int featureFlags, const char *tmpLibDir, const char *hookLibDir, const char *customDriverDir, const char *customDriverName, const char *fileRedirectDir, void **userMappingHandle) {
+     // Bail out if linkernsbypass failed to load, this probably means we're on api < 28
+     if (!linkernsbypass_load_status())
+@@ -84,7 +86,8 @@ void *adrenotools_open_libvulkan(int dlopenFlags, int featureFlags, const char *
+         }
+     }()};
+ 
+-    initHookParam(new HookImplParams(featureFlags, tmpLibDir, hookLibDir, customDriverDir, customDriverName, fileRedirectDir, importMapping));
++    initHookParam(new HookImplParams(featureFlags, tmpLibDir, hookLibDir, customDriverDir, customDriverName, fileRedirectDir, importMapping,
++                                     (featureFlags & ADRENOTOOLS_DRIVER_KGSL_CONTEXT_PRIORITY) ? kgslContextPriority : -1));
+ 
+     // Load the libvulkan hook into the isolated namespace
+     if (!linkernsbypass_namespace_dlopen("libmain_hook.so", RTLD_GLOBAL, hookNs))
+@@ -208,3 +211,7 @@ void adrenotools_set_turbo(bool turbo) {
+     ioctl(kgslFd, IOCTL_KGSL_SETPROPERTY, &prop);
+     close (kgslFd);
+ }
++
++void adrenotools_set_kgsl_context_priority(int priority) {
++    kgslContextPriority = (priority >= 1 && priority <= (KGSL_CONTEXT_PRIORITY_MASK >> KGSL_CONTEXT_PRIORITY_SHIFT)) ? priority : -1;
++}
+diff --git a/src/hook/CMakeLists.txt b/src/hook/CMakeLists.txt
+index ebff063..306745f 100644
+--- a/src/hook/CMakeLists.txt
++++ b/src/hook/CMakeLists.txt
+@@ -25,3 +25,10 @@ target_compile_options(gsl_alloc_hook PRIVATE -Wall -Wextra)
+ target_link_options(gsl_alloc_hook PRIVATE -z global)
+ target_link_libraries(gsl_alloc_hook hook_impl)
+ set_target_properties(gsl_alloc_hook PROPERTIES CXX_VISIBILITY_PRESET hidden)
++
++add_library(kgsl_context_hook SHARED kgsl_context_hook.c)
++
++target_compile_options(kgsl_context_hook PRIVATE -Wall -Wextra)
++target_link_options(kgsl_context_hook PRIVATE -z global)
++target_link_libraries(kgsl_context_hook hook_impl)
++set_target_properties(kgsl_context_hook PROPERTIES CXX_VISIBILITY_PRESET hidden)
+diff --git a/src/hook/hook_impl.cpp b/src/hook/hook_impl.cpp
+index 50e79a9..4713ed0 100644
+--- a/src/hook/hook_impl.cpp
++++ b/src/hook/hook_impl.cpp
+@@ -86,6 +86,15 @@ __attribute__((visibility("default"))) void *hook_android_dlopen_ext(const char
+         LOGI("hook_android_dlopen_ext: applied libfile_redirect_hook");
+     }
+ 
++    if (hook_params->featureFlags & ADRENOTOOLS_DRIVER_KGSL_CONTEXT_PRIORITY) {
++        if (!linkernsbypass_namespace_dlopen("libkgsl_context_hook.so", RTLD_GLOBAL, driverNs)) {
++            LOGI("hook_android_dlopen_ext: hook failed: failed to apply libkgsl_context_hook!");
++            return fallback();
++        }
++
++        LOGI("hook_android_dlopen_ext: applied libkgsl_context_hook");
++    }
++
+     // Use our new namespace to load the vulkan driver
+     auto newExtinfo{*extinfo};
+     newExtinfo.library_namespace = driverNs;
+@@ -169,6 +178,21 @@ __attribute__((visibility("default"))) FILE *hook_fopen(const char *filename, co
+     return fopen(replacement.c_str(), mode);
+ }
+ 
++__attribute__((visibility("default"))) int hook_ioctl(int fd, int request, void *arg) {
++    if (static_cast<unsigned int>(request) == IOCTL_KGSL_DRAWCTXT_CREATE && arg && hook_params->kgslContextPriority >= 0) {
++        auto create{reinterpret_cast<kgsl_drawctxt_create *>(arg)};
++        // A priority the driver chose itself is kept
++        if ((create->flags & KGSL_CONTEXT_PRIORITY_MASK) == KGSL_CONTEXT_PRIORITY_UNDEF) {
++            create->flags |= (static_cast<unsigned int>(hook_params->kgslContextPriority) << KGSL_CONTEXT_PRIORITY_SHIFT) & KGSL_CONTEXT_PRIORITY_MASK;
++            int ret{ioctl(fd, request, arg)};
++            LOGI("hook_ioctl: kgsl draw context %u created at priority %d (%d)", create->drawctxt_id, hook_params->kgslContextPriority, ret);
++            return ret;
++        }
++    }
++
++    return ioctl(fd, request, arg);
++}
++
+ static constexpr uintptr_t GslMemDescImportedPrivMagic{0xdeadb33f};
+ struct GslMemDesc {
+     void *hostptr;
+diff --git a/src/hook/hook_impl.h b/src/hook/hook_impl.h
+index 2ce2471..fa7f1d5 100644
+--- a/src/hook/hook_impl.h
++++ b/src/hook/hook_impl.h
+@@ -20,6 +20,8 @@ void *hook_android_load_sphal_library(const char *filename, int flags);
+ 
+ FILE *hook_fopen(const char *filename, const char *mode);
+ 
++int hook_ioctl(int fd, int request, void *arg);
++
+ int hook_gsl_memory_alloc_pure_64(uint64_t size, uint32_t flags, void *memDesc);
+ 
+ int hook_gsl_memory_free_pure(void *memDesc);
+diff --git a/src/hook/hook_impl_params.h b/src/hook/hook_impl_params.h
+index 8a3bd16..8d84fd6 100644
+--- a/src/hook/hook_impl_params.h
++++ b/src/hook/hook_impl_params.h
+@@ -18,14 +18,17 @@ struct HookImplParams {
+     std::string customDriverName;
+     std::string fileRedirectDir;
+     adrenotools_gpu_mapping *nextGpuMapping;
++    int kgslContextPriority; //!< The priority of the driver's KGSL draw contexts, -1 for its own
+ 
+     HookImplParams(int featureFlags, const char *tmpLibDir, const char *hookLibDir, const char *customDriverDir,
+-                  const char *customDriverName, const char *fileRedirectDir, adrenotools_gpu_mapping *nextGpuMapping)
++                  const char *customDriverName, const char *fileRedirectDir, adrenotools_gpu_mapping *nextGpuMapping,
++                  int kgslContextPriority)
+         : featureFlags(featureFlags),
+           tmpLibDir(tmpLibDir ? tmpLibDir : ""),
+           hookLibDir(hookLibDir),
+           customDriverDir(customDriverDir ? customDriverDir : ""),
+           customDriverName(customDriverName ? customDriverName : ""),
+           fileRedirectDir(fileRedirectDir ? fileRedirectDir : ""),
+-          nextGpuMapping(nextGpuMapping) {}
++          nextGpuMapping(nextGpuMapping),
++          kgslContextPriority(kgslContextPriority) {}
+ };
+diff --git a/src/hook/kgsl_context_hook.c b/src/hook/kgsl_context_hook.c
+new file mode 100644
+index 0000000..5d46a50
+--- /dev/null
++++ b/src/hook/kgsl_context_hook.c
+@@ -0,0 +1,10 @@
++#include <stdarg.h>
++#include "hook_impl.h"
++
++__attribute__((visibility("default"))) int ioctl(int fd, int request, ...) {
++	va_list args;
++	va_start(args, request);
++	void *arg = va_arg(args, void *);
++	va_end(args);
++	return hook_ioctl(fd, request, arg);
++}

@@ -17,7 +17,7 @@ mkdir -p "$out"
 "$strip" -o "$out/libSDL3.so" "$build/sdl3/libSDL3.so"
 # adrenotools' hook libraries: custom Vulkan drivers (Turnip) load through
 # them from the app's native library directory.
-for h in main_hook file_redirect_hook gsl_alloc_hook hook_impl; do
+for h in main_hook file_redirect_hook gsl_alloc_hook kgsl_context_hook hook_impl; do
   if [ -f "$build/adrenotools/src/hook/lib$h.so" ]; then
     "$strip" -o "$out/lib$h.so" "$build/adrenotools/src/hook/lib$h.so"
   fi
