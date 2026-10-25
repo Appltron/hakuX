@@ -173,9 +173,18 @@ static struct {
     bool vis_open;                      /* a visibility test counts (ZPASS enabled) */
     bool vis_unsent;                    /* reports ended since the last submit boundary */
     uint64_t vis_tests, vis_kicks;
-    /* frames swapped, waiting for their flip: decode thread in, vblank out */
+    /* frames swapped, waiting for their flip: decode thread in, vblank out
+     * (pend_flipped: one whose flip came before it, hle_pb_flipped) */
     uint32_t pend[8];
+    bool pend_flipped[8];
     uint32_t pend_head, pend_tail;
+    /* D3D's immediate flip (its trap's handler, before the frame's
+     * FLIP_INCREMENT_WRITE): ahead_pa, the bound target's memory while it
+     * has a frame drawn since the last swap (set at each trap, atomic);
+     * flipped_pa, a flip there: the swap that comes is one flipped */
+    uint32_t ahead_pa, flipped_pa;
+    uint64_t swap_wseq;                 /* wseq at the last swap */
+    uint64_t flipped_presents;
     uint64_t shown;
     int64_t flipped_ns;                 /* the last flip (hle_now_ns) */
     /* the transform unit: program memory and constants, their load points */
@@ -1231,11 +1240,22 @@ static void swap(void)
     c->dump_off = HLE_SWAP_NO_DUMP;
     hle_hitch_pb_swap(c->swap_id);          /* before the back end stamps its stages */
     hle_fe_commit();
+    const uint32_t pa = g_pd.rt_obj ? g_pd.rt_obj->d.pa : 0;
+    const uint32_t flipped = __atomic_exchange_n(&g_pd.flipped_pa, 0, __ATOMIC_ACQ_REL);
     uint32_t head = g_pd.pend_head;
     if (head - __atomic_load_n(&g_pd.pend_tail, __ATOMIC_ACQUIRE) < ARRAY_SIZE(g_pd.pend)) {
         g_pd.pend[head % ARRAY_SIZE(g_pd.pend)] = c->swap_id;
+        g_pd.pend_flipped[head % ARRAY_SIZE(g_pd.pend)] = pa && flipped == pa;
         __atomic_store_n(&g_pd.pend_head, head + 1, __ATOMIC_RELEASE);
     }
+    g_pd.swap_wseq = g_pd.wseq;
+    __atomic_store_n(&g_pd.ahead_pa, 0, __ATOMIC_RELEASE);
+}
+
+void hle_pbd_trap(void)
+{
+    const PbObj *o = g_pd.on ? g_pd.rt_obj : NULL;
+    __atomic_store_n(&g_pd.ahead_pa, o && o->written > g_pd.swap_wseq ? o->d.pa : 0, __ATOMIC_RELEASE);
 }
 
 static uint32_t object_at(uint32_t pa);
@@ -1348,6 +1368,39 @@ void hle_pbd_display(uint32_t pa, bool flip)
     g_pd.pcrtc_presents++;
 }
 
+/* A swap whose flip came before it (hle_pb_flipped) and no flip since, the
+ * title idle: the frame the console shows, presented (the newest such; the
+ * ones before it go). Heroes draws its tutorial prompts once over the scene
+ * and waits on a button: no flip came to present them. */
+static bool present_flipped(void)
+{
+    const size_t n = ARRAY_SIZE(g_pd.pend);
+    uint32_t tail = __atomic_load_n(&g_pd.pend_tail, __ATOMIC_ACQUIRE), take, id;
+    do {
+        const uint32_t head = __atomic_load_n(&g_pd.pend_head, __ATOMIC_ACQUIRE);
+        take = head;
+        for (uint32_t i = tail; i != head; i++) {
+            if (g_pd.pend_flipped[i % n]) {
+                take = i;
+            }
+        }
+        if (take == head) {
+            return false;
+        }
+        id = g_pd.pend[take % n];
+    } while (!__atomic_compare_exchange_n(&g_pd.pend_tail, &tail, take + 1, false, __ATOMIC_ACQ_REL,
+                                          __ATOMIC_ACQUIRE));
+    __atomic_store_n(&g_pd.shown_ns, hle_now_ns(), __ATOMIC_RELAXED);
+    hle_hitch_frame(id, HLE_FR_FLIP);
+    hle_disp_present(id);
+    fps_log();
+    if (g_pd.flipped_presents++ < 4) {
+        hle_log("hakuX-hle-pb", "scanout: swap %u, flipped before it came, had no flip since: shown "
+                "(first 4 logged)", id);
+    }
+    return true;
+}
+
 bool hle_pbd_scan_due(void)
 {
     const int64_t t = __atomic_load_n(&g_pd.shown_ns, __ATOMIC_RELAXED);
@@ -1369,6 +1422,9 @@ void hle_pbd_scanout(void)
         }
     }
     if (!g_pd.on || !g_pd.shown_id || !hle_pbd_scan_due()) {
+        return;
+    }
+    if (present_flipped()) {
         return;
     }
     /* What the CPU wrote there (not a target the CPU uses from now on: its
@@ -1491,10 +1547,22 @@ void hle_pbd_overlay(bool show)
     }
 }
 
-void hle_pb_flipped(void)
+void hle_pb_flipped(uint32_t start)
 {
     if (!g_pd.on) {
         return;
+    }
+    /* The display at the target being drawn: D3D's immediate flip, done by
+     * its trap's handler before the frame's FLIP_INCREMENT_WRITE (Dungeons
+     * & Dragons Heroes, Project Gotham Racing 2, Blinx). It still presents
+     * the frame before, as below: the GPU here finishes a frame well after
+     * the guest flips it, and that frame's lead keeps the cadence (shown at
+     * their swaps, Blinx's 30 fps frames went on screen as each was written,
+     * 9-14 ms on, and juddered). The swap that comes is marked flipped, for
+     * when no flip follows it (hle_pbd_scanout). */
+    const uint32_t pa = start & 0x0FFFFFFFu;
+    if (pa && __atomic_load_n(&g_pd.ahead_pa, __ATOMIC_ACQUIRE) == pa) {
+        __atomic_store_n(&g_pd.flipped_pa, pa, __ATOMIC_RELEASE);
     }
     /* the oldest swap waiting; hle_pbd_scanout may drop them meanwhile */
     uint32_t tail = __atomic_load_n(&g_pd.pend_tail, __ATOMIC_ACQUIRE), id;
