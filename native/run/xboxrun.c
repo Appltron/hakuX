@@ -1,26 +1,56 @@
 /*
  * xboxrun — runs an Xbox title in the native core from the command line
- * (adb shell, /data/local/tmp), without the app. Used for the frontier loop
- * while the core has no display.
+ * (adb shell, /data/local/tmp), without the app: no window, no sound, on
+ * the HLE GPU as the app runs it (HAKUX_HLE_MODE=replace unless set).
  *
- *   xboxrun <disc image>
+ *   xboxrun <disc image> [option...]
+ *
+ * Options: the app's for the core (native/core/options.h: loadstate=,
+ * scale=, asyncpipe=, mods=, video=, clock=, ...), and
+ *   hdd=DIR          the hard disk folder (Partition0-5; made as needed),
+ *                    default /data/local/tmp/native/hdd
+ *   vkdriver=DIR|LIB|HOOKS  a custom Vulkan driver through adrenotools, as
+ *                    the app's (native/app/vkdriver.c)
+ *   capture=N[,N...] frames N written to frames/fN.png in the working
+ *                    directory, as presented (frames count the HLE GPU's
+ *                    swaps in this process: after loadstate=, since the load)
+ *   frames=N         the run ends after frame N (exit 0), the shader and
+ *                    pipeline caches written first
+ *   hang=S           no new frame for S seconds: the guest's state reported
+ *                    and exit 6 (from the start: a load's first frame too)
+ * NC_TIMEOUT=S (default 30, 0 none) ends any run after S seconds.
+ *
+ * Exit status: 0 the run ended (frames=, or the guest halted), 1 boot
+ * failed, 2 usage or the disc can't be opened, 3 a host fault, 5 NC_TIMEOUT,
+ * 6 hang=, 7 the guest stopped (a bugcheck, an unhandled exception: its
+ * "stop:" line says why), 8 the savestate couldn't be loaded, 9 the GPU
+ * device was lost, 10 the title left (to the dashboard, a reboot, another
+ * XBE). xboxrun.sh adds 4: the app is running.
  */
+#include "native/app/app.h"
 #include "native/core/core.h"
 #include "native/core/mmio.h"
+#include "native/core/options.h"
 #include "native/hle/hle_native.h"
+#include "hw/xbox/hle/vk/back.h"
 
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
 
 static NcCore g_core;
 
-/* capture.c: NC_CAPTURE_EVERY=<s> writes the presented frame to frames/. */
+/* capture.c: NC_CAPTURE_EVERY=<s> writes the presented frame to frames/;
+ * capture= and frames= by frame. */
 void nc_capture_start(void);
+void nc_capture_frames(const char *list, uint64_t stop);
 static void dump_ranges(const char *spec);
 
 /* Hex dump of mapped guest bytes (unmapped pages show as ..). */
@@ -205,10 +235,44 @@ static void dump_ranges(const char *spec)
     }
 }
 
+/* hang=: the watchdog over the frames (and a lost GPU, which stops them for
+ * good: the run would only reach NC_TIMEOUT). */
+static unsigned g_hang_s;
+
+static uint64_t mono_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+static void *watchdog(void *arg)
+{
+    uint64_t frames = hle_back_swap_count(), since = mono_ms();
+    for (;;) {
+        usleep(100 * 1000);
+        if (nc_hle_fatal_kind() == NC_FATAL_GPU_LOST) {
+            nc_log("hakuX-native-frontier", "GPU lost: %s", nc_hle_fatal() ? nc_hle_fatal() : "?");
+            _exit(9);
+        }
+        const uint64_t n = hle_back_swap_count(), now = mono_ms();
+        if (n != frames) {
+            frames = n;
+            since = now;
+        } else if (g_hang_s && now - since >= g_hang_s * 1000ull) {
+            nc_log("hakuX-native-frontier", "hang: no frame for %u s after frame %llu", g_hang_s,
+                   (unsigned long long)n);
+            report_guest(NULL, 0);
+            _exit(6);
+        }
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 2) {
-        fprintf(stderr, "usage: xboxrun <disc image>\n");
+    if (argc < 2) {
+        fprintf(stderr, "usage: xboxrun <disc image> [option...]\n");
         return 2;
     }
     int fd = open(argv[1], O_RDONLY | O_CLOEXEC);
@@ -228,26 +292,63 @@ int main(int argc, char **argv)
     sigaction(SIGALRM, &sa, NULL);
     g_timeout = getenv("NC_TIMEOUT") ? (unsigned)atoi(getenv("NC_TIMEOUT")) : 30;
     nc_log("hakuX-native", "xboxrun pid %d", (int)getpid()); /* the HLE layer logs to logcat under this pid */
-    /* The console's video settings, as the app's video= and avpack= (NC_AVPACK:
-     * the NC_AV_PACK_* number). */
+    setenv("HAKUX_HLE_MODE", "replace", 0);     /* the GPU as the app runs it */
+
+    NcOptions opt;
+    nc_options_init(&opt);
+    /* The console's video settings and language also from NC_VIDEO (hex),
+     * NC_AVPACK (the NC_AV_PACK_* number) and NC_LANGUAGE, as video=,
+     * avpack= and lang=; HAKUX_HLE_UNCAP as uncap */
+    opt.uncap = getenv("HAKUX_HLE_UNCAP") != NULL;
     if (getenv("NC_VIDEO")) {
-        nc_kernel_set_video((int64_t)strtoul(getenv("NC_VIDEO"), NULL, 16),
-                            getenv("NC_AVPACK") ? atoi(getenv("NC_AVPACK")) : NC_AV_PACK_HDTV);
+        opt.video = (int64_t)strtoul(getenv("NC_VIDEO"), NULL, 16);
     }
-    if (getenv("NC_LANGUAGE")) { /* as the app's lang= */
+    if (getenv("NC_AVPACK")) {
+        opt.av_pack = atoi(getenv("NC_AVPACK"));
+    }
+    if (getenv("NC_LANGUAGE")) {
         nc_kernel_set_language(atoi(getenv("NC_LANGUAGE")));
     }
+    const char *capture = NULL;
+    uint64_t stop = 0;
+    for (int i = 2; i < argc; i++) {
+        if (nc_option(&opt, argv[i])) {
+            continue;
+        }
+        if (!strncmp(argv[i], "hdd=", 4)) {
+            nc_io_set_hdd_root(argv[i] + 4);
+        } else if (!strncmp(argv[i], "vkdriver=", 9)) {
+            nc_vk_driver_load(argv[i] + 9);
+        } else if (!strncmp(argv[i], "capture=", 8)) {
+            capture = argv[i] + 8;
+        } else if (!strncmp(argv[i], "frames=", 7)) {
+            stop = strtoull(argv[i] + 7, NULL, 10);
+        } else if (!strncmp(argv[i], "hang=", 5)) {
+            g_hang_s = (unsigned)atoi(argv[i] + 5);
+        } else {
+            fprintf(stderr, "xboxrun: unknown option %s\n", argv[i]);
+            return 2;
+        }
+    }
+    nc_options_apply(&opt);
+    nc_log("hakuX-native", "xboxrun: disc %s, hdd %s", argv[1], nc_io_hdd_root());
 
     if (!nc_core_boot(&g_core, fd)) {
-        nc_log("hakuX-native-frontier", "boot failed");
-        return 1;
+        nc_log("hakuX-native-frontier", "boot failed%s%s", nc_hle_fatal() ? ": " : "",
+               nc_hle_fatal() ? nc_hle_fatal() : "");
+        return nc_hle_fatal_kind() == NC_FATAL_STATE ? 8 : 1;
     }
     dump_ranges(getenv("NC_DUMP"));
     if (getenv("NC_DUMP_ONLY")) {
         return 0;
     }
     nc_capture_start();
+    nc_capture_frames(capture, stop);
+    pthread_t wd;
+    pthread_create(&wd, NULL, watchdog, NULL);
+    pthread_detach(wd);
     alarm(g_timeout);
     nc_core_run(&g_core);
-    return 0;
+    const NcKernel *k = &g_core.kernel;
+    return k->quit || k->relaunch ? 10 : k->stop ? 7 : 0;
 }

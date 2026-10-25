@@ -59,8 +59,8 @@ void hle_pipe_record(uint64_t hash, const void *key, uint64_t vsh, const uint32_
 /* Render thread: a prebuilt pipeline's first use this session. */
 void hle_pipe_touch(uint64_t hash);
 /* Render thread, at each swap: the new records appended to the file, at most
- * once a second. */
-void hle_pipe_flush(void);
+ * once a second (now: at once, a run about to exit). */
+void hle_pipe_flush(bool now);
 
 /* Before the game runs (the back end's start, on the boot thread): the
  * recorded pipelines built, the most recently used first and at most max,

@@ -14,6 +14,7 @@
 
 #ifdef __ANDROID__
 #include <sys/system_properties.h>
+#include "hw/xbox/hle/prop.h"
 #endif
 
 HleVk g_hvk;
@@ -140,7 +141,7 @@ static void caps_read(void)
 {
     g_caps_v[0] = 0;
 #ifdef __ANDROID__
-    __system_property_get("debug.hakux.caps", g_caps_v);
+    hle_prop_get("debug.hakux.caps", g_caps_v);
 #endif
     if (!g_caps_v[0] && getenv("HAKUX_HLE_CAPS")) {
         snprintf(g_caps_v, sizeof(g_caps_v), "%s", getenv("HAKUX_HLE_CAPS"));

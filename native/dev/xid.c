@@ -4,11 +4,15 @@
  * interrupt OUT 2.
  *
  * Input comes from nc_pad_set, and for headless runs from NC_PAD_SCRIPT:
- * "ms:button[+button...]:hold_ms,..." (buttons: a b x y black white lt rt
- * up down left right start back ls rs), times from the first report.
+ * "ms:input[+input...]:hold_ms,..." (inputs: a b x y black white lt rt up
+ * down left right start back ls rs, or a stick's position lx= ly= rx= ry=
+ * -32767..32767), times from the first report; "60f:a:2" counts frames
+ * instead (frame 60, held for 2: the HLE GPU's swaps in this process, after
+ * a savestate's load the frames since it), the same each run.
  */
 #include "native/dev/usb.h"
 #include "native/core/irq.h"
+#include "hw/xbox/hle/vk/back.h"
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -52,9 +56,12 @@ static uint16_t g_rumble[XID_PLAYERS][2];
 
 /* NC_PAD_SCRIPT. */
 typedef struct ScriptStep {
-    uint32_t at_ms, hold_ms;
+    uint32_t at, hold;  /* ms, or frames */
+    bool frames;
     uint16_t buttons;
-    uint8_t analog;  /* bit n: analog[n] fully pressed */
+    uint8_t analog;     /* bit n: analog[n] fully pressed */
+    uint8_t sticks;     /* bit n: stick[n] (lx ly rx ry) set */
+    int16_t stick[4];
 } ScriptStep;
 static ScriptStep g_script[64];
 static unsigned g_nscript;
@@ -87,6 +94,15 @@ static bool script_button(const char *name, size_t n, ScriptStep *st)
             return true;
         }
     }
+    static const char k_sticks[4][3] = {"lx", "ly", "rx", "ry"};
+    for (unsigned i = 0; i < 4; i++) {
+        if (n > 3 && !strncmp(name, k_sticks[i], 2) && name[2] == '=') {
+            const long v = strtol(name + 3, NULL, 10);
+            st->stick[i] = (int16_t)(v > 32767 ? 32767 : v < -32767 ? -32767 : v);
+            st->sticks |= 1u << i;
+            return true;
+        }
+    }
     return false;
 }
 
@@ -99,7 +115,9 @@ static void script_load(void)
     while (*s && g_nscript < sizeof(g_script) / sizeof(g_script[0])) {
         ScriptStep st = {0};
         char *end;
-        st.at_ms = (uint32_t)strtoul(s, &end, 10);
+        st.at = (uint32_t)strtoul(s, &end, 10);
+        st.frames = *end == 'f';
+        end += st.frames;
         if (*end != ':') {
             break;
         }
@@ -107,17 +125,17 @@ static void script_load(void)
         while (*s && *s != ':') {
             size_t n = strcspn(s, "+:");
             if (!script_button(s, n, &st)) {
-                nc_log("hakuX-native-usb", "pad script: unknown button '%.*s'", (int)n, s);
+                nc_log("hakuX-native-usb", "pad script: unknown input '%.*s'", (int)n, s);
             }
             s += n;
             if (*s == '+') {
                 s++;
             }
         }
-        st.hold_ms = 150;
+        st.hold = st.frames ? 9 : 150;
         if (*s == ':') {
-            st.hold_ms = (uint32_t)strtoul(s + 1, &end, 10);
-            s = end;
+            st.hold = (uint32_t)strtoul(s + 1, &end, 10);
+            s = end + (*end == 'f');
         }
         g_script[g_nscript++] = st;
         if (*s == ',') {
@@ -138,14 +156,21 @@ static void make_report(unsigned player, uint8_t r[20])
         if (!g_script_t0) {
             g_script_t0 = now_ms();
         }
-        const uint64_t t = now_ms() - g_script_t0;
+        const uint64_t ms = now_ms() - g_script_t0, frame = hle_back_swap_count();
         for (unsigned i = 0; i < g_nscript; i++) {
             const ScriptStep *st = &g_script[i];
-            if (t >= st->at_ms && t < (uint64_t)st->at_ms + st->hold_ms) {
+            const uint64_t t = st->frames ? frame : ms;
+            if (t >= st->at && t < (uint64_t)st->at + st->hold) {
                 p.buttons |= st->buttons;
                 for (unsigned b = 0; b < 8; b++) {
                     if (st->analog & (1u << b)) {
                         p.analog[b] = 0xff;
+                    }
+                }
+                int16_t *axis[4] = {&p.lx, &p.ly, &p.rx, &p.ry};
+                for (unsigned a = 0; a < 4; a++) {
+                    if (st->sticks & (1u << a)) {
+                        *axis[a] = st->stick[a];
                     }
                 }
             }

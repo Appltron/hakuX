@@ -44,5 +44,27 @@ typedef struct HleBackStats {
 } HleBackStats;
 void hle_back_draw_diag(void);      /* logs the draw-feature counters */
 
+/* Frames the render thread finished in this process (its swaps; after a
+ * savestate's load, the frames since it). Any thread. */
+uint64_t hle_back_swap_count(void);
+
+/* A run without the app's window (native/run/xboxrun.c) follows the frames:
+ * at each swap the render thread calls want(n), n counting this process's
+ * swaps from 1. True asks for that frame: got(n) once the GPU finished it,
+ * with its picture as the screen would show it (RGBA, top row first, the
+ * display's size, the gamma ramp in it unless a consumer applies it), or
+ * NULL when the frame had no display image. Set before the game runs; both
+ * run on the render thread, which waits for them. */
+typedef struct HleFrameHook {
+    bool (*want)(uint64_t n, void *opaque);
+    void (*got)(uint64_t n, const uint8_t *rgba, uint32_t w, uint32_t h, void *opaque);
+    void *opaque;
+} HleFrameHook;
+void hle_back_set_frame_hook(const HleFrameHook *hook);
+/* Render thread (a frame hook): the pipeline cache and the records of the
+ * pipelines made written now, for a run that ends in an exit (the process
+ * never reaches the GPU's teardown, nor the next periodic write). */
+void hle_back_save_caches(void);
+
 
 #endif

@@ -8,6 +8,7 @@
 
 #ifdef __ANDROID__
 #include <sys/system_properties.h>
+#include "hw/xbox/hle/prop.h"
 #endif
 
 uint32_t g_hle_quirks;
@@ -187,7 +188,7 @@ void hle_quirks_poll(void)
         return;
     }
     char v[PROP_VALUE_MAX] = "";
-    __system_property_get("debug.hakux.quirks", v);
+    hle_prop_get("debug.hakux.quirks", v);
     if (strcmp(v, last)) {
         strcpy(last, v);
         set(apply(g_defaults, v), v[0] ? "debug.hakux.quirks" : NULL);

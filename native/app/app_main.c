@@ -3,20 +3,14 @@
  *
  *   argv[1]  the disc image: a path, or "fd:<n>" for a descriptor the activity opened
  *   argv[2]  the hard disk folder (Partition0-5 and the raw sector files)
- *   argv[3+] options: "uncap" presents every frame at once, without waiting
- *            for vblank (the HLE GPU's HAKUX_HLE_UNCAP); "scale=N" the render
- *            scale; "aspect=auto|4:3|16:9|stretch" the picture's shape;
- *            "fxaa=0|1" FXAA over each frame and "upscale=bilinear|sgsr" how a
- *            frame smaller than its place on screen is scaled up;
- *            "video=<flags>" the console's video settings (XC_VIDEO_FLAGS,
- *            hex) and "avpack=hdtv|standard|svideo|scart|vga" its AV cable;
- *            "lang=N" its language (XC_LANGUAGE: 1 English ... 9 Portuguese);
- *            "asyncpipe=0|1" asynchronous shader compilation and "prebuild=0|1"
- *            the cached shaders built before the game (both on when absent);
- *            "pads=<mask>" the players with a controller plugged in (hex,
- *            bit n player n + 1; default player 1) and "padinput=sdl" the
- *            legacy input (the first SDL gamepad as player 1); "mods=<file>"
- *            the run's mods and cheats (native/core/mods.h)
+ *   argv[3+] options: the core's (native/core/options.h: "uncap",
+ *            "loadstate=", "scale=", "video=", "asyncpipe=", "mods=", ...),
+ *            and the window's: "aspect=auto|4:3|16:9|stretch" the picture's
+ *            shape, "fxaa=0|1" FXAA over each frame and
+ *            "upscale=bilinear|sgsr" how a frame smaller than its place on
+ *            screen is scaled up; "padinput=sdl" the legacy input (the first
+ *            SDL gamepad as player 1); "vkdriver=" the custom Vulkan driver
+ *            (vkdriver.c)
  *
  * The core boots and runs on its own thread (FEX keeps per-thread state, so
  * boot and run share it). This thread owns the window: it hands the
@@ -28,6 +22,7 @@
 #include "native/core/cheats.h"
 #include "native/core/core.h"
 #include "native/core/mods.h"
+#include "native/core/options.h"
 #include "native/dev/usb.h"
 #include "native/kernel/kernel.h"
 #include "native/state/save.h"
@@ -42,6 +37,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/system_properties.h>
+#include "hw/xbox/hle/prop.h"
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -177,7 +173,7 @@ EXPORT JNIEXPORT jstring JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_n
     static char last[PROP_VALUE_MAX];
     static bool primed;
     char v[PROP_VALUE_MAX] = "";
-    __system_property_get("debug.hakux.state", v);
+    hle_prop_get("debug.hakux.state", v);
     if (!primed || !strcmp(v, last)) {
         primed = true;
         snprintf(last, sizeof(last), "%s", v);
@@ -467,7 +463,7 @@ EXPORT int SDL_main(int argc, char *argv[])
     snprintf(hdd, sizeof(hdd), "%s", argv[2]);
     {
         char name[PROP_VALUE_MAX] = "";
-        if (__system_property_get("debug.hakux.hdd", name) > 0 && strcmp(name, "none") && !strchr(name, '/') &&
+        if (hle_prop_get("debug.hakux.hdd", name) > 0 && strcmp(name, "none") && !strchr(name, '/') &&
             name[0] != '.') {
             snprintf(hdd, sizeof(hdd), "%s-%s", argv[2], name);
             nc_log("hakuX-app", "debug.hakux.hdd: the hard disk is %s", hdd);
@@ -488,7 +484,7 @@ EXPORT int SDL_main(int argc, char *argv[])
     {   /* debug: debug.hakux.env="NAME=value;NAME=value" sets the runner's
          * environment switches (NC_TRACE_*, HAKUX_HLE_*) for the next game */
         char env[PROP_VALUE_MAX] = "";
-        if (__system_property_get("debug.hakux.env", env) > 0) {
+        if (hle_prop_get("debug.hakux.env", env) > 0) {
             for (char *save = NULL, *t = strtok_r(env, ";", &save); t; t = strtok_r(NULL, ";", &save)) {
                 char *eq = strchr(t, '=');
                 if (eq && eq != t) {
@@ -499,40 +495,14 @@ EXPORT int SDL_main(int argc, char *argv[])
             }
         }
     }
-    bool uncap = false;
-    bool async_pipe = true, prebuild = true;    /* the app's defaults */
-    int64_t video = -1;
-    int av_pack = NC_AV_PACK_HDTV;
+    NcOptions opt;
+    nc_options_init(&opt);
     for (int i = 3; i < argc; i++) {
-        uncap |= !strcmp(argv[i], "uncap");
-        if (!strcmp(argv[i], "relaunch")) {
-            nc_core_set_relaunch(true);
-        }
-        if (!strncmp(argv[i], "loadstate=", 10)) {
-            nc_core_set_loadstate(argv[i] + 10);       /* boot into a savestate (native/state) */
-            nc_log("hakuX-app", "savestate %s", argv[i] + 10);
-        }
-        if (!strncmp(argv[i], "mods=", 5)) {
-            nc_mods_set_manifest(argv[i] + 5);         /* read as the disc opens */
-        }
-        if (!strncmp(argv[i], "version=", 8)) {
-            nc_state_set_core_version(argv[i] + 8);
-        }
-        if (!strncmp(argv[i], "scale=", 6)) {
-            nc_hle_set_render_scale(atoi(argv[i] + 6));
-            nc_log("hakuX-app", "render scale %sx", argv[i] + 6);
-        }
-        if (!strncmp(argv[i], "asyncpipe=", 10)) {
-            async_pipe = atoi(argv[i] + 10) != 0;
-        }
-        if (!strncmp(argv[i], "pads=", 5)) {
-            setenv("NC_PAD_MASK", argv[i] + 5, 1);     /* read by the USB at boot (ohci.c) */
+        if (nc_option(&opt, argv[i])) {
+            continue;                           /* the core's (native/core/options.h) */
         }
         if (!strcmp(argv[i], "padinput=sdl")) {
             g_sdl_pads = true;
-        }
-        if (!strncmp(argv[i], "prebuild=", 9)) {
-            prebuild = atoi(argv[i] + 9) != 0;
         }
         if (!strncmp(argv[i], "aspect=", 7)) {
             const char *a = argv[i] + 7;
@@ -548,51 +518,15 @@ EXPORT int SDL_main(int argc, char *argv[])
         if (!strncmp(argv[i], "upscale=", 8)) {
             nc_present_set_upscale(!strcmp(argv[i] + 8, "sgsr") ? NC_UPSCALE_SGSR : NC_UPSCALE_BILINEAR);
         }
-        if (!strncmp(argv[i], "video=", 6)) {
-            video = (int64_t)strtoul(argv[i] + 6, NULL, 16);
-        }
-        if (!strncmp(argv[i], "avpack=", 7)) {
-            const char *p = argv[i] + 7;
-            av_pack = !strcmp(p, "standard") ? NC_AV_PACK_STANDARD
-                      : !strcmp(p, "svideo") ? NC_AV_PACK_SVIDEO
-                      : !strcmp(p, "scart")  ? NC_AV_PACK_SCART
-                      : !strcmp(p, "vga")    ? NC_AV_PACK_VGA
-                                             : NC_AV_PACK_HDTV;
-        }
-        if (!strncmp(argv[i], "lang=", 5)) {
-            nc_kernel_set_language(atoi(argv[i] + 5));
-            nc_log("hakuX-app", "console language %s", argv[i] + 5);
-        }
-        /* The console's clock: clock=<ms> its distance from the phone's time
-         * (none: the phone's), tz=<minutes east of UTC> the phone's zone. */
-        if (!strncmp(argv[i], "clock=", 6)) {
-            nc_kernel_set_clock(strtoll(argv[i] + 6, NULL, 10));
-        }
-        if (!strncmp(argv[i], "tz=", 3)) {
-            nc_kernel_set_time_zone(atoi(argv[i] + 3));
-        }
         /* vkdriver=<driver dir>|<library>|<hook library dir>: the custom
          * Vulkan driver chosen in the settings (Turnip), via adrenotools. */
         if (!strncmp(argv[i], "vkdriver=", 9)) {
             nc_vk_driver_load(argv[i] + 9);
         }
     }
-    /* The console's video settings: what the title may show (widescreen,
-     * 480p/720p/1080i) and the cable it finds (HD modes need component). */
-    nc_kernel_set_video(video, av_pack);
-    nc_present_set_widescreen(video >= 0 && (video & NC_VIDEO_WIDESCREEN));
-    if (video >= 0) {
-        nc_log("hakuX-app", "video flags %08llx, AV pack %d", (unsigned long long)video, av_pack);
-    }
-    if (uncap) {
-        setenv("HAKUX_HLE_UNCAP", "1", 1);
-    } else {
-        unsetenv("HAKUX_HLE_UNCAP");
-    }
-    nc_log("hakuX-app", "native core: disc %s, hdd %s%s", disc, argv[2], uncap ? ", frame rate uncapped" : "");
-    nc_hle_set_pipeline_options(async_pipe, prebuild);
-    nc_log("hakuX-app", "shaders: asynchronous compilation %s, cached ones built before the game %s",
-           async_pipe ? "on" : "off", prebuild ? "on" : "off");
+    nc_options_apply(&opt);
+    nc_present_set_widescreen(opt.video >= 0 && (opt.video & NC_VIDEO_WIDESCREEN));
+    nc_log("hakuX-app", "native core: disc %s, hdd %s%s", disc, argv[2], opt.uncap ? ", frame rate uncapped" : "");
 
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
     /* the gamepads are the activity's (its controller router), unless the

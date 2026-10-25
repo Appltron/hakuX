@@ -18,6 +18,7 @@
 #include <unistd.h>
 #ifdef __ANDROID__
 #include <sys/system_properties.h>
+#include "hw/xbox/hle/prop.h"
 #endif
 
 static const NcKExport k_exports[] = {
@@ -738,7 +739,7 @@ static void stats_tick(NcKernel *k)
     static bool dump_seen;
     static char dump_last[PROP_VALUE_MAX];
     char v[PROP_VALUE_MAX] = "";
-    __system_property_get("debug.hakux.ncdump", v);
+    hle_prop_get("debug.hakux.ncdump", v);
     if (dump_seen && strcmp(v, dump_last)) {
         nc_log("hakuX-native-frontier", "dump on demand (debug.hakux.ncdump=%s)", v);
         nc_kernel_dump_recent(-1);
@@ -751,7 +752,7 @@ static void stats_tick(NcKernel *k)
     /* debug.hakux.ncresume=<id>[,salt], a new value: resume thread t<id> */
     static char resume_last[PROP_VALUE_MAX];
     v[0] = 0;
-    __system_property_get("debug.hakux.ncresume", v);
+    hle_prop_get("debug.hakux.ncresume", v);
     if (v[0] && strcmp(v, resume_last)) {
         nc_ps_debug_resume(k, (unsigned)atoi(v));
     }

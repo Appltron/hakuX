@@ -12,12 +12,16 @@
  * which the layer's separate instance and device maps take, the core making
  * one instance and one device.
  */
+#ifndef VK_NO_PROTOTYPES                /* volk's targets define it */
 #define VK_NO_PROTOTYPES
+#endif
 #include "native/app/app.h"
 
 #include <dlfcn.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/system_properties.h>
+#include "hw/xbox/hle/prop.h"
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
 
@@ -92,8 +96,10 @@ static PFN_vkVoidFunction VKAPI_CALL get_instance_proc(VkInstance inst, const ch
 
 void *nc_vk_layers(void *drv_gipa)
 {
+    /* HAKUX_VKVALIDATION=1 too: a run that reads no properties (prop.h) */
     char v[PROP_VALUE_MAX] = "";
-    if (__system_property_get("debug.hakux.vkvalidation", v) <= 0 || !strcmp(v, "0")) {
+    const char *e = getenv("HAKUX_VKVALIDATION");
+    if (!(e && !strcmp(e, "1")) && (hle_prop_get("debug.hakux.vkvalidation", v) <= 0 || !strcmp(v, "0"))) {
         return drv_gipa;
     }
     void *h = dlopen(LAYER_LIB, RTLD_NOW | RTLD_LOCAL);

@@ -189,7 +189,6 @@ extern int g_hle_gpucut;
 void hle_draw_counts(uint64_t *verts, uint64_t *pipes);
 void hle_draw_forget_tex(uint32_t id);
 void hle_draw_forget_surf(uint32_t id);
-uint64_t hle_back_swap_count(void);
 /* A debug capture is armed (pixel history): pipelines are built in
  * place, no draw of the captured frames skipped (vk/draw.c). */
 bool hle_back_capture_armed(void);

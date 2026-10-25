@@ -1796,6 +1796,68 @@ static void overlay_blit(VkCommandBuffer cb, VkImage dst, uint32_t dw, uint32_t 
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
+/* ---- the frame hook (back.h HleFrameHook) ------------------------------- */
+
+static struct {
+    HleFrameHook hook;
+    bool armed;                 /* this swap's frame asked for */
+    VkBuffer buf;               /* its picture, copied at the swap */
+    VkDeviceMemory mem;
+    uint32_t w, h;
+} g_fh;
+
+void hle_back_set_frame_hook(const HleFrameHook *hook)
+{
+    g_fh.hook = hook ? *hook : (HleFrameHook){ 0 };
+}
+
+void hle_back_save_caches(void)
+{
+    hle_pcache_save(true);
+    hle_pipe_flush(true);
+}
+
+/* In the swap's command buffer, once the frame is in its display image (dst,
+ * SHADER_READ_ONLY): a copy of it into a host buffer. */
+static void fh_copy(VkCommandBuffer cb, VkImage dst, uint32_t w, uint32_t h)
+{
+    if (!g_fh.armed || g_fh.buf || !rtd_buf((VkDeviceSize)w * h * 4, &g_fh.buf, &g_fh.mem)) {
+        return;
+    }
+    g_fh.w = w;
+    g_fh.h = h;
+    hle_img_barrier(cb, dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkBufferImageCopy r = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                            .imageExtent = { w, h, 1 } };
+    T.vkCmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_fh.buf, 1, &r);
+    hle_img_barrier(cb, dst, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+/* After the swap's submit: the frame to the hook once the GPU reached value. */
+static void fh_deliver(uint64_t n, uint64_t value)
+{
+    const uint8_t *px = NULL;
+    void *map = NULL;
+    if (g_fh.buf) {
+        hle_tl_wait(value);
+        if (T.vkMapMemory(g_hvk.dev, g_fh.mem, 0, VK_WHOLE_SIZE, 0, &map) == VK_SUCCESS) {
+            px = map;
+        }
+    }
+    g_fh.hook.got(n, px, px ? g_fh.w : 0, px ? g_fh.h : 0, g_fh.hook.opaque);
+    if (map) {
+        T.vkUnmapMemory(g_hvk.dev, g_fh.mem);
+    }
+    if (g_fh.buf) {
+        T.vkDestroyBuffer(g_hvk.dev, g_fh.buf, NULL);
+        T.vkFreeMemory(g_hvk.dev, g_fh.mem, NULL);
+        g_fh.buf = VK_NULL_HANDLE;
+    }
+    g_fh.armed = false;
+}
+
 static void cmd_swap_present(const HleCmdSwap *c);
 
 static void cmd_swap(const HleCmdSwap *c)
@@ -1804,9 +1866,14 @@ static void cmd_swap(const HleCmdSwap *c)
     pix_poll();
     g_rtd.active |= rtd_range();
     bool dump = rtd_record(c);
+    const uint64_t n = g_back.st.swaps + 1;     /* the swap that ends the frame */
+    g_fh.armed = g_fh.hook.want && g_fh.hook.want(n, g_fh.hook.opaque);
     cmd_swap_present(c);
     if (dump) {
         rtd_write(c->value);
+    }
+    if (g_fh.armed) {
+        fh_deliver(n, c->value);
     }
     if (g_pix.active) {
         pix_write(c->value);
@@ -1853,7 +1920,7 @@ static void back_props_poll(uint64_t swap)
     }
     next_poll = swap + 3;
     char v[PROP_VALUE_MAX] = "";
-    if (__system_property_get("debug.hakux.visall", v) > 0 && g_vis_dbg.all >= 0 &&
+    if (hle_prop_get("debug.hakux.visall", v) > 0 && g_vis_dbg.all >= 0 &&
         atoi(v) != g_vis_dbg.all) {
         g_vis_dbg.all = atoi(v) != 0;
         hle_log("hakuX-hle-back", "vis: visall=%d", g_vis_dbg.all);
@@ -1865,32 +1932,32 @@ static void back_props_poll(uint64_t swap)
         hle_vk_lose(VK_ERROR_DEVICE_LOST, "debug.hakux.gpulose");
     }
     v[0] = 0;
-    __system_property_get("debug.hakux.dryhold", v);
+    hle_prop_get("debug.hakux.dryhold", v);
     if ((atoi(v) != 0) != g_dry_hold) {
         g_dry_hold = !g_dry_hold;
         hle_log("hakuX-hle-back", "a dry ring %s its boundaries", g_dry_hold ? "holds" : "submits");
     }
     v[0] = 0;
-    __system_property_get("debug.hakux.pendus", v);
+    hle_prop_get("debug.hakux.pendus", v);
     int64_t pend = atoi(v) > 0 ? atoi(v) * 1000ll : HLE_PEND_NS;
     if (pend != g_pend_ns) {
         g_pend_ns = pend;
         hle_log("hakuX-hle-back", "boundaries wait at most %lld us", (long long)(pend / 1000));
     }
     v[0] = 0;
-    __system_property_get("debug.hakux.visoff", v);
+    hle_prop_get("debug.hakux.visoff", v);
     if ((atoi(v) != 0) != g_vis_dbg.off) {
         g_vis_dbg.off = !g_vis_dbg.off;
         hle_log("hakuX-hle-back", "vis: GPU queries %s", g_vis_dbg.off ? "off" : "on");
     }
     v[0] = 0;
-    __system_property_get("debug.hakux.fbbar", v);
+    hle_prop_get("debug.hakux.fbbar", v);
     if (!strcmp(v, "0") != g_hle_fbbar_off) {
         g_hle_fbbar_off = !g_hle_fbbar_off;
         hle_log("hakuX-hle-back", "fb fetch barriers %s", g_hle_fbbar_off ? "off" : "on");
     }
     v[0] = 0;
-    __system_property_get("debug.hakux.gpucut", v);
+    hle_prop_get("debug.hakux.gpucut", v);
     int cut = !strcmp(v, "frag") ? 1 : !strcmp(v, "draw") ? 2 : !strcmp(v, "pass") ? 3 :
               !strcmp(v, "tri") ? 4 : 0;
     if (cut != g_hle_gpucut) {
@@ -1911,7 +1978,7 @@ static void cmd_swap_present(const HleCmdSwap *c)
     hle_draw_psframe_poll(g_back.st.swaps);
     back_props_poll(g_back.st.swaps);
     hle_pcache_save(false);
-    hle_pipe_flush();                   /* the pipelines made, recorded (at most once a second) */
+    hle_pipe_flush(false);              /* the pipelines made, recorded (at most once a second) */
     HleVkSurf *src = hle_surf_get(c->surf);
     int slot = hle_disp_begin_write(c->swap_id, c->value);
     if (src && slot >= 0 && hle_surf_ensure(src) &&
@@ -1926,6 +1993,7 @@ static void cmd_swap_present(const HleCmdSwap *c)
         if (!g_gamma.identity && !g_gamma.off && !hle_disp_gamma_consumer() &&
             hle_gamma_pass(cb, g_back.cur, g_gamma.rgb, src, sw, sh, dst, dw, dh)) {
             overlay_blit(cb, dst, dw, dh);
+            fh_copy(cb, dst, dw, dh);
             submit(c->value);           /* through the ramp instead of the blit */
             g_back.st.swaps++;
             return;
@@ -1949,6 +2017,7 @@ static void cmd_swap_present(const HleCmdSwap *c)
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         overlay_blit(cb, dst, dw, dh);
+        fh_copy(cb, dst, dw, dh);
     }
     submit(c->value);
     g_back.st.swaps++;

@@ -22,6 +22,7 @@
 
 #ifdef __ANDROID__
 #include <sys/system_properties.h>
+#include "hw/xbox/hle/prop.h"
 #endif
 
 void hle_draw_ibuf_lost(void);
@@ -165,7 +166,7 @@ static bool batch_wanted(void)
     }
 #ifdef __ANDROID__
     char v[PROP_VALUE_MAX] = "";
-    if (__system_property_get("debug.hakux.batch", v) > 0 && v[0]) {
+    if (hle_prop_get("debug.hakux.batch", v) > 0 && v[0]) {
         return atoi(v) != 0;
     }
 #endif

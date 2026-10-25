@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/system_properties.h>
+#include "hw/xbox/hle/prop.h"
 
 #define SCAN_MAX 300
 
@@ -318,7 +319,7 @@ void nc_memscan_poll(const NcVm *vm)
         return;
     }
     char v[PROP_VALUE_MAX] = "";
-    if (__system_property_get("debug.hakux.memscan", v) <= 0 || !strcmp(v, last)) {
+    if (hle_prop_get("debug.hakux.memscan", v) <= 0 || !strcmp(v, last)) {
         return;
     }
     const bool first = !last[0] && polls == 1;

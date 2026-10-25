@@ -27,6 +27,7 @@
 #include <sys/mman.h>
 #ifdef __ANDROID__
 #include <sys/system_properties.h>
+#include "hw/xbox/hle/prop.h"
 #endif
 #include <ucontext.h>
 
@@ -279,7 +280,7 @@ extern "C" NcCpu* nc_cpu_create(const NcCpuConfig* cfg, uint32_t fs_base) {
     const char* e = getenv("NC_FEX_X87");
     char v[PROP_VALUE_MAX] = "";
 #ifdef __ANDROID__
-    __system_property_get("debug.hakux.fex_x87", v);
+    hle_prop_get("debug.hakux.fex_x87", v);
 #endif
     x87_full = (e && !strcmp(e, "80")) || !strcmp(v, "80");
     FEXCore::Config::Set(FEXCore::Config::CONFIG_X87REDUCEDPRECISION, x87_full ? "0" : "1");
@@ -299,7 +300,7 @@ extern "C" NcCpu* nc_cpu_create(const NcCpuConfig* cfg, uint32_t fs_base) {
     const char* e = getenv("NC_FEX_PC");
     char v[PROP_VALUE_MAX] = "";
 #ifdef __ANDROID__
-    __system_property_get("debug.hakux.fex_pc", v);
+    hle_prop_get("debug.hakux.fex_pc", v);
 #endif
     x87_pc_off = (e && !strcmp(e, "0")) || !strcmp(v, "0");
     FEXCore::Config::Set(FEXCore::Config::CONFIG_X87REDUCEDPRECISIONCONTROL, x87_pc_off ? "0" : "1");
@@ -318,7 +319,7 @@ extern "C" NcCpu* nc_cpu_create(const NcCpuConfig* cfg, uint32_t fs_base) {
     const char* e = getenv("NC_FEX_AFP");
     char v[PROP_VALUE_MAX] = "";
 #ifdef __ANDROID__
-    __system_property_get("debug.hakux.fex_afp", v);
+    hle_prop_get("debug.hakux.fex_afp", v);
 #endif
     if ((e && !strcmp(e, "0")) || !strcmp(v, "0")) {
       FEXCore::Config::Set(FEXCore::Config::CONFIG_HOSTFEATURES, std::to_string(static_cast<uint64_t>(FEXCore::Config::HostFeatures::DISABLEAFP)));

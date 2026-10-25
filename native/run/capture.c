@@ -4,8 +4,13 @@
  * Every NC_CAPTURE_EVERY seconds a thread reads the HLE GPU's front image
  * back (vk/display.h hle_disp_read_front) and writes frames/frame_<n>.png in
  * the working directory (up to NC_CAPTURE_MAX, default 20).
+ *
+ * By frame (nc_capture_frames: xboxrun's capture= and frames=), the render
+ * thread hands over the frames asked for (vk/back.h HleFrameHook): each
+ * frames/f<n>.png as it was presented, and the run ends at frames=.
  */
 #include "native/core/nc.h"
+#include "hw/xbox/hle/vk/back.h"
 #include "hw/xbox/hle/vk/display.h"
 
 #include <glib.h>
@@ -99,6 +104,71 @@ static void *capture_thread(void *arg)
         n += capture_one(path);
     }
     return NULL;
+}
+
+static struct {
+    uint64_t at[64];            /* frames to capture */
+    unsigned n;
+    uint64_t stop;              /* the last frame (0: none) */
+} g_cf;
+
+static bool frame_want(uint64_t n, void *opaque)
+{
+    if (n == g_cf.stop) {
+        return true;
+    }
+    for (unsigned i = 0; i < g_cf.n; i++) {
+        if (g_cf.at[i] == n) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void frame_got(uint64_t n, const uint8_t *rgba, uint32_t w, uint32_t h, void *opaque)
+{
+    bool asked = false;
+    for (unsigned i = 0; i < g_cf.n; i++) {
+        asked |= g_cf.at[i] == n;
+    }
+    if (asked) {
+        char path[64];
+        snprintf(path, sizeof(path), "frames/f%llu.png", (unsigned long long)n);
+        if (!rgba) {
+            nc_log("hakuX-native-frontier", "frame %llu: no picture (no display image)", (unsigned long long)n);
+        } else if (write_png(path, rgba, w, h)) {
+            nc_log("hakuX-native-frontier", "frame %llu: %s (%ux%u)", (unsigned long long)n, path, w, h);
+        } else {
+            nc_log("hakuX-native-frontier", "frame %llu: %s not written", (unsigned long long)n, path);
+        }
+    }
+    if (n == g_cf.stop) {
+        hle_back_save_caches();         /* the next run's shaders and pipelines */
+        nc_log("hakuX-native-frontier", "frames: %llu reached", (unsigned long long)n);
+        _exit(0);
+    }
+}
+
+void nc_capture_frames(const char *list, uint64_t stop)
+{
+    for (const char *s = list; s && *s && g_cf.n < sizeof(g_cf.at) / sizeof(g_cf.at[0]);) {
+        char *end;
+        const uint64_t n = strtoull(s, &end, 10);
+        if (end == s) {
+            break;
+        }
+        if (n) {
+            g_cf.at[g_cf.n++] = n;
+        }
+        s = *end == ',' ? end + 1 : end;
+    }
+    g_cf.stop = stop;                   /* 0: the run goes on after the captures */
+    if (!g_cf.n && !g_cf.stop) {
+        return;
+    }
+    mkdir("frames", 0775);
+    static const HleFrameHook hook = { frame_want, frame_got, NULL };
+    hle_back_set_frame_hook(&hook);
 }
 
 void nc_capture_start(void)

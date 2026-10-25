@@ -1,10 +1,11 @@
 /*
  * hakuX native core — a custom Vulkan driver for the HLE GPU (Turnip),
  * through adrenotools: the app's GPU driver setting ("vkdriver=" from
- * NativeCoreActivity).
+ * NativeCoreActivity), and xboxrun's.
  */
 #include "native/app/app.h"
 #include "native/hle/hle_native.h"
+#include "hw/xbox/hle/prop.h"
 
 #ifdef NC_ADRENOTOOLS
 #include <adrenotools/driver.h>
@@ -15,7 +16,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/system_properties.h>
 
 #ifdef NC_ADRENOTOOLS
 /* The driver package's meta.json names its vendor: Turnip's is "Mesa". */
@@ -55,7 +55,7 @@ static int kgsl_priority(const char *dir)
         return -1;
     }
     char v[PROP_VALUE_MAX] = "";
-    __system_property_get("debug.hakux.kgslprio", v);
+    hle_prop_get("debug.hakux.kgslprio", v);
     int prio = v[0] ? atoi(v) : 7;
     return prio >= 1 && prio <= 15 ? prio : -1;
 }
@@ -67,7 +67,7 @@ void nc_vk_driver_load(const char *spec)
     /* Turnip's debug flags for A/B runs (debug.hakux.tu_debug, e.g.
      * "sysmem"): read when the driver creates its device. */
     char tu[PROP_VALUE_MAX] = "";
-    __system_property_get("debug.hakux.tu_debug", tu);
+    hle_prop_get("debug.hakux.tu_debug", tu);
     if (tu[0]) {
         setenv("TU_DEBUG", tu, 1);
         nc_log("hakuX-app", "TU_DEBUG=%s", tu);
@@ -77,7 +77,7 @@ void nc_vk_driver_load(const char *spec)
      * build unpacked); the setting kept (A/B: a driver's bug or the HLE's,
      * one driver build against another) */
     char sel[PROP_VALUE_MAX] = "";
-    __system_property_get("debug.hakux.vkdriver", sel);
+    hle_prop_get("debug.hakux.vkdriver", sel);
     if (!strcmp(sel, "system")) {
         nc_log("hakuX-app", "Vulkan driver: the system's (debug.hakux.vkdriver=system)");
         return;
