@@ -451,13 +451,80 @@ static void log_splitters(NcKernel *k)
             }
             if (!strcmp(what, "kernel") && vm->rmap[p]) {
                 const Region *r = region_at(vm->rmap[p]);
-                /* pinned (MmLockUnlockBufferPages) or write-protected for dirty
-                 * tracking: compaction can't move it */
+                /* pinned (MmLockUnlockBufferPages): compaction can't move it;
+                 * write-protected for dirty tracking: it waits for the GPU */
                 snprintf(what, sizeof(what), "va %08x%s%s%s", vm->rmap[p],
                          r && r->image ? " image" : r ? "" : " (no region)", vm->pin[p] ? " pinned" : "",
                          vm->wp[p] ? " tracked" : "");
             }
             n += snprintf(line + n, sizeof(line) - (size_t)n, " %x+%uK=%s", pa, (q - p) * (NC_PAGE >> 10), what);
+        }
+        p = q;
+    }
+    nc_log("hakuX-native", "%s", line);
+}
+
+/* What a used page is to compaction (vm.c movable): kind, and the contiguous
+ * block it belongs to (kind 'C'). */
+static char page_kind(NcVm *vm, uint32_t p, unsigned *block)
+{
+    if (!vm->page_used[p]) {
+        return '.';
+    }
+    const uint32_t pa = p * NC_PAGE;
+    for (unsigned i = 0; i < g_ncontig; i++) {
+        const uint32_t cpa = g_contig[i].va & ~NC_CONTIG_WINDOW;
+        if (pa >= cpa && pa - cpa < g_contig[i].size + g_contig[i].slack) {
+            *block = i;
+            return 'C';
+        }
+    }
+    const uint32_t va = vm->rmap[p];
+    if (!va || vm->pte[va / NC_PAGE] != (pa | NC_PTE_VALID)) {
+        return 'K';                     /* no user mapping: the kernel's, or the GPU's instance memory */
+    }
+    if (vm->pin[p]) {
+        return 'P';
+    }
+    return nc_vm_noaccess_has(vm, pa) ? 'N' : 'v';
+}
+
+/* Out-of-memory reports: all of RAM in runs of one kind, low to high, the
+ * ones that can't move named (contiguous blocks with their holder, the
+ * kernel's, pinned, without guest access 'N'): what stands in every window
+ * of the size asked for. */
+static void log_phys_map(NcKernel *k)
+{
+    NcVm *vm = k->vm;
+    const uint32_t pages = vm->ram_size / NC_PAGE;
+    char line[760];
+    int n = snprintf(line, sizeof(line), "mm:   map:");
+    unsigned lines = 0;
+    for (uint32_t p = 0; p < pages && lines < 16;) {
+        /* a contiguous run: the blocks of one holder */
+        unsigned block = 0, b2 = 0, blocks = 1;
+        const char kind = page_kind(vm, p, &block);
+        uint32_t q = p + 1;
+        for (unsigned prev = block; q < pages && page_kind(vm, q, &b2) == kind &&
+                                    (kind != 'C' || g_contig[b2].ra == g_contig[block].ra); q++) {
+            blocks += kind == 'C' && b2 != prev;
+            prev = b2;
+        }
+        char what[64];
+        if (kind == 'C' && blocks > 1) {
+            snprintf(what, sizeof(what), "C%08x.. (%u blocks) by %08x", g_contig[block].va, blocks, g_contig[block].ra);
+        } else if (kind == 'C') {
+            snprintf(what, sizeof(what), "C%08x by %08x", g_contig[block].va, g_contig[block].ra);
+        } else if (kind == 'P' || kind == 'N') {
+            const Region *r = region_at(vm->rmap[p]);
+            snprintf(what, sizeof(what), "%c va %08x%s", kind, vm->rmap[p], r && r->image ? " image" : "");
+        } else {
+            snprintf(what, sizeof(what), "%c", kind);
+        }
+        n += snprintf(line + n, sizeof(line) - (size_t)n, " %x+%uK=%s", p * NC_PAGE, (q - p) * (NC_PAGE >> 10), what);
+        if (n > (int)sizeof(line) - 80) {
+            nc_log("hakuX-native", "%s", line);
+            n = snprintf(line, sizeof(line), "mm:   map (%u):", ++lines);
         }
         p = q;
     }
@@ -500,6 +567,7 @@ static uint32_t contig_alloc(NcKernel *k, uint32_t size, uint32_t lo, uint32_t h
             nc_log("hakuX-native", "mm: contiguous allocation of %u KiB failed (#%u; free %u KiB:%s)", size >> 10, n,
                    nc_vm_free_bytes(k->vm) >> 10, runs);
             log_splitters(k);
+            log_phys_map(k);
             log_holders(k, "contiguous allocation failed");
         }
         return 0;
