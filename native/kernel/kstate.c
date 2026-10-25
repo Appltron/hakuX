@@ -195,6 +195,7 @@ bool nc_thrd_state_load(NcRd *r, unsigned v)
 const NcCpuContext *nc_kstate_start_context(NcKernel *k)
 {
     nc_dpc_sync(k);                     /* a state from before the flag had none */
+    nc_ps_old_stacks(k);                /* every section loaded: the memory map is the state's */
     NcThread *t = k->current;
     if (g_point == NC_STATE_AT_IDLE || !t || t->state != NC_T_RUNNING) {
         /* Every thread was switched out: the guest CPU starts in the

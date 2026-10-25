@@ -127,6 +127,10 @@ typedef struct NcThread {
     uint32_t id;
     int priority;
     uint32_t stack_base, stack_limit;
+    /* Under the FX save area at the stack's top (ps.c thread_create): the
+     * TIB's StackBase (fs:[4], the TLS's top), and where the thread's frames
+     * begin. 0 in a state saved before the save area: the stack's top. */
+    uint32_t tib_base, frame_top;
     uint32_t exception_list; /* NT_TIB.ExceptionList while not running */
     NcWait wait;             /* while NC_T_WAITING */
     unsigned suspend;        /* suspend count: runnable only at 0 */
@@ -320,6 +324,17 @@ bool nc_ps_stack_alloc(NcKernel *k, uint32_t size, uint32_t *base);
 void nc_ps_stack_free(NcKernel *k, uint32_t base, uint32_t size);
 /* A kernel-owned thread, suspended, with no start context yet. */
 NcThread *nc_ps_kernel_thread(NcKernel *k, uint32_t stack_size, int priority);
+
+/* After a state's load: a page over the stacks of threads from a state saved
+ * before the FX save area (their frames sit nearer the top). */
+void nc_ps_old_stacks(NcKernel *k);
+
+/* Where a thread's frames begin: under its FX save area and TLS (its stack's
+ * top in a state saved before the save area). */
+static inline uint32_t nc_ps_frame_top(const NcThread *t)
+{
+    return t->frame_top ? t->frame_top : t->stack_base;
+}
 
 /* mm.c, ex.c, rtl.c */
 void nc_mm_register(NcKernel *k);
