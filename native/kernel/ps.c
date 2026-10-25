@@ -69,6 +69,7 @@
 #define STACK_REGION   0xD0000000u
 #define STACK_GUARD    0x10000u
 #define DEFAULT_STACK  0x10000u
+#define KERNEL_STACK_SIZE 0x3000u       /* the least the kernel makes (nboxkrnl kernel.hpp) */
 #define DEFAULT_PRIORITY 8
 
 static void list_init(NcVm *vm, uint32_t head)
@@ -159,9 +160,16 @@ static NcThread *thread_create(NcKernel *k, uint32_t stack_size, uint32_t tls_si
      * frames sat 0x210 bytes nearer the top than on the console: Silent
      * Hill 2 reads 0x170 bytes over its stack pointer near the bottom of its
      * calls, into the save area there, past the stack here (a fault the
-     * title doesn't handle: the game gone, loading a room). */
+     * title doesn't handle: the game gone, loading a room). The kernel
+     * makes no stack under KERNEL_STACK_SIZE, the save area and TLS in it
+     * (PsCreateSystemThreadEx): Splinter Cell - Double Agent asks for less
+     * than a page and its thread's frames went past the one page it got,
+     * the save area and TLS taking 0x2A4 of it. */
     const uint32_t tls = nc_align_up(tls_size, 4);
-    const uint32_t size = nc_align_up((stack_size ? stack_size : DEFAULT_STACK) + FX_SAVE_AREA + tls + 16, NC_PAGE);
+    uint32_t size = nc_align_up((stack_size ? stack_size : DEFAULT_STACK) + FX_SAVE_AREA + tls + 16, NC_PAGE);
+    if (size < KERNEL_STACK_SIZE) {
+        size = KERNEL_STACK_SIZE;
+    }
     uint32_t base;
     if (!nc_ps_stack_alloc(k, size, &base)) {
         return NULL;
