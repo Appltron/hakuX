@@ -335,19 +335,33 @@ EXPORT JNIEXPORT jstring JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_n
 /* The window's overlays and the game's GPU work (NativeCoreActivity's
  * OverlayPacer): how long the GPU has been on the game's work without
  * running out of it, in ms (0: it's out now), and a moment of idle GPU for a
- * frame of the window waiting on the GPU queue below the game's. */
+ * frame of the window waiting on the GPU queue below the game's. Only where
+ * the game's queue is above the window's (the driver's kgsl contexts raised
+ * above the default 8: Turnip, vkdriver.c); elsewhere the window's frames
+ * take turns with the game's, never busy, never a gap. */
 int64_t hle_tl_busy_ns(void);
 void hle_tl_gap(void);
 
+static bool above_window(void)
+{
+    const int prio = nc_vk_driver_kgsl_priority();
+    return prio > 0 && prio < 8;
+}
+
 EXPORT JNIEXPORT jint JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeGpuBusyMs(JNIEnv *env, jclass cls)
 {
+    if (!above_window()) {
+        return 0;
+    }
     const int64_t ms = hle_tl_busy_ns() / 1000000;
     return (jint)(ms > INT32_MAX ? INT32_MAX : ms);
 }
 
 EXPORT JNIEXPORT void JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeGpuGap(JNIEnv *env, jclass cls)
 {
-    hle_tl_gap();
+    if (above_window()) {
+        hle_tl_gap();
+    }
 }
 
 /* The start screen's "Building shaders n / N" line: the pipeline prebuild's

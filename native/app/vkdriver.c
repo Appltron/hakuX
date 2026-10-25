@@ -17,6 +17,13 @@
 #include <string.h>
 #include <strings.h>
 
+static int g_kgsl_prio;                 /* nc_vk_driver_kgsl_priority */
+
+int nc_vk_driver_kgsl_priority(void)
+{
+    return g_kgsl_prio;
+}
+
 #ifdef NC_ADRENOTOOLS
 /* The driver package's meta.json names its vendor: Turnip's is "Mesa". */
 static bool driver_is_mesa(const char *dir)
@@ -102,6 +109,7 @@ void nc_vk_driver_load(const char *spec)
         nc_log("hakuX-app", "Vulkan driver %s from %s%s: %s", lib, from, from == sel ? " (debug.hakux.vkdriver)" : "",
                gipa ? "loaded" : "failed, the system driver it is");
         if (gipa && prio > 0) {
+            g_kgsl_prio = prio;
             nc_log("hakuX-app", "its kgsl draw contexts at priority %d (ringbuffer %d of 0-3)", prio, prio / 4);
         }
     }

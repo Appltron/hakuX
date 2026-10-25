@@ -19,6 +19,10 @@ import android.view.View
  * was busy, still without a break STUCK_MS later, gets one: the render
  * thread lets the GPU run out of work for a moment (nativeGpuGap). An overlay
  * may come late; the game's frames don't wait for it.
+ *
+ * Only where the game's GPU queue is above the window's (Turnip's raised kgsl
+ * priority): elsewhere the window's frames take turns with the game's, and
+ * nativeGpuBusyMs reports 0, so nothing here waits or asks for a gap.
  */
 class OverlayPacer(private val busyMs: () -> Int, private val gap: () -> Unit) {
   private val handler = Handler(Looper.getMainLooper())
