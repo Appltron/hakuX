@@ -70,6 +70,12 @@ enum {
     /* Timestamp queries never resolve (Mali-G615): the GPU time profile
      * (debug) is off. */
     HLE_QUIRK_NO_TIMESTAMPS = 1u << 10,
+    /* A present with a semaphore to wait on waits for it on the CPU, the
+     * queue held (Qualcomm's: Android's present asks the driver for a fence
+     * over it): the presenter waits for its pass itself, unlocked, and
+     * presents with nothing to wait for (vk/swapchain.c). On for every
+     * driver but Turnip, whose present hands the compositor a fence. */
+    HLE_QUIRK_PRESENT_CPU_WAIT = 1u << 11,
 };
 
 extern uint32_t g_hle_quirks;

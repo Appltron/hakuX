@@ -33,6 +33,11 @@ static bool mesa_turnip(const HleDriver *d)
     return d->drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
 }
 
+static bool not_turnip(const HleDriver *d)
+{
+    return !mesa_turnip(d);
+}
+
 static bool arm_proprietary(const HleDriver *d)
 {
     return d->drv.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
@@ -93,6 +98,11 @@ static const HleQuirk k_quirks[] = {
     { HLE_QUIRK_SWAP_W32, "swap_w32", powervr_old },
     /* ARMSX2: "Mali-G615's timestamp queries never resolve" */
     { HLE_QUIRK_NO_TIMESTAMPS, "no_timestamps", mali_g615 },
+    /* Qualcomm's driver: a present waiting on the pass's semaphore waited
+     * 3-6 ms a refresh in the driver, the queue's lock held (Halo 2).
+     * Turnip's makes a sync file and returns (Mesa vk_android.c); the other
+     * drivers are untested, so they keep the wait. */
+    { HLE_QUIRK_PRESENT_CPU_WAIT, "present_cpu_wait", not_turnip },
 };
 
 static uint32_t g_defaults;
