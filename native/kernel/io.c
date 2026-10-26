@@ -1767,7 +1767,13 @@ static uint32_t volume_info(NcKernel *k, const NcFile *nf, uint32_t cls, uint32_
         nc_wr32(o + 4, disc ? 0x01u : 0u); /* FILE_REMOVABLE_MEDIA */
         break;
     case 5: { /* FileFsAttributeInformation: Attributes, MaxComponentNameLength, NameLength, Name */
-        const char *fs = disc ? "CDFS" : "FATX";
+        /* The Xbox's: GDFX the game disc's (XDVDFS), FATX the hard disk's.
+         * XGetFilePhysicalSortKey knows the file control block by this name
+         * (FILE_OBJECT_SIZE) and fails for another: with CDFS every disc
+         * file's key was -1 (invalid parameter), and Fatal Frame II, which
+         * sorts its load queue by them to read in disc order, read in
+         * whatever order its sort left. */
+        const char *fs = disc ? "GDFX" : "FATX";
         len = 12 + 4;
         nc_wr32(o, 0);
         nc_wr32(o + 4, 42);
