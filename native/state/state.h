@@ -119,6 +119,8 @@ typedef struct NcStateSection {
     bool (*load)(NcRd *r, unsigned v);
     /* A state from before the section existed loads without it. */
     bool optional;
+    /* Such a load: the section's part as at power-on (NULL: as it is). */
+    void (*absent)(void);
 } NcStateSection;
 
 /* ---- the state file ------------------------------------------------------- */

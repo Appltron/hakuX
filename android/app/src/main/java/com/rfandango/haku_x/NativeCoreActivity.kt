@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.hardware.input.InputManager
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -38,6 +39,7 @@ import com.rfandango.haku_x.data.Logs
 import com.rfandango.haku_x.data.ModCatalog
 import com.rfandango.haku_x.data.ModChoices
 import com.rfandango.haku_x.data.ModRun
+import com.rfandango.haku_x.data.Network
 import com.rfandango.haku_x.data.PlayerSlot
 import com.rfandango.haku_x.data.RunSettings
 import com.rfandango.haku_x.data.SaveStateStore
@@ -152,14 +154,72 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
         exitGame()
         return
       }
+      nativeTakeTwinConsole()?.let(::showTwinConsole)
       fpsHandler.postDelayed(this, FPS_INTERVAL_MS)
     }
+  }
+
+  /**
+   * Another console on the network has this one's identity (the app's hard
+   * disk copied from one device to the other: the same serial number and MAC
+   * address), and neither sees the other's system link games. Said once a
+   * run, with the way out: a new identity for this console (its HD key kept,
+   * so its saves stay valid), from the game's start, at once.
+   */
+  private var twinShown = false
+
+  private fun showTwinConsole(address: String) {
+    if (twinShown) return
+    twinShown = true
+    Log.i(TAG, "network: the console at $address has this one's identity")
+    showMenuDialog(
+      AlertDialog.Builder(this)
+        .setTitle(R.string.network_twin_title)
+        .setMessage(getString(R.string.network_twin_message, address))
+        .setPositiveButton(R.string.network_twin_renew) { _, _ -> renewIdentity() }
+        .setNegativeButton(R.string.network_twin_later, null)
+    )
+  }
+
+  /** The core gives the console a new identity as it next loads the EEPROM (native/kernel/ex.c eeprom_renew). */
+  private fun renewIdentity() {
+    val marker = File(hddDir(), "eeprom.renew")
+    if (runCatching { marker.writeText("") }.isFailure) {
+      Toast.makeText(this, R.string.network_twin_failed, Toast.LENGTH_LONG).show()
+      return
+    }
+    Log.i(TAG, "network: a new identity asked; the game starts again")
+    restartGame()
+  }
+
+  /** The emulated hard disk's folder (the core's <hdd>). */
+  private fun hddDir() = File(filesDir, "native/hdd")
+
+  /** The game from its start again, in a new core process (RelaunchActivity, no frame held). */
+  private fun restartGame() {
+    if (relaunchStarted) return
+    relaunchStarted = true
+    RelaunchActivity.heldFrame(this).delete()
+    startActivity(
+      Intent(this, RelaunchActivity::class.java)
+        .putExtra(EXTRA_DVD_URI, discUri?.toString() ?: intent.getStringExtra(EXTRA_DVD_URI))
+        .putExtra(EXTRA_RESTART, true)
+        .putExtra(
+          LauncherActivity.EXTRA_LAUNCHED_EXTERNALLY,
+          intent.getBooleanExtra(LauncherActivity.EXTRA_LAUNCHED_EXTERNALLY, false),
+        )
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION),
+      RelaunchActivity.noTransition(this).toBundle(),
+    )
+    finish()
+    RelaunchActivity.noCloseTransition(this)
+    android.os.Process.killProcess(android.os.Process.myPid())
   }
 
   override fun getLibraries(): Array<String> = arrayOf("SDL3", "hakuxcore")
 
   override fun getArguments(): Array<String> {
-    val args = mutableListOf(discArg, File(filesDir, "native/hdd").absolutePath)
+    val args = mutableListOf(discArg, hddDir().absolutePath)
     val state = intent.getStringExtra(EXTRA_LOADSTATE)
     if (state != null) {
       args += "loadstate=$state"
@@ -196,6 +256,21 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
      * meanwhile), and the ones cached built before the game starts. */
     args += "asyncpipe=${if (settings.asyncShaders) 1 else 0}"
     args += "prebuild=${if (settings.prebuildShaders) 1 else 0}"
+    /* The console's network (native/net): system link with the consoles on
+     * this network (their broadcasts reach it under the multicast lock), or
+     * through an XLink Kai engine; off, no cable. */
+    val prefs = AppPrefs(this)
+    when (prefs.networkMode) {
+      AppPrefs.NET_LAN -> {
+        args += "net=lan"
+        Network.broadcastAddress(this)?.let { args += "lanbcast=$it" }
+        prefs.lanPeers.replace(" ", "").takeIf { it.isNotEmpty() }?.let { args += "lanpeers=$it" }
+      }
+      AppPrefs.NET_KAI -> prefs.kaiEngine.trim().takeIf { it.isNotEmpty() }?.let {
+        args += "net=kai"
+        args += "kai=$it"
+      }
+    }
     /* The game's mods (their files and XBE patches) and cheats (mods/):
      * the manifest the core reads as the disc opens. */
     modsArg()?.let { args += it }
@@ -225,6 +300,9 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       else -> "started"
     })
     super.onCreate(savedInstanceState)
+    if (AppPrefs(this).networkMode == AppPrefs.NET_LAN) {
+      multicastLock = Network.multicastLock(this)
+    }
     setupOnScreenController()
     setupFpsOverlay()
     setupShaderBuildLine()
@@ -406,6 +484,7 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     fpsHandler.removeCallbacks(rumbleRunnable)
     loadingDialog?.dismiss()
     (getSystemService(Context.INPUT_SERVICE) as InputManager).unregisterInputDeviceListener(this)
+    multicastLock?.release()
     super.onDestroy()
   }
 
@@ -826,6 +905,8 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
    */
   private var heldView: ImageView? = null
   private var loadingDialog: LoadingDialog? = null
+  /** The Wi-Fi multicast lock, while the game runs on the LAN (data/Network.kt). */
+  private var multicastLock: WifiManager.MulticastLock? = null
   private var heldSince = 0L
   private val heldRunnable = object : Runnable {
     override fun run() {
@@ -999,6 +1080,8 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     const val EXTRA_RELAUNCH = "relaunch"
     /** Boot into the savestate at this path (SaveStates' Load state). */
     const val EXTRA_LOADSTATE = "loadstate"
+    /** RelaunchActivity: the game started again from the start (no launch data, no savestate). */
+    const val EXTRA_RESTART = "restart"
 
     /* native/dev/usb.h NC_PAD_* */
     private const val PAD_UP = 0x01
@@ -1059,6 +1142,10 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     /** The core stopped as the title left (to the dashboard, a reboot, a shutdown). */
     @JvmStatic
     external fun nativeGetQuit(): Boolean
+
+    /** A console on the network with this one's identity: its address, once each; null when no new one. */
+    @JvmStatic
+    external fun nativeTakeTwinConsole(): String?
 
     /** A title frame has been on screen. */
     @JvmStatic

@@ -33,6 +33,8 @@ NC_SECTION_FNS(pbd)   /* hw/xbox/hle/pb/pbstate.c */
 NC_SECTION_FNS(apu)   /* native/dev/apu/state.c */
 NC_SECTION_FNS(aci)   /* native/dev/aci.c */
 NC_SECTION_FNS(usb)   /* native/dev/ohci.c (with the hub and the controllers) */
+NC_SECTION_FNS(nic)   /* native/dev/nvnet.c */
+void nc_nic_state_absent(void);
 NC_SECTION_FNS(misc)  /* native/dev/ports.c */
 NC_SECTION_FNS(mods)  /* native/core/mods.c: the mods' XBE patches in the RAM */
 

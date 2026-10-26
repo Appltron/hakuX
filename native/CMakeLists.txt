@@ -47,6 +47,11 @@ add_library(hakux_native STATIC
   dev/xid.c
   dev/ohci.c
   dev/aci.c
+  dev/nvnet.c
+  net/net.c
+  net/lan.c
+  net/kai.c
+  net/nat.c
   kernel/kernel.c
   kernel/pool.c
   kernel/ob.c

@@ -40,6 +40,13 @@ void nc_dev_apu_init(struct NcVm *vm);
 void nc_dev_apu_spin_wait(const uint32_t *word);
 /* aci.c: the AC'97 audio codec interface (0xFEC00000, IRQ 6). */
 void nc_dev_aci_init(struct NcVm *vm);
+/* nvnet.c: the Ethernet controller (0xFEF00000, IRQ 4) and its link state for
+ * PhyGetLinkState (XNET_ETHERNET_LINK_*; 0: no link). */
+void nc_dev_nvnet_init(struct NcVm *vm);
+/* PhyInitialize: the PHY negotiates its link (up a moment later, with its
+ * interrupt), as the kernel's has it do. */
+void nc_dev_nvnet_phy_init(void);
+uint32_t nc_dev_nvnet_link_state(void);
 
 /* x86 I/O ports (IN/OUT); bytes is 1, 2 or 4. */
 uint32_t nc_port_in(uint16_t port, unsigned bytes);

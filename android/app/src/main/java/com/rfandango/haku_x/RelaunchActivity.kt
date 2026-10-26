@@ -27,7 +27,8 @@ import java.io.File
  * game left on screen (NativeCoreActivity saved it, heldFrame) in a black
  * full-screen window, and starts the core with no transition: the reboot
  * looks like the game's own loading, not like a window closing and another
- * opening.
+ * opening. The same for a savestate's load, and for the game started again
+ * from its start (EXTRA_RESTART: a new console identity).
  */
 class RelaunchActivity : Activity() {
   private val handler = Handler(Looper.getMainLooper())
@@ -41,7 +42,8 @@ class RelaunchActivity : Activity() {
     super.onCreate(savedInstanceState)
     setContentView(ImageView(this).apply {
       scaleType = ImageView.ScaleType.FIT_XY
-      BitmapFactory.decodeFile(heldFrame(this@RelaunchActivity).path)?.let(::setImageBitmap)
+      heldFrame(this@RelaunchActivity).takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.path) }
+        ?.let(::setImageBitmap)
     })
     /* a savestate's load: its dialog, until NativeCoreActivity shows its own */
     loading = intent.getStringExtra(NativeCoreActivity.EXTRA_LOADSTATE)?.let { LoadingDialog(this, it).also { d -> d.show() } }
@@ -67,10 +69,12 @@ class RelaunchActivity : Activity() {
     val core = Intent(this, NativeCoreActivity::class.java)
       .putExtra(NativeCoreActivity.EXTRA_DVD_URI, intent.getStringExtra(NativeCoreActivity.EXTRA_DVD_URI))
       .apply {
-        /* a savestate's load, or the title's own reboot */
+        /* a savestate's load, the title's own reboot, or the game from its start */
         val state = intent.getStringExtra(NativeCoreActivity.EXTRA_LOADSTATE)
         if (state != null) putExtra(NativeCoreActivity.EXTRA_LOADSTATE, state)
-        else putExtra(NativeCoreActivity.EXTRA_RELAUNCH, true)
+        else if (!intent.getBooleanExtra(NativeCoreActivity.EXTRA_RESTART, false)) {
+          putExtra(NativeCoreActivity.EXTRA_RELAUNCH, true)
+        }
       }
       .putExtra(
         LauncherActivity.EXTRA_LAUNCHED_EXTERNALLY,

@@ -238,6 +238,8 @@ fun SettingsScreen(
         modifier = Modifier.clickable { clockDialog = true },
       )
 
+      NetworkSettings(prefs)
+
       Section(stringResource(R.string.settings_section_console_video))
       Hint(stringResource(R.string.settings_console_video_desc))
       ListItem(

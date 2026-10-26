@@ -462,10 +462,12 @@ static const char *read_state(const char *path, NcStateInfo *info, const NcState
     }
     /* in the order this core lists them (the RAM before what refers to it) */
     for (unsigned k = 0; restore && !err && k < nsecs; k++) {
+        bool found = false;
         for (uint32_t i = 0; i < n; i++) {
             if (tab[i].tag != secs[k].tag) {
                 continue;
             }
+            found = true;
             NcRd sr = {p + tab[i].off, (size_t)tab[i].len, 0, false};
             if (tab[i].version != secs[k].version) {
                 nc_log("hakuX-native-state", "%s: version %u read by a version %u core", secs[k].name,
@@ -480,6 +482,9 @@ static const char *read_state(const char *path, NcStateInfo *info, const NcState
                 err = why;
             }
             break;
+        }
+        if (!found && secs[k].absent) {
+            secs[k].absent();
         }
     }
     munmap((void *)p, len);

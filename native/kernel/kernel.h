@@ -398,13 +398,15 @@ void nc_seh_stub(NcKernel *k, NcFrame *f, unsigned ordinal);
 void nc_kernel_title_loaded(NcKernel *k, const struct NcDisc *disc, const struct NcDiscFile *xbe,
                             uint32_t xbe_base, uint32_t image_size);
 /* ex.c: XboxHDKey, the key saves locked to the console are signed with: the
- * EEPROM's bytes 0x36-0x45 (its serial number's last ten digits and its MAC
- * address). It was zero, and XAPI keyed those saves with these bytes then
- * (newer XAPI's fallback for a zero HD key: Forza 0x266ad8) or with the zero
- * key (older XAPI: Halo 0x15b75), a key per XDK; set, every title uses it,
- * and the app re-signs a console's saves to it (SaveResigner). Set at each
- * title's start, and after a state load (the state holds its run's kernel
- * memory). */
+ * HD key in the EEPROM's encrypted section, or, for an image from before
+ * that kept it in the clear (zero), the EEPROM's bytes 0x36-0x45 (its serial
+ * number's last ten digits and its MAC address). It was zero then, and XAPI
+ * keyed those saves with these bytes (newer XAPI's fallback for a zero HD
+ * key: Forza 0x266ad8) or with the zero key (older XAPI: Halo 0x15b75), a
+ * key per XDK; set, every title uses it. An image given an identity of its
+ * own keeps these bytes as its HD key, and the app re-signs a console's
+ * saves to it (SaveResigner). Set at each title's start, and after a state
+ * load (the state holds its run's kernel memory). */
 void nc_kernel_set_hd_key(NcKernel *k);
 
 /* XLaunchNewImage: a title quick-reboots (HalReturnToFirmware 2) into another

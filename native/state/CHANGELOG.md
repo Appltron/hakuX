@@ -39,3 +39,7 @@ One entry per section version (tools/native/statelock.py).
 
 - Contig.protect: a contiguous block's protection, cache bits included (MmAllocateContiguousMemoryEx's ProtectionType, MmSetAddressProtect), for MmQueryAddressProtect (v1 states: 0, read-write)
 - upgraded: v1..v1 states load
+
+## NIC v1 (2026-10-26, after a7063de469)
+
+- first version

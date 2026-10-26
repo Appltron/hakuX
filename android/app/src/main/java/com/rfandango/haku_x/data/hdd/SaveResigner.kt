@@ -172,12 +172,16 @@ class SaveResigner(private val certKey: ByteArray, private val hdKey: ByteArray,
     fun isMeta(name: String) = name.lowercase() in META
 
     /**
-     * The native kernel's HD key (nc_kernel_set_hd_key): bytes 0x36-0x45 of the EEPROM it keeps as
-     * <hdd>/eeprom.bin; before its first run, of the one it makes then (eeprom_create: the serial
-     * number 000000000001, the MAC address 00:50:F2:00:00:01).
+     * The native kernel's HD key (nc_kernel_set_hd_key) for the EEPROM it keeps as <hdd>/eeprom.bin:
+     * the HD key in its encrypted section; for an image from before that kept the section in the
+     * clear, its bytes 0x36-0x45; before its first run, the one it will be made with, which every
+     * console has (that of the identity all shared before: the serial number 000000000001, the MAC
+     * address 00:50:F2:00:00:01).
      */
-    fun nativeHdKey(hdd: File): ByteArray =
-      runCatching { File(hdd, "eeprom.bin").takeIf { it.length() >= 0x46 }?.readBytes()?.copyOfRange(0x36, 0x46) }
-        .getOrNull() ?: ("0000000001".toByteArray() + byteArrayOf(0x00, 0x50, 0xF2.toByte(), 0x00, 0x00, 0x01))
+    fun nativeHdKey(hdd: File): ByteArray {
+      val eeprom = runCatching { File(hdd, "eeprom.bin").takeIf { it.length() >= 0x46 }?.readBytes() }.getOrNull()
+        ?: return "0000000001".toByteArray() + byteArrayOf(0x00, 0x50, 0xF2.toByte(), 0x00, 0x00, 0x01)
+      return ConsoleKeys.hdKey(eeprom) ?: eeprom.copyOfRange(0x36, 0x46)
+    }
   }
 }

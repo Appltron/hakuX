@@ -7,6 +7,7 @@
 #include "native/core/mods.h"
 #include "native/hle/hle_native.h"
 #include "native/kernel/kernel.h"
+#include "native/net/net.h"
 #include "native/state/save.h"
 
 #include <stdlib.h>
@@ -26,7 +27,9 @@ static const char *value(const char *arg, const char *name)
 bool nc_option(NcOptions *o, const char *arg)
 {
     const char *v;
-    if (!strcmp(arg, "uncap")) {
+    if (nc_net_option(arg)) {
+        /* net=, dns=, lanport=, lanbcast=, lanpeers=, kai= (native/net/net.h) */
+    } else if (!strcmp(arg, "uncap")) {
         o->uncap = true;
     } else if (!strcmp(arg, "relaunch")) {
         nc_core_set_relaunch(true);

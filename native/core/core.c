@@ -7,6 +7,7 @@
 #include "native/hle/hle_native.h"
 #include "native/core/mmio.h"
 #include "native/core/mods.h"
+#include "native/net/net.h"
 #include "native/state/save.h"
 
 #include <stdio.h>
@@ -58,6 +59,8 @@ bool nc_core_boot(NcCore *c, int disc_fd)
     nc_dev_apu_init(&c->vm); /* before the catch-all, which would claim its window */
     nc_dev_ohci_init(&c->vm);
     nc_dev_aci_init(&c->vm);
+    nc_net_start();          /* the network the NIC finds, before it */
+    nc_dev_nvnet_init(&c->vm);
     nc_dev_misc_init();
     if (disc_fd < 0) {
         return boot_failed("The game's file can't be opened.");

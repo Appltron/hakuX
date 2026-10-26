@@ -25,6 +25,7 @@
 #include "native/core/options.h"
 #include "native/dev/usb.h"
 #include "native/kernel/kernel.h"
+#include "native/net/net.h"
 #include "native/state/save.h"
 #include "native/hle/hle_native.h"
 
@@ -385,6 +386,16 @@ EXPORT JNIEXPORT jboolean JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_
                                                                                             jclass cls)
 {
     return SDL_GetAtomicInt(&g_core_state) == -1 && g_core.kernel.relaunch;
+}
+
+/* NativeCoreActivity: a console on the network with this one's identity (the
+ * hard disk copied from device to device), its address; once each, null when
+ * no new one (native/net/net.h nc_net_take_twin). */
+EXPORT JNIEXPORT jstring JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeTakeTwinConsole(JNIEnv *env,
+                                                                                               jclass cls)
+{
+    char addr[64];
+    return nc_net_take_twin(addr, sizeof(addr)) ? (*env)->NewStringUTF(env, addr) : NULL;
 }
 
 /* NativeCoreActivity: the core stopped as the title left (to the dashboard, a

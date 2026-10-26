@@ -78,6 +78,9 @@ static const NcStateSection k_sections[] = {
     {NC_TAG('A', 'P', 'U', ' '), "APU", NC_STATE_V_APU, NC_STATE_MIN_APU, nc_apu_state_save, nc_apu_state_load},
     {NC_TAG('A', 'C', 'I', ' '), "ACI", NC_STATE_V_ACI, NC_STATE_MIN_ACI, nc_aci_state_save, nc_aci_state_load},
     {NC_TAG('U', 'S', 'B', ' '), "USB", NC_STATE_V_USB, NC_STATE_MIN_USB, nc_usb_state_save, nc_usb_state_load},
+    /* the Ethernet controller: none in states from before it */
+    {NC_TAG('N', 'I', 'C', ' '), "NIC", NC_STATE_V_NIC, NC_STATE_MIN_NIC, nc_nic_state_save, nc_nic_state_load, true,
+     nc_nic_state_absent},
     /* the patches the RAM has: what a load with other mods takes back
      * (nc_mods_after_load) */
     {NC_TAG('M', 'O', 'D', 'S'), "MODS", NC_STATE_V_MODS, NC_STATE_MIN_MODS, nc_mods_state_save, nc_mods_state_load,

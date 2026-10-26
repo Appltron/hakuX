@@ -10,8 +10,11 @@
 #include "native/core/xbe_load.h"
 #include "native/core/xdvdfs.h"
 #include "native/dev/dev.h"
+#include "native/kernel/xc_crypto.h"
+#include "native/net/net.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
@@ -162,8 +165,83 @@ static uint32_t eeprom_checksum(const uint8_t *p, unsigned len)
     return ~(high + low);
 }
 
+/* The encrypted (security) section, 0x00-0x2F, as the kernel decrypts it:
+ * hash 0x00, confounder 0x14, HD key 0x1C, game region 0x2C. It is RC4 with
+ * HMAC-SHA1(EEPROM key, hash) as the key and checks by its hash, HMAC-SHA1
+ * (EEPROM key, confounder..region). The EEPROM keys are known by their HMAC
+ * midstates (xemu's hw/xbox/eeprom_generation.c, the app's ConsoleKeys):
+ * a new image uses MCPX 1.0's. An image from before (sec_plain) kept the
+ * section in the clear, its HD key zero (nc_kernel_set_hd_key). */
+static const uint32_t k_eeprom_keys[][2][5] = {
+    {{0x72127625, 0x336472B9, 0xBE609BEA, 0xF55E226B, 0x99958DAC},     /* 1.0 */
+     {0x76441D41, 0x4DE82659, 0x2E8EF85E, 0xB256FACA, 0xC4FE2DE8}},
+    {{0x39B06E79, 0xC9BD25E8, 0xDBC6B498, 0x40B4389D, 0x86BBD7ED},     /* 1.1-1.4 */
+     {0x9B49BED3, 0x84B430FC, 0x6B8749CD, 0xEBFE5FE5, 0xD96E7393}},
+    {{0x8058763A, 0xF97D4E0E, 0x865A9762, 0x8A3D920D, 0x08995B2C},     /* 1.6 */
+     {0x01075307, 0xA2F1E037, 0x1186EEEA, 0x88DA9992, 0x168A5609}},
+    {{0x85F9E51A, 0xE04613D2, 0x6D86A50C, 0x77C32E3C, 0x4BD717A4},     /* debug */
+     {0x5D7A9C6B, 0xE1922BEB, 0xB82CCDBC, 0x3137AB34, 0x486B52B3}},
+};
+static void eeprom_store(void);
+static uint8_t g_sec[0x30];             /* the section decrypted */
+static bool g_sec_plain;                /* kept in the clear (an image from before) */
+static unsigned g_sec_key;              /* the k_eeprom_keys entry it's under */
+
+static void sec_hmac(unsigned key, const uint8_t *data, size_t len, uint8_t out[20])
+{
+    NcSha1 s;
+    nc_sha1_init(&s);
+    memcpy(s.h, k_eeprom_keys[key][0], sizeof(s.h));
+    s.len = 64;                         /* the key's inner block, done */
+    nc_sha1_update(&s, data, len);
+    uint8_t inner[20];
+    nc_sha1_final(&s, inner);
+    nc_sha1_init(&s);
+    memcpy(s.h, k_eeprom_keys[key][1], sizeof(s.h));
+    s.len = 64;
+    nc_sha1_update(&s, inner, sizeof(inner));
+    nc_sha1_final(&s, out);
+}
+
+/* g_sec into the image, encrypted (its hash made anew). */
+static void sec_encrypt(void)
+{
+    uint8_t seed[20];
+    sec_hmac(g_sec_key, g_sec + 0x14, 0x1C, g_sec);
+    sec_hmac(g_sec_key, g_sec, 20, seed);
+    memcpy(g_eeprom, g_sec, 0x30);
+    NcRc4 r;
+    nc_rc4_key(&r, seed, sizeof(seed));
+    nc_rc4_crypt(&r, g_eeprom + 0x14, 0x1C);
+}
+
+/* The image's section decrypted into g_sec, under the first key it checks
+ * with; false: none (kept in the clear). */
+static bool sec_decrypt(void)
+{
+    for (unsigned key = 0; key < sizeof(k_eeprom_keys) / sizeof(k_eeprom_keys[0]); key++) {
+        uint8_t seed[20], plain[0x1C], hash[20];
+        sec_hmac(key, g_eeprom, 20, seed);
+        memcpy(plain, g_eeprom + 0x14, sizeof(plain));
+        NcRc4 r;
+        nc_rc4_key(&r, seed, sizeof(seed));
+        nc_rc4_crypt(&r, plain, sizeof(plain));
+        sec_hmac(key, plain, sizeof(plain), hash);
+        if (!memcmp(hash, g_eeprom, 20)) {
+            memcpy(g_sec, g_eeprom, 20);
+            memcpy(g_sec + 0x14, plain, sizeof(plain));
+            g_sec_key = key;
+            return true;
+        }
+    }
+    return false;
+}
+
 static void eeprom_seal(void)
 {
+    if (!g_sec_plain) {
+        sec_encrypt();
+    }
     nc_wr32(g_eeprom + 0x30, eeprom_checksum(g_eeprom + 0x34, 0x2C));
     nc_wr32(g_eeprom + 0x60, eeprom_checksum(g_eeprom + 0x64, 0x5C));
 }
@@ -173,34 +251,111 @@ static void eeprom_path(char *p, size_t len)
     snprintf(p, len, "%s/eeprom.bin", nc_io_hdd_root());
 }
 
-/* A new console's EEPROM: a fixed serial and MAC, English, stereo, no
- * parental limits, the region of the first title it runs. */
+/* The HD key every console had before they got identities of their own
+ * (the bytes at 0x36 of the image then): the saves locked to the console,
+ * and the ones the app re-signs for it before its first boot, use it. */
+static const uint8_t k_legacy_hd_key[16] = {'0', '0', '0', '0', '0', '0', '0', '0', '0', '1',
+                                            0x00, 0x50, 0xF2, 0x00, 0x00, 0x01};
+
+/* A console of its own: a serial number, a MAC address (Microsoft's
+ * 00:50:F2 block), an online key and a confounder at random, hd_key as the
+ * HD key. Two consoles on a network need different MACs (system link), Xbox
+ * Live services different serials. The section is encrypted under the key
+ * it was (a new or clear one's: MCPX 1.0's). */
+static void eeprom_identity(const uint8_t hd_key[16])
+{
+    uint8_t rnd[12];
+    arc4random_buf(rnd, sizeof(rnd));
+    for (unsigned i = 0; i < 12; i++) {
+        g_eeprom[0x34 + i] = (uint8_t)('0' + rnd[i] % 10);
+    }
+    g_eeprom[0x40] = 0x00;
+    g_eeprom[0x41] = 0x50;
+    g_eeprom[0x42] = 0xF2;
+    arc4random_buf(g_eeprom + 0x43, 3);
+    arc4random_buf(g_eeprom + 0x48, 16);                    /* online key */
+    arc4random_buf(g_sec + 0x14, 8);                        /* confounder */
+    memcpy(g_sec + 0x1C, hd_key, 16);
+    g_sec_plain = false;
+    eeprom_seal();
+}
+
+/* The image loaded given an identity of its own, its HD key kept (the saves
+ * locked to the console stay valid), and stored. */
+static void eeprom_reidentify(void)
+{
+    uint8_t hd_key[16];
+    if (g_sec_plain) {
+        memcpy(hd_key, g_eeprom + 0x36, sizeof(hd_key));   /* nc_kernel_set_hd_key's */
+        memcpy(g_sec + 0x2C, g_eeprom + 0x2C, 4);           /* the region, from the clear section */
+    } else {
+        memcpy(hd_key, g_sec + 0x1C, sizeof(hd_key));
+    }
+    eeprom_identity(hd_key);
+    eeprom_store();
+}
+
+/* A new console's EEPROM: English, stereo, no parental limits, the region
+ * of the first title it runs, an identity of its own but the HD key all
+ * have. */
 static void eeprom_create(NcKernel *k)
 {
     const bool pal = k->game_region == 4;
     memset(g_eeprom, 0, sizeof(g_eeprom));
-    nc_wr32(g_eeprom + 0x2C, k->game_region ? k->game_region : 1);
-    memcpy(g_eeprom + 0x34, "000000000001", 12);
-    static const uint8_t mac[6] = {0x00, 0x50, 0xF2, 0x00, 0x00, 0x01};
-    memcpy(g_eeprom + 0x40, mac, sizeof(mac));
+    memset(g_sec, 0, sizeof(g_sec));
+    nc_wr32(g_sec + 0x2C, k->game_region ? k->game_region : 1);
     nc_wr32(g_eeprom + 0x58, pal ? 0x00800300u : 0x00400100u); /* PAL-I / NTSC-M */
     nc_wr32(g_eeprom + 0x90, 1);                                 /* English */
     nc_wr32(g_eeprom + 0xBC, pal ? 2 : 1);                       /* DVD region */
-    eeprom_seal();
+    eeprom_identity(k_legacy_hd_key);
 }
 
+/* An image from before kept everyone's identity: serial 000000000001, MAC
+ * 00:50:F2:00:00:01 and its section in the clear. On a network it needs its
+ * own (two such consoles can't system-link): a new serial, MAC and online
+ * key, the HD key the bytes it had (nc_kernel_set_hd_key's, so the saves
+ * locked to the console stay valid). */
+static void eeprom_upgrade(void)
+{
+    static const uint8_t mac[6] = {0x00, 0x50, 0xF2, 0x00, 0x00, 0x01};
+    if (!g_sec_plain || memcmp(g_eeprom + 0x34, "000000000001", 12) || memcmp(g_eeprom + 0x40, mac, 6) ||
+        nc_net_mode() == NC_NET_OFF) {
+        return;
+    }
+    eeprom_reidentify();
+    nc_log("hakuX-native", "ex: the console has an identity of its own for the network (its HD key kept)");
+}
+
+/* The app asked for a new identity (<hdd>/eeprom.renew): another console on
+ * the network had this one's (nc_net_twin), the hard disk copied from one
+ * device to the other. */
+static void eeprom_renew(void)
+{
+    char p[330];
+    snprintf(p, sizeof(p), "%s/eeprom.renew", nc_io_hdd_root());
+    if (access(p, F_OK) != 0) {
+        return;
+    }
+    eeprom_reidentify();
+    unlink(p);
+    nc_log("hakuX-native", "ex: a new identity for the console, as the app asked (its HD key kept)");
+}
+
+/* The image, whole or not at all: a new file put in the old one's place. */
 static void eeprom_store(void)
 {
-    char p[320];
+    char p[320], tmp[330];
     eeprom_path(p, sizeof(p));
-    FILE *out = fopen(p, "wb");
-    if (!out || fwrite(g_eeprom, 1, sizeof(g_eeprom), out) != sizeof(g_eeprom)) {
-        nc_log("hakuX-native", "ex: can't keep the EEPROM in %s", p);
-    }
+    snprintf(tmp, sizeof(tmp), "%s.new", p);
+    FILE *out = fopen(tmp, "wb");
+    bool ok = out && fwrite(g_eeprom, 1, sizeof(g_eeprom), out) == sizeof(g_eeprom);
     if (out) {
-        fflush(out);
-        fsync(fileno(out));
-        fclose(out);
+        ok = fflush(out) == 0 && fsync(fileno(out)) == 0 && ok;
+        ok = fclose(out) == 0 && ok;
+    }
+    if (!ok || rename(tmp, p) != 0) {
+        nc_log("hakuX-native", "ex: can't keep the EEPROM in %s", p);
+        unlink(tmp);
     }
 }
 
@@ -214,16 +369,29 @@ static uint8_t *eeprom(NcKernel *k)
         if (in) {
             fclose(in);
         }
-        if (!have) {
+        if (!have && in) {
+            eeprom_create(k);                   /* the file kept as it is: someone's, maybe a real console's */
+            nc_log("hakuX-native", "ex: %s isn't a whole EEPROM: a new one for this run", p);
+        } else if (!have) {
             eeprom_create(k);
             eeprom_store();
             nc_log("hakuX-native", "ex: new console EEPROM in %s", p);
+        } else {
+            g_sec_plain = !sec_decrypt();
+            if (g_sec_plain) {
+                memcpy(g_sec, g_eeprom, sizeof(g_sec));
+            }
+            eeprom_upgrade();
+            eeprom_renew();
         }
         /* The regions follow the running title (a library mixes NTSC and
          * PAL discs); the rest stays as stored. A title always sees the
          * same image. */
         const bool pal = k->game_region == 4;
-        nc_wr32(g_eeprom + 0x2C, k->game_region ? k->game_region : 1);
+        nc_wr32(g_sec + 0x2C, k->game_region ? k->game_region : 1);
+        if (g_sec_plain) {
+            memcpy(g_eeprom + 0x2C, g_sec + 0x2C, 4);
+        }
         nc_wr32(g_eeprom + 0x58, pal ? 0x00800300u : 0x00400100u);
         nc_wr32(g_eeprom + 0xBC, pal ? 2 : 1);
         /* So do the video settings: the app's (widescreen, 480p...). */
@@ -244,6 +412,9 @@ static uint8_t *eeprom(NcKernel *k)
         g_eeprom_ready = true;
         nc_log("hakuX-native", "ex: video flags %08x, AV pack %d, language %u, time zone bias %d min",
                nc_rd32(g_eeprom + 0x94), g_av_pack, nc_rd32(g_eeprom + 0x90), (int32_t)nc_rd32(g_eeprom + 0x64));
+        nc_log("hakuX-native", "ex: console serial %.12s, MAC %02x:%02x:%02x:%02x:%02x:%02x%s", g_eeprom + 0x34,
+               g_eeprom[0x40], g_eeprom[0x41], g_eeprom[0x42], g_eeprom[0x43], g_eeprom[0x44], g_eeprom[0x45],
+               g_sec_plain ? " (an image from before: its section in the clear)" : "");
     }
     return g_eeprom;
 }
@@ -282,7 +453,10 @@ static uint64_t ExQueryNonVolatileSetting(NcKernel *k, NcFrame *f, const uint32_
     if (a[3] < s->size) {
         return 0xC0000023u; /* STATUS_BUFFER_TOO_SMALL */
     }
-    memcpy(nc_vm_host(k->vm, a[2]), eeprom(k) + s->offset, s->size);
+    const uint8_t *e = eeprom(k);
+    /* the game region is the encrypted section's, decrypted (the kernel's
+     * copy); the sections whole are the image's, as the chip has them */
+    memcpy(nc_vm_host(k->vm, a[2]), s->index == 0x104 ? g_sec + 0x2C : e + s->offset, s->size);
     return NC_STATUS_SUCCESS;
 }
 
@@ -596,6 +770,22 @@ static uint64_t HalNothing(NcKernel *k, NcFrame *f, const uint32_t *a)
     return 0;
 }
 
+/* PhyGetLinkState(Update): the Ethernet link as XNET_ETHERNET_LINK_* flags
+ * (active, 100 Mb/s, full duplex), 0 without a network (native/net). */
+static uint64_t PhyGetLinkState(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    return nc_dev_nvnet_link_state();
+}
+
+/* PhyInitialize(ForceReset, Parameter): the PHY negotiates the link again;
+ * the NIC driver (the title's XNet) starts once the link-change interrupt
+ * comes. Success either way. */
+static uint64_t PhyInitialize(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    nc_dev_nvnet_phy_init();
+    return NC_STATUS_SUCCESS;
+}
+
 static uint32_t data_va(NcKernel *k, const char *name);
 
 void nc_kernel_relaunch_file(char *out, size_t n)
@@ -783,7 +973,8 @@ void nc_kernel_set_hd_key(NcKernel *k)
 {
     const uint32_t va = data_va(k, "XboxHDKey");
     if (va) {
-        memcpy(nc_vm_host(k->vm, va), eeprom(k) + 0x36, 16);
+        const uint8_t *e = eeprom(k);
+        memcpy(nc_vm_host(k->vm, va), g_sec_plain ? e + 0x36 : g_sec + 0x1C, 16);
     }
 }
 
@@ -814,8 +1005,8 @@ void nc_ex_register(NcKernel *k)
     nc_kernel_impl(k, "HalWriteSMBusValue", HalNothing);
     nc_kernel_impl(k, "FscGetCacheSize", FscGetCacheSize);
     nc_kernel_impl(k, "FscSetCacheSize", HalNothing);
-    nc_kernel_impl(k, "PhyGetLinkState", HalNothing);
-    nc_kernel_impl(k, "PhyInitialize", HalNothing);
+    nc_kernel_impl(k, "PhyGetLinkState", PhyGetLinkState);
+    nc_kernel_impl(k, "PhyInitialize", PhyInitialize);
     nc_kernel_impl(k, "KeBugCheck", KeBugCheck);
     nc_kernel_impl(k, "KeStallExecutionProcessor", HalNothing);
     nc_kernel_impl(k, "KeSaveFloatingPointState", KeFloatingPointState);
