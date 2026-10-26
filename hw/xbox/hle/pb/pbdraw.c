@@ -1812,30 +1812,46 @@ static uint32_t object_at(uint32_t pa)
     return best ? best->id : 0;
 }
 
-/* A cube texture over the memory of six face targets (pa + face * stride,
- * w x w, swizzled): an image of its own whose faces those targets become,
- * views into it (as D3D mode's cube render targets), so what the faces
- * render is what the cube samples. Made once; 0 when not all six faces are
- * targets. Forza renders its cars' reflection cube this way; sampled as
- * face 0's 2D image, the cars' glass and roofs came out white. */
-static uint32_t cube_of_targets(uint32_t pa, uint32_t w, uint32_t stride)
+/* A colour target whose memory is exactly face f of a cube (w x w texels
+ * of bytes each at pa + f * stride): swizzled, or linear rows of w. */
+static bool face_target(const PbObj *o, uint32_t pa, uint32_t w, uint32_t bytes)
+{
+    const HleFmtInfo *oi = !o->cube && !o->d.parent && o->d.pa == pa && o->d.w == w && o->d.h == w ?
+                           hle_fmt_info(o->d.xfmt) : NULL;
+    return oi && !(oi->flags & (HLE_FI_DEPTH | HLE_FI_DXT)) && oi->bpp / 8 == bytes &&
+           (!o->d.pitch || o->d.pitch == w * bytes);
+}
+
+/* A cube texture (format code, w x w) over the memory of six face targets
+ * (pa + face * stride): an image of its own whose faces those targets
+ * become, views into it (as D3D mode's cube render targets), so what the
+ * faces render is what the cube samples. Every target over a face's memory
+ * becomes its view, whatever its layout, as a 2D texture over a target's
+ * memory samples its image (texture). Made once; 0 when a face has no
+ * target. Forza renders its cars' reflection cube this way; sampled as
+ * face 0's 2D image, the cars' glass and roofs came out white. Sega GT
+ * 2002's sun cube for its cars' highlights is cleared black each frame
+ * through linear targets (five faces) and its sun drawn into the sixth
+ * swizzled: with swizzled faces only, no cube, and the cars were white. */
+static uint32_t cube_of_targets(uint32_t pa, uint32_t code, uint32_t w, uint32_t stride)
 {
     for (unsigned i = 0; i < g_pd.nobjs; i++) {
         if (g_pd.objs[i].cube && g_pd.objs[i].d.pa == pa && g_pd.objs[i].d.w == w) {
             return g_pd.objs[i].id;
         }
     }
-    PbObj *face[6];
+    const HleFmtInfo *fi = hle_fmt_info(code);
+    const uint32_t bytes = fi ? fi->bpp / 8 : 0;
+    uint32_t xfmt = 0;  /* a target's: one the GPU renders (the texture's may not be, A4R4G4B4) */
     for (unsigned f = 0; f < 6; f++) {
-        face[f] = NULL;
-        for (unsigned i = 0; i < g_pd.nobjs && !face[f]; i++) {
-            PbObj *o = &g_pd.objs[i];
-            if (!o->cube && o->d.pa == pa + f * stride && o->d.pitch == 0 && o->d.w == w &&
-                o->d.h == w && !o->d.parent) {
-                face[f] = o;
+        bool found = false;
+        for (unsigned i = 0; i < g_pd.nobjs && !found; i++) {
+            found = face_target(&g_pd.objs[i], pa + f * stride, w, bytes);
+            if (found && !f) {
+                xfmt = g_pd.objs[i].d.xfmt;
             }
         }
-        if (!face[f] || g_pd.nobjs >= MAX_OBJS) {
+        if (!found || g_pd.nobjs >= MAX_OBJS) {
             return 0;
         }
     }
@@ -1843,30 +1859,35 @@ static uint32_t cube_of_targets(uint32_t pa, uint32_t w, uint32_t stride)
     memset(c, 0, sizeof(*c));
     c->id = g_pd.next_id++;
     c->cube = true;
-    c->d = (HleSurfDesc){ .id = c->id, .xfmt = face[0]->d.xfmt, .w = w, .h = w, .pa = pa,
-                          .levels = 1, .faces = 6 };
+    c->d = (HleSurfDesc){ .id = c->id, .xfmt = xfmt, .w = w, .h = w, .pa = pa, .levels = 1, .faces = 6 };
     HleCmdObj *oc = begin(HLE_OP_OBJ_CREATE, sizeof(*oc));
     oc->s = c->d;
     hle_fe_commit();
     for (unsigned f = 0; f < 6; f++) {
-        /* the face's own image goes; the target is a view from now on */
-        HleCmdObjDestroy *x = begin(HLE_OP_OBJ_DESTROY, sizeof(*x));
-        x->after = 0;
-        x->id = face[f]->id;
-        hle_fe_commit();
-        if (g_pd.rt == face[f]->id) {
-            g_pd.rt = 0;                    /* bound again at the next draw */
-            g_pd.rt_dirty = true;
+        for (unsigned i = 0; i < g_pd.nobjs; i++) {
+            PbObj *o = &g_pd.objs[i];
+            if (!face_target(o, pa + f * stride, w, bytes)) {
+                continue;
+            }
+            /* the face's own image goes; the target is a view from now on */
+            HleCmdObjDestroy *x = begin(HLE_OP_OBJ_DESTROY, sizeof(*x));
+            x->after = 0;
+            x->id = o->id;
+            hle_fe_commit();
+            if (g_pd.rt == o->id) {
+                g_pd.rt = 0;                /* bound again at the next draw */
+                g_pd.rt_dirty = true;
+            }
+            o->id = g_pd.next_id++;
+            o->d.id = o->id;
+            o->d.parent = c->id;
+            o->d.face = (uint16_t)f;
+            o->d.levels = 1;
+            o->d.faces = 1;
+            HleCmdObj *v = begin(HLE_OP_OBJ_CREATE, sizeof(*v));
+            v->s = o->d;
+            hle_fe_commit();
         }
-        face[f]->id = g_pd.next_id++;
-        face[f]->d.id = face[f]->id;
-        face[f]->d.parent = c->id;
-        face[f]->d.face = (uint16_t)f;
-        face[f]->d.levels = 1;
-        face[f]->d.faces = 1;
-        HleCmdObj *v = begin(HLE_OP_OBJ_CREATE, sizeof(*v));
-        v->s = face[f]->d;
-        hle_fe_commit();
     }
     hle_log("hakuX-hle-pb", "cube %u: %ux%u at %08x (face stride %x) from its face targets", c->id,
             w, w, pa, stride);
@@ -2323,7 +2344,7 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
             stride += lw * lw * (fi->bpp / 8);
         }
         stride = (stride + 127) & ~127u;    /* faces 128-byte aligned (XGSetCubeTextureHeader) */
-        const uint32_t cube = cube_of_targets(pa, cw, stride);
+        const uint32_t cube = cube_of_targets(pa, code, cw, stride);
         if (cube) {
             return cube;
         }
