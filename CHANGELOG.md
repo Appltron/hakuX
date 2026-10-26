@@ -2,7 +2,7 @@
 
 ## v1.2.0
 
-System link .
+System link, stability and compatibility improvements.
 
 ### Network
 - **System link over your network** — Settings → Network → System link → LAN: hakuX devices on the same Wi-Fi network find each other as Xbox consoles on a LAN do. Devices the network's broadcasts don't reach, on another subnet or a VPN such as ZeroTier or Tailscale, are added by address under Other consoles
