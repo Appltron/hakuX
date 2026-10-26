@@ -126,7 +126,8 @@ typedef struct NcFile {
 
 /* Open files at once: the handle table's size. Fatal Frame opens most of its
  * disc's 1821 files as it boots and keeps them open; at 1024 the rest failed
- * (insufficient resources), and the load waited for one forever. */
+ * (insufficient resources), and the load waited for one forever. Untouched
+ * slots cost nothing: a slot is cleared as it is taken (file_new). */
 #define MAX_FILES NC_MAX_HANDLES
 #define MAX_LINKS 64
 /* FILE_OBJECT as the Xbox lays it out: Type +0, FsContext +8, Lock (a
@@ -2497,8 +2498,8 @@ static void file_drop(NcFile *nf)
             close(nf->fd);
         }
         free(nf->listing);
+        memset(nf, 0, sizeof(*nf));     /* only those used: the rest stay untouched */
     }
-    memset(nf, 0, sizeof(*nf));
 }
 
 bool nc_file_state_load(NcRd *r, unsigned v)
