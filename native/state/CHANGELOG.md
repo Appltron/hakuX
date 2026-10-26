@@ -34,3 +34,8 @@ One entry per section version (tools/native/statelock.py).
 
 - NcKernel.handles_more: the handle table grows from 4096 slots to 16384 (Super Monkey Ball Deluxe keeps ~6100 files open); its slots past 4096 (v1 states: none, all free)
 - upgraded: v1..v1 states load
+
+## MM v2 (2026-10-26, after d5616b97b1)
+
+- Contig.protect: a contiguous block's protection, cache bits included (MmAllocateContiguousMemoryEx's ProtectionType, MmSetAddressProtect), for MmQueryAddressProtect (v1 states: 0, read-write)
+- upgraded: v1..v1 states load

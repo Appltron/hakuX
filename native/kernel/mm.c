@@ -43,6 +43,8 @@ typedef struct Contig {
     uint32_t va, size;
     uint32_t ra;    /* the caller's return address (who holds the memory) */
     uint32_t slack; /* free pages above it it took (contig_alloc), freed with it */
+    uint32_t protect; /* its pages' protection, cache bits included (MmQueryAddressProtect);
+                         0: PAGE_READWRITE (a state from before it was kept) */
 } Contig;
 
 static Contig g_contig[MAX_CONTIG];
@@ -532,7 +534,7 @@ static void log_phys_map(NcKernel *k)
 }
 
 static uint32_t contig_alloc(NcKernel *k, uint32_t size, uint32_t lo, uint32_t hi, uint32_t align,
-                             uint32_t ra)
+                             uint32_t protect, uint32_t ra)
 {
     size = nc_align_up(size ? size : 1, NC_PAGE);
     /* The top of RAM, virtual pages moved out of the way (vm.c), then the
@@ -588,7 +590,7 @@ static uint32_t contig_alloc(NcKernel *k, uint32_t size, uint32_t lo, uint32_t h
         slack += NC_PAGE;
     }
     const uint32_t va = NC_CONTIG_WINDOW | pa;
-    g_contig[g_ncontig++] = (Contig){va, size, ra, slack};
+    g_contig[g_ncontig++] = (Contig){va, size, ra, slack, protect};
     return va;
 }
 
@@ -596,6 +598,17 @@ static Contig *contig_at(uint32_t va)
 {
     for (unsigned i = 0; i < g_ncontig; i++) {
         if (g_contig[i].va == va) {
+            return &g_contig[i];
+        }
+    }
+    return NULL;
+}
+
+/* The block whose pages hold va. */
+static Contig *contig_holding(uint32_t va)
+{
+    for (unsigned i = 0; i < g_ncontig; i++) {
+        if (va - g_contig[i].va < g_contig[i].size) {
             return &g_contig[i];
         }
     }
@@ -632,13 +645,14 @@ uint32_t nc_mm_contig_free_callers(NcKernel *k, uint32_t lo, uint32_t hi)
 
 uint32_t nc_mm_contig_alloc(NcKernel *k, uint32_t size)
 {
-    return contig_alloc(k, size, 0, 0, NC_PAGE, 0);
+    return contig_alloc(k, size, 0, 0, NC_PAGE, PAGE_READWRITE, 0);
 }
 
-/* MmAllocateContiguousMemory(NumberOfBytes) */
+/* MmAllocateContiguousMemory(NumberOfBytes): read-write (the kernel's Ex
+ * with PAGE_READWRITE) */
 static uint64_t MmAllocateContiguousMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    return contig_alloc(k, a[0], 0, 0, NC_PAGE, caller_of(k, f));
+    return contig_alloc(k, a[0], 0, 0, NC_PAGE, PAGE_READWRITE, caller_of(k, f));
 }
 
 /* MmAllocateContiguousMemoryEx(NumberOfBytes, LowestAcceptableAddress,
@@ -646,7 +660,7 @@ static uint64_t MmAllocateContiguousMemory(NcKernel *k, NcFrame *f, const uint32
 static uint64_t MmAllocateContiguousMemoryEx(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     uint32_t hi = a[2] >= k->vm->ram_size - 1 ? 0 : a[2] + 1;
-    return contig_alloc(k, a[0], a[1], hi, a[3] ? a[3] : NC_PAGE, caller_of(k, f));
+    return contig_alloc(k, a[0], a[1], hi, a[3] ? a[3] : NC_PAGE, a[4], caller_of(k, f));
 }
 
 /* MmFreeContiguousMemory(BaseAddress) */
@@ -659,7 +673,7 @@ static uint64_t MmFreeContiguousMemory(NcKernel *k, NcFrame *f, const uint32_t *
 /* MmAllocateSystemMemory(NumberOfBytes, Protect) */
 static uint64_t MmAllocateSystemMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    return contig_alloc(k, a[0], 0, 0, NC_PAGE, caller_of(k, f));
+    return contig_alloc(k, a[0], 0, 0, NC_PAGE, a[1], caller_of(k, f));
 }
 
 /* MmFreeSystemMemory(BaseAddress, NumberOfBytes) -> pages freed */
@@ -723,7 +737,7 @@ static uint64_t MmLockUnlockPhysicalPage(NcKernel *k, NcFrame *f, const uint32_t
     return 0;
 }
 
-/* MmSetAddressProtect, MmUnmapIoSpace: nothing to do. */
+/* MmUnmapIoSpace: nothing to do. */
 static uint64_t MmNothing(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     return 0;
@@ -841,7 +855,7 @@ uint32_t nc_mm_keep_restore(NcKernel *k)
             }
             continue;
         }
-        g_contig[g_ncontig++] = (Contig){va, size, 0, 0};
+        g_contig[g_ncontig++] = (Contig){va, size, 0, 0, PAGE_READWRITE};
         g_kept[g_nkept].va = va;
         g_kept[g_nkept++].len = len;
         nc_log("hakuX-native-mm", "kept memory %08x+%u restored", va, len);
@@ -861,10 +875,32 @@ unsigned nc_mm_kept(uint32_t *pa, uint32_t *len, unsigned max)
     return n;
 }
 
-/* MmQueryAddressProtect(VirtualAddress) */
+/* MmQueryAddressProtect(VirtualAddress): the page's protection as it was
+ * allocated or set, cache bits included. Ultimate Spider-Man's free() tells
+ * its write-combined contiguous blocks (PAGE_READWRITE | PAGE_WRITECOMBINE)
+ * by them: told PAGE_READWRITE, it freed one as a heap block, through the
+ * dword before it (a fault the title doesn't handle, at boot). */
 static uint64_t MmQueryAddressProtect(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    return nc_vm_phys(k->vm, a[0]) == UINT32_MAX ? 0 : PAGE_READWRITE;
+    if (nc_vm_phys(k->vm, a[0]) == UINT32_MAX) {
+        return 0;
+    }
+    const Contig *c = contig_holding(a[0]);
+    const Region *r = c ? NULL : region_at(a[0]);
+    const uint32_t p = c ? c->protect : r ? r->protect : 0;
+    return p ? p : PAGE_READWRITE;
+}
+
+/* MmSetAddressProtect(BaseAddress, NumberOfBytes, NewProtect): recorded for
+ * MmQueryAddressProtect, for the contiguous block it falls in (memory is flat
+ * here: no access checks) */
+static uint64_t MmSetAddressProtect(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    Contig *c = contig_holding(a[0]);
+    if (c) {
+        c->protect = a[2];
+    }
+    return 0;
 }
 
 /* MmClaimGpuInstanceMemory(NumberOfBytes, NumberOfPaddingBytes): the GPU's
@@ -957,7 +993,7 @@ void nc_mm_register(NcKernel *k)
     nc_kernel_impl(k, "MmGetPhysicalAddress", MmGetPhysicalAddress);
     nc_kernel_impl(k, "MmIsAddressValid", MmIsAddressValid);
     nc_kernel_impl(k, "MmPersistContiguousMemory", MmPersistContiguousMemory);
-    nc_kernel_impl(k, "MmSetAddressProtect", MmNothing);
+    nc_kernel_impl(k, "MmSetAddressProtect", MmSetAddressProtect);
     nc_kernel_impl(k, "MmLockUnlockBufferPages", MmLockUnlockBufferPages);
     nc_kernel_impl(k, "MmLockUnlockPhysicalPage", MmLockUnlockPhysicalPage);
     nc_kernel_impl(k, "MmUnmapIoSpace", MmNothing);
