@@ -296,6 +296,19 @@ static uint64_t RtlNtStatusToDosError(NcKernel *k, NcFrame *f, const uint32_t *a
 
 uint32_t nc_rtl_status_to_dos(uint32_t status)
 {
+    /* an HRESULT first, as Windows' (and the Xbox kernel's): a customer
+     * code passes as it is, a Win32 error's (HRESULT_FROM_WIN32: XNet's
+     * socket errors, WSAEWOULDBLOCK among them) is that error, an NT
+     * status's (HRESULT_FROM_NT) is the status's */
+    if (status & 0x20000000u) {
+        return status;
+    }
+    if ((status & 0xFFFF0000u) == 0x80070000u) {
+        return status & 0xFFFFu;
+    }
+    if ((status & 0xF0000000u) == 0xD0000000u) {
+        status &= 0xCFFFFFFFu;
+    }
     /* every status the kernel returns (Windows' mapping) */
     static const uint32_t map[][2] = {
         {0x00000000u, 0},   {0x00000102u, 258}, {0x00000103u, 997}, {0x80000005u, 234}, {0x80000006u, 18},
