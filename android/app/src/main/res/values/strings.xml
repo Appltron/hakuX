@@ -443,7 +443,6 @@
   <string name="controllers_map_default">default buttons</string>
   <string name="controllers_map_model">buttons of this model</string>
   <string name="controllers_map_unit">its own buttons</string>
-  <string name="controllers_next_start">A player turned on or off takes effect the next time the game starts.</string>
   <string name="controllers_mapping_title">Controller buttons</string>
   <string name="controllers_gone">This controller is no longer connected.</string>
   <string name="controllers_test">Test</string>

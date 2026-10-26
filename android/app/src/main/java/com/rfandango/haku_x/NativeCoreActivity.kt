@@ -274,10 +274,10 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     /* The game's mods (their files and XBE patches) and cheats (mods/):
      * the manifest the core reads as the disc opens. */
     modsArg()?.let { args += it }
-    /* The players with a controller plugged in (the controller settings'
-     * players: all four unless set off). */
-    launchedPads = Controllers.load(this).padMask()
-    args += "pads=%x".format(launchedPads)
+    /* The players with a controller plugged in at boot: player 1 and those a
+     * connected controller plays as (later ones: syncPads). */
+    plugged = Controllers.load(this).padMask(Controllers.connected())
+    args += "pads=%x".format(plugged)
     /* The custom Vulkan driver installed in the settings (Turnip), loaded
      * by the core through adrenotools; none: the system driver. */
     GpuDriverHelper.init(this)
@@ -743,13 +743,28 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     )
   }
 
-  /** The players this run plugged a controller in for (getArguments: the core plugs them in at boot). */
-  private var launchedPads = 1
+  /** The players the core has a controller plugged in for (bit n: player n + 1). */
+  private var plugged = 1
+
+  /**
+   * The players' controllers plugged in and pulled out as the connected ones
+   * and the controller settings change: player 1 and each player a
+   * connected controller plays as (the router's assignment).
+   */
+  private fun syncPads() {
+    val r = router ?: return
+    var mask = 1
+    for (p in r.assignment.values) mask = mask or (1 shl p)
+    if (mask != plugged) {
+      plugged = mask
+      nativeSetPads(mask)
+    }
+  }
 
   /**
    * The menu's Controllers: which controller plays as which player, changed
-   * at once (and kept, as the settings' Players). A player whose port was not
-   * plugged in at the start gets it the next time the game starts.
+   * at once (and kept, as the settings' Players), its controller plugged in
+   * or pulled out at once as well.
    */
   private fun showPlayers() {
     val r = router ?: return
@@ -793,9 +808,7 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
         val next = config.copy(slots = slots)
         Controllers.save(this, next)
         router?.reload()
-        if (next.padMask() != launchedPads) {
-          Toast.makeText(this, R.string.controllers_next_start, Toast.LENGTH_LONG).show()
-        }
+        syncPads()
       }
       .setNegativeButton(android.R.string.cancel, null))
   }
@@ -1011,6 +1024,7 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   private fun onControllersChanged() {
     router?.reassign()
+    syncPads()
     updateControllerVisibility()
   }
 
@@ -1142,6 +1156,10 @@ class NativeCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     /** The core stopped as the title left (to the dashboard, a reboot, a shutdown). */
     @JvmStatic
     external fun nativeGetQuit(): Boolean
+
+    /** The players with a controller plugged in (bit n: player n + 1); the core plugs and pulls them. */
+    @JvmStatic
+    external fun nativeSetPads(mask: Int)
 
     /** A console on the network with this one's identity: its address, once each; null when no new one. */
     @JvmStatic

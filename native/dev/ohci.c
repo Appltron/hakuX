@@ -126,8 +126,17 @@ typedef struct Ohci {
     uint64_t frames, tds;
 } Ohci;
 
-static Ohci g_ohci;
+static Ohci g_ohci = {.lock = PTHREAD_MUTEX_INITIALIZER, .run = PTHREAD_COND_INITIALIZER};
 static bool g_trace; /* NC_TRACE_USB: every transfer but NAKed polls */
+
+/* Each player's controller (a hub with the gamepad on its port 1), made at
+ * boot; its root port has it while the player has a controller
+ * (nc_dev_ohci_set_pads). */
+static const unsigned k_port_map[4] = {3, 4, 1, 2};
+static NcUsbDev *g_pad_hub[4];
+static bool g_front_hub;
+static bool g_ready;                    /* nc_dev_ohci_init done */
+static int g_early_mask = -1;           /* nc_dev_ohci_set_pads before it: the boot's */
 
 static uint64_t now_ns(void)
 {
@@ -656,15 +665,14 @@ static void ohci_write(void *opaque, uint32_t off, uint64_t value, unsigned size
     pthread_mutex_unlock(&o->lock);
 }
 
-/* NC_PAD_MASK: which of players 1-4 have a controller plugged in (bit n:
- * player n + 1; hex, the app's controller slots); else NC_PADS, how many
+/* NC_PAD_MASK: which of players 1-4 have a controller plugged in at boot (bit n:
+ * player n + 1; hex: the app's, later ones nc_dev_ohci_set_pads); else NC_PADS, how many
  * from player 1 (default 1). */
 void nc_dev_ohci_init(struct NcVm *vm)
 {
     Ohci *o = &g_ohci;
+    pthread_mutex_lock(&o->lock);
     o->vm = vm;
-    pthread_mutex_init(&o->lock, NULL);
-    pthread_cond_init(&o->run, NULL);
 
     g_trace = getenv("NC_TRACE_USB") != NULL;
     const char *m = getenv("NC_PAD_MASK");
@@ -673,6 +681,9 @@ void nc_dev_ohci_init(struct NcVm *vm)
     if (!m) {
         const unsigned n = e ? (unsigned)atoi(e) : 1;
         mask = n >= 4 ? 0xF : (1u << n) - 1;
+    }
+    if (g_early_mask >= 0) {
+        mask = (unsigned)g_early_mask;      /* the controllers changed while the core started */
     }
     unsigned players = 0;
     for (unsigned p = 0; p < 4; p++) {
@@ -684,28 +695,28 @@ void nc_dev_ohci_init(struct NcVm *vm)
      * doesn't enumerate past here yet. */
     const char *fh = getenv("NC_USB_FRONT_HUB");
     const bool front_hub = fh && atoi(fh) != 0;
-    if (players) {
-        static const unsigned k_port_map[4] = {3, 4, 1, 2};
-        NcUsbDev *front = front_hub ? nc_usb_hub_new(4) : NULL;
-        for (unsigned p = 0; p < 4; p++) {
-            if (!((mask >> p) & 1)) {
-                continue;
-            }
-            NcUsbDev *pad_hub = nc_usb_hub_new(3);
-            nc_usb_hub_attach(pad_hub, 1, nc_xid_gamepad_new(p));
-            if (front) {
-                nc_usb_hub_attach(front, k_port_map[p], pad_hub);
-            } else {
-                o->dev[k_port_map[p] - 1] = pad_hub;
-            }
+    g_front_hub = front_hub;
+    NcUsbDev *front = front_hub && players ? nc_usb_hub_new(4) : NULL;
+    for (unsigned p = 0; p < 4; p++) {
+        g_pad_hub[p] = nc_usb_hub_new(3);
+        nc_usb_hub_attach(g_pad_hub[p], 1, nc_xid_gamepad_new(p));
+        if (!((mask >> p) & 1)) {
+            continue;
         }
         if (front) {
-            o->dev[0] = front;
+            nc_usb_hub_attach(front, k_port_map[p], g_pad_hub[p]);
+        } else {
+            o->dev[k_port_map[p] - 1] = g_pad_hub[p];
         }
+    }
+    if (front) {
+        o->dev[0] = front;
     }
     soft_reset(o);
     o->ctl = 0;
     roothub_reset(o);
+    g_ready = true;
+    pthread_mutex_unlock(&o->lock);
 
     static NcMmioDev dev = {
         .name = "ohci0",
@@ -723,6 +734,51 @@ void nc_dev_ohci_init(struct NcVm *vm)
     nc_log("hakuX-native-usb", "ohci: %u controller(s) (players %s%s%s%s)%s", players, mask & 1 ? "1" : "",
            mask & 2 ? "2" : "", mask & 4 ? "3" : "", mask & 8 ? "4" : "",
            front_hub ? " behind the front panel hub" : "");
+}
+
+/* A controller plugged in or pulled out, as on the console: its root port
+ * shows the connection change and the title's USB stack finds the gamepad,
+ * or sees it go. Only the controllers the players have are plugged in; one
+ * nobody holds was found like any other, and a title that listens to the
+ * first controller it finds (AirForce Delta Storm, XDK 3911: the lowest
+ * port ready as it boots, latched) took player 3's, an empty one on root
+ * port 1, which enumerates first. Not behind NC_USB_FRONT_HUB's hub. */
+void nc_dev_ohci_set_pads(unsigned mask)
+{
+    Ohci *o = &g_ohci;
+    pthread_mutex_lock(&o->lock);
+    if (!g_ready) {
+        g_early_mask = (int)(mask & 0xF);   /* before the boot plugged any in: these */
+        pthread_mutex_unlock(&o->lock);
+        return;
+    }
+    if (g_front_hub) {
+        pthread_mutex_unlock(&o->lock);
+        return;
+    }
+    unsigned changed = 0;
+    for (unsigned p = 0; p < 4; p++) {
+        const unsigned i = k_port_map[p] - 1;
+        const bool want = (mask >> p) & 1, have = o->dev[i] != NULL;
+        if (want == have) {
+            continue;
+        }
+        if (want) {
+            o->dev[i] = g_pad_hub[p];
+            nc_usb_reset(o->dev[i]);
+            o->port[i] = (o->port[i] & PORT_PPS) | PORT_CCS | PORT_CSC;
+        } else {
+            o->port[i] = (o->port[i] & PORT_PPS) | PORT_CSC;
+            o->dev[i] = NULL;
+        }
+        changed |= 1u << p;
+    }
+    if (changed) {
+        set_interrupt(o, INT_RHSC);
+        nc_log("hakuX-native-usb", "ohci: controllers plugged in for players %s%s%s%s",
+               mask & 1 ? "1" : "", mask & 2 ? "2" : "", mask & 4 ? "3" : "", mask & 8 ? "4" : "");
+    }
+    pthread_mutex_unlock(&o->lock);
 }
 
 /* ---------------------------------------------------------- savestates */

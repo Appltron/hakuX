@@ -306,10 +306,15 @@ object Controllers {
     /** Whether the controller has a mapping of its own, apart from its model's. */
     fun hasUnitProfile(d: InputDevice) = profiles.containsKey(unitKey(d))
 
-    /** The players with a controller plugged in (bit n: player n + 1); player 1's always. */
-    fun padMask(): Int {
+    /**
+     * The players with a controller plugged in (bit n: player n + 1): player
+     * 1's always (the on-screen controls play as it), the others' while a
+     * connected controller plays as them (assign), as on the console, where
+     * a port with no one at it has nothing plugged in.
+     */
+    fun padMask(devices: List<InputDevice>): Int {
       var m = 1
-      for (i in 1 until PLAYERS) if (slots[i].mode != PlayerSlot.OFF) m = m or (1 shl i)
+      for (p in assign(devices).values) m = m or (1 shl p)
       return m
     }
 

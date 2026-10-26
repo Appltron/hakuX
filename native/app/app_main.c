@@ -114,6 +114,14 @@ EXPORT JNIEXPORT void JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nati
     pthread_mutex_unlock(&g_overlay_lock);
 }
 
+/* The players with a controller (bit n: player n + 1): plugged in and pulled
+ * out as the activity's controllers come and go (native/dev/ohci.c). */
+EXPORT JNIEXPORT void JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeSetPads(JNIEnv *env, jclass cls,
+                                                                                       jint mask)
+{
+    nc_dev_ohci_set_pads((unsigned)mask & 0xF);
+}
+
 EXPORT JNIEXPORT void JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeSetPad(
     JNIEnv *env, jclass cls, jint player, jint buttons, jlong analog, jint lx, jint ly, jint rx, jint ry)
 {
