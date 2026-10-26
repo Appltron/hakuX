@@ -1,6 +1,34 @@
 # Changelog
 
-## v1.1.0
+## v1.2.0
+
+System link: Xbox games played together over your network or the Internet.
+
+### Network
+- **System link over your network** — Settings → Network → System link → LAN: hakuX devices on the same Wi-Fi network find each other as Xbox consoles on a LAN do (a Halo match between two devices). Devices the network's broadcasts don't reach, on another subnet or a VPN such as ZeroTier or Tailscale, are added by address under Other consoles
+- **XLink Kai** — system link over the Internet through an XLink Kai engine running on a computer on your network; its web page picks the game's arena
+- **Console identity** — each console has its own serial number, network address and online key. A device whose hard disk was copied from another one offers to make itself a new identity, since two consoles with one identity can't see each other
+- **Hosting** — Halo's system link host no longer fails with "Failed to join the System Link game"
+
+### Games
+- **Sega GT 2002** — the cars have their paint, reflections and sun highlights (they were white)
+- **Doom 3** — no longer crashes as its main menu loads on phones whose CPU can't do x86's misaligned atomic operations, such as the Retroid Pocket 5 (Snapdragon 865)
+- **Fatal Frame II** — starts (it crashed at boot or hung before the title screen) and reads its disc in the order it asks for
+- **AirForce Delta Storm** — answers the controller and the on-screen controls (it ignored all input)
+- **Silent Hill 2** — no longer crashes when it loads a room
+- **Splinter Cell: Double Agent** — no longer closes 23 seconds in
+- **Super Monkey Ball Deluxe** — its title movie plays and its movies aren't black
+- **Ultimate Spider-Man** — no longer crashes a second into boot
+- **Grand Theft Auto III** — no longer shows its bad-disc screen
+- **Project Gotham Racing 2** — the attract replay no longer goes black 8–10 minutes in, and races no longer hang the GPU with the Turnip driver on Adreno 650 (the Retroid Pocket 5)
+- **Dungeons & Dragons Heroes** — the tutorial's prompts show (the game seemed to hang)
+- **Sound** — games that hold their voices while the sound engine updates them, or stop a voice as it changes, no longer freeze or play a stopped voice on
+
+### Performance
+- **Fewer stutters with Turnip** — frames reach the screen without a CPU wait in front of each one (Halo 2 on an AYN Odin 3: 108 stutters to 24)
+
+### App
+- **Controllers** — only the players with a controller are plugged into the console (player 1 always, for the on-screen controls), and a controller plugs in or out as it connects, disconnects or is assigned to another player, without restarting the game
 
 GPUs beyond Adreno (experimental).
 
