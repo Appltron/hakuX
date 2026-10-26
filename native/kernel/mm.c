@@ -656,10 +656,18 @@ static uint64_t MmAllocateContiguousMemory(NcKernel *k, NcFrame *f, const uint32
 }
 
 /* MmAllocateContiguousMemoryEx(NumberOfBytes, LowestAcceptableAddress,
- *   HighestAcceptableAddress, Alignment, ProtectionType) */
+ *   HighestAcceptableAddress, Alignment, ProtectionType). The bounds are page
+ * frames, as the kernel's: the lowest address's page rounded up, the highest
+ * address's page the last one the block may take (all of it, past the
+ * address too). Fatal Frame II asks for 0x184E400 bytes in exactly
+ * 0x00D0B000..0x025593FF, its texture pool, and uses that memory whether it
+ * gets it or not: bounded by the address, the block's last page didn't fit,
+ * the call failed, and the title's disc loads went to pages the heap had
+ * (a heap block's header overwritten: a crash at boot; or a load's request:
+ * a hang before the title screen). */
 static uint64_t MmAllocateContiguousMemoryEx(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    uint32_t hi = a[2] >= k->vm->ram_size - 1 ? 0 : a[2] + 1;
+    uint32_t hi = a[2] >= k->vm->ram_size - 1 ? 0 : (a[2] | (NC_PAGE - 1)) + 1;
     return contig_alloc(k, a[0], a[1], hi, a[3] ? a[3] : NC_PAGE, a[4], caller_of(k, f));
 }
 
