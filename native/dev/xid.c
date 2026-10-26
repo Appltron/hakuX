@@ -8,13 +8,15 @@
  * down left right start back ls rs, or a stick's position lx= ly= rx= ry=
  * -32767..32767), times from the first report; "60f:a:2" counts frames
  * instead (frame 60, held for 2: the HLE GPU's swaps in this process, after
- * a savestate's load the frames since it), the same each run.
+ * a savestate's load the frames since it), the same each run. "@path" reads
+ * it from a file (debug.hakux.env holds 91 characters).
  */
 #include "native/dev/usb.h"
 #include "native/core/irq.h"
 #include "hw/xbox/hle/vk/back.h"
 
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -112,6 +114,16 @@ static void script_load(void)
     if (!s || g_nscript) {
         return;
     }
+    static char file[2048];
+    if (*s == '@') {
+        FILE *f = fopen(s + 1, "r");
+        const size_t n = f ? fread(file, 1, sizeof(file) - 1, f) : 0;
+        if (f) {
+            fclose(f);
+        }
+        file[n] = 0;
+        s = file;
+    }
     while (*s && g_nscript < sizeof(g_script) / sizeof(g_script[0])) {
         ScriptStep st = {0};
         char *end;
@@ -122,8 +134,8 @@ static void script_load(void)
             break;
         }
         s = end + 1;
-        while (*s && *s != ':') {
-            size_t n = strcspn(s, "+:");
+        while (*s && *s != ':' && *s != ',') {
+            size_t n = strcspn(s, "+:,");
             if (!script_button(s, n, &st)) {
                 nc_log("hakuX-native-usb", "pad script: unknown input '%.*s'", (int)n, s);
             }

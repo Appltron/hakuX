@@ -513,10 +513,12 @@ EXPORT int SDL_main(int argc, char *argv[])
         snprintf(base, sizeof(base), "%s/../hle", argv[2]);
         setenv("HAKUX_NATIVE_BASE", base, 1);
     }
-    {   /* debug: debug.hakux.env="NAME=value;NAME=value" sets the runner's
-         * environment switches (NC_TRACE_*, HAKUX_HLE_*) for the next game */
+    /* debug: debug.hakux.env="NAME=value;NAME=value" sets the runner's
+     * environment switches (NC_TRACE_*, HAKUX_HLE_*) for the next game, and
+     * debug.hakux.env2 more of them (a property holds 91 characters) */
+    for (unsigned p = 0; p < 2; p++) {
         char env[PROP_VALUE_MAX] = "";
-        if (hle_prop_get("debug.hakux.env", env) > 0) {
+        if (hle_prop_get(p ? "debug.hakux.env2" : "debug.hakux.env", env) > 0) {
             for (char *save = NULL, *t = strtok_r(env, ";", &save); t; t = strtok_r(NULL, ";", &save)) {
                 char *eq = strchr(t, '=');
                 if (eq && eq != t) {
