@@ -2859,8 +2859,9 @@ static void emit(HleCmdDraw *d)
     uint32_t zf = (R(NV097_SET_SURFACE_FORMAT) >> 4) & 0xF;
     d->vsh = ff ? ff_program() : program();
     d->consts_off = c_off;
-    d->zscale = (R(NV097_SET_CONTROL0) & 0x1000u) ? 1.0f : zf == 1 ? 1.0f / 65535.0f
-                                                                : 1.0f / 16777215.0f;
+    /* the integer formats' 2^-n, the shaders adding the rest (HLE_ZNORM_GLSL) */
+    d->zscale = (R(NV097_SET_CONTROL0) & 0x1000u) ? 1.0f : zf == 1 ? 1.0f / 65536.0f
+                                                                : 1.0f / 16777216.0f;
     d->ff_ubo = HLE_DRAW_NO_UBO;
     drawlog(d, ff);
     HleCmdDraw *c = begin(HLE_OP_DRAW, sizeof(*c));
