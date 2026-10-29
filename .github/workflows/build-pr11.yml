@@ -56,9 +56,8 @@ jobs:
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
 
           # setup-android has already accepted the SDK licenses above.
-          # Do not run "yes | sdkmanager --licenses" here: under GitHub
-          # Actions' pipefail setting, yes can fail with SIGPIPE after
-          # sdkmanager finishes reading the license answers.
+          # Avoid piping yes into sdkmanager: pipefail may turn its expected
+          # SIGPIPE into a failed step after sdkmanager accepts the licenses.
           sdkmanager --sdk_root="$SDK_ROOT" --install \
             "platform-tools" \
             "platforms;android-36" \
@@ -73,9 +72,54 @@ jobs:
             External/fmt External/range-v3 External/rpmalloc \
             External/unordered_dense External/xxhash Source/Common/cpp-optparse
 
-      - name: Build native core
+      - name: Prepare native dependencies
+        shell: bash
         run: |
-          export NDK_PATH="$ANDROID_HOME/ndk/29.0.14206865"
+          set -euo pipefail
+
+          DEPS="$GITHUB_WORKSPACE/native-deps"
+          mkdir -p "$DEPS/root/subprojects"
+
+          clone_tag() {
+            local url="$1"
+            local ref="$2"
+            local destination="$3"
+            git clone --depth 1 --branch "$ref" --recurse-submodules "$url" "$destination"
+          }
+
+          # Versions are pinned to the revisions documented by android/README.md
+          # in the PR branch being built.
+          clone_tag https://github.com/zeux/volk.git \
+            1.4.304 "$DEPS/volk"
+          clone_tag https://github.com/KhronosGroup/glslang.git \
+            16.1.0 "$DEPS/glslang"
+          clone_tag https://github.com/KhronosGroup/SPIRV-Reflect.git \
+            vulkan-sdk-1.4.328.0 "$DEPS/spirv_reflect"
+          clone_tag https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git \
+            v3.3.0 "$DEPS/vma"
+          clone_tag https://github.com/libsdl-org/SDL.git \
+            release-3.4.18 "$DEPS/SDL3"
+
+          # This dependency is pinned to a commit rather than a release tag.
+          git clone --filter=blob:none --recurse-submodules \
+            https://github.com/bylaws/libadrenotools.git "$DEPS/adrenotools"
+          git -C "$DEPS/adrenotools" checkout --detach 8fae8ce
+          git -C "$DEPS/adrenotools" submodule update --init --recursive
+          git -C "$DEPS/adrenotools" apply \
+            "$GITHUB_WORKSPACE/tools/native/adrenotools-kgsl-context-priority.patch"
+
+          git clone https://github.com/xemu-project/nv2a_vsh_cpu.git \
+            "$DEPS/root/subprojects/nv2a_vsh_cpu"
+          git -C "$DEPS/root/subprojects/nv2a_vsh_cpu" checkout --detach \
+            561fe80da57a881f89000256b459440c0178a7ce
+
+      - name: Build native core
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export ANDROID_NDK="$ANDROID_HOME/ndk/29.0.14206865"
+          export NDK_PATH="$ANDROID_NDK"
           export NDK_CMAKE="$NDK_PATH/build/cmake/android.toolchain.cmake"
 
           cmake -S native -B build/native/core -G Ninja \
