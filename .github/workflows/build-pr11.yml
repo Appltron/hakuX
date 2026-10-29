@@ -33,8 +33,18 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android SDK components
+        shell: bash
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
         run: |
-          sdkmanager "platforms;android-36" "build-tools;36.1.0" "platform-tools" "cmake;3.22.1" "ndk;29.0.14206865"
+          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.1.0" \
+            "cmake;3.22.1" \
+            "ndk;29.0.14206865"
 
       - name: Initialize submodules
         run: |
