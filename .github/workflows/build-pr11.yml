@@ -137,7 +137,22 @@ jobs:
           bash tools/native/app-libs.sh
 
       - name: Build APK
+        shell: bash
         run: |
+          set -euo pipefail
+
+          # The PR branch hard-codes a Linux JDK path that is not present on
+          # this runner. setup-java has already selected the correct JDK in JAVA_HOME.
+          sed -i '/^[[:space:]]*org\.gradle\.java\.home[[:space:]]*=/d' android/gradle.properties
+
+          if [[ -z "${JAVA_HOME:-}" || ! -x "$JAVA_HOME/bin/java" ]]; then
+            echo "::error::JAVA_HOME does not point to a usable JDK."
+            exit 1
+          fi
+
+          echo "Building APK with JAVA_HOME=$JAVA_HOME"
+          "$JAVA_HOME/bin/java" -version
+
           cd android
           ./gradlew assembleDebug
 
