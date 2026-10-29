@@ -55,7 +55,10 @@ jobs:
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
 
-          yes | sdkmanager --sdk_root="$SDK_ROOT" --licenses
+          # setup-android has already accepted the SDK licenses above.
+          # Do not run "yes | sdkmanager --licenses" here: under GitHub
+          # Actions' pipefail setting, yes can fail with SIGPIPE after
+          # sdkmanager finishes reading the license answers.
           sdkmanager --sdk_root="$SDK_ROOT" --install \
             "platform-tools" \
             "platforms;android-36" \
