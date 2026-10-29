@@ -108,10 +108,14 @@ jobs:
           git -C "$DEPS/adrenotools" apply \
             "$GITHUB_WORKSPACE/tools/native/adrenotools-kgsl-context-priority.patch"
 
-          git clone https://github.com/xemu-project/nv2a_vsh_cpu.git \
-            "$DEPS/root/subprojects/nv2a_vsh_cpu"
-          git -C "$DEPS/root/subprojects/nv2a_vsh_cpu" checkout --detach \
-            561fe80da57a881f89000256b459440c0178a7ce
+          # This pinned commit is valid but may not be reachable from the
+          # repository's default branch history. Download the commit archive
+          # directly rather than cloning the branch and checking out its SHA.
+          NV2A_DIR="$DEPS/root/subprojects/nv2a_vsh_cpu"
+          mkdir -p "$NV2A_DIR"
+          curl --fail --location --retry 3 --retry-delay 2 --silent --show-error \
+            "https://codeload.github.com/xemu-project/nv2a_vsh_cpu/tar.gz/561fe80da57a881f89000256b459440c0178a7ce" \
+            | tar -xz --strip-components=1 -C "$NV2A_DIR"
 
       - name: Build native core
         shell: bash
